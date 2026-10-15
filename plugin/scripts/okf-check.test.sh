@@ -380,6 +380,117 @@ else
   skip "LT-18 doc-reuse guard config — guard or jq absent" "install jq"
 fi
 
+# LT-19 (GitHub issue #8): the guard names the closest existing notes when a search binary exists.
+if [ -f "$HERE/doc-reuse-guard.sh" ] && command -v jq >/dev/null 2>&1; then
+  G19="$HERE/doc-reuse-guard.sh"; T19="$TMP/t19"; mkdir -p "$T19/docs" "$T19/real/docs" "$T19/bin"
+  mkdir -p "$T19/lnk"; ln -s "$T19/real/docs" "$T19/lnk/docs"
+  cat > "$T19/bin/okf" <<'STUB'
+#!/bin/sh
+[ -n "$STUB_LOG" ] && echo "$@" >> "$STUB_LOG"
+[ -n "$STUB_SLEEP" ] && sleep "$STUB_SLEEP"
+[ "$STUB_FAIL" = 1 ] && { echo "garbage <<<" ; exit 3; }
+echo "Found 3 matching concept(s):"
+echo " 1. [context]    [88.19] alpha-note (Lesson)"
+echo "    first description"
+echo " 2. [context]    [50.00] beta-note (Lesson)"
+echo " 3. [context]    [10.00] gamma-note (Lesson)"
+echo " 4. [context]    [ 5.00] delta-note (Lesson)"
+STUB
+  chmod +x "$T19/bin/okf"
+  g19() { local fp="$1"; shift; printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":"x"}}' "$fp" | env OKF_DOC_DIRS_FILE="$T19/none" "$@" bash "$G19" 2>/dev/null; }
+  out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf")
+  { printf '%s' "$out" | grep -q "Closest existing notes" && printf '%s' "$out" | grep -q "alpha-note, beta-note, gamma-note" && ! printf '%s' "$out" | grep -q "delta-note"; } \
+    && ok "LT-19a the reminder names the three closest notes (and only three)" || bad "LT-19a closest notes" "out=$(printf '%s' "$out" | head -c 200)"
+  printf '%s' "$out" | jq -e . >/dev/null 2>&1 && ok "LT-19a2 the reminder stays valid hook JSON" || bad "LT-19a2 JSON" "invalid"
+  out0=$(g19 "$T19/docs/new-note-name.md" PATH="/usr/bin:/bin" OKF_SEARCH_BIN="")
+  { printf '%s' "$out0" | grep -q "Doc-reuse check" && ! printf '%s' "$out0" | grep -q "Closest"; } \
+    && ok "LT-19b no search binary: the reminder is exactly today's text" || bad "LT-19b no binary" "out=$(printf '%s' "$out0" | head -c 160)"
+  t0=$(date +%s); out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf" STUB_SLEEP=15); t1=$(date +%s)
+  { [ $((t1-t0)) -le 3 ] && printf '%s' "$out" | grep -q "Doc-reuse check" && ! printf '%s' "$out" | grep -q "Closest"; } \
+    && ok "LT-19c a hung search binary is cut off (returned in $((t1-t0))s, within 3) and the reminder is today's text" || bad "LT-19c timeout" "took $((t1-t0))s out=$(printf '%s' "$out" | head -c 120)"
+  out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf" STUB_FAIL=1); rc=$?
+  { printf '%s' "$out" | grep -q "Doc-reuse check" && ! printf '%s' "$out" | grep -q "Closest" && [ "$rc" -eq 0 ]; } \
+    && ok "LT-19d a failing search binary leaves today's reminder (exit 0)" || bad "LT-19d failing binary" "rc=$rc out=$(printf '%s' "$out" | head -c 120)"
+  : > "$T19/argv.log"
+  g19 "$T19/lnk/docs/other-note.md" OKF_SEARCH_BIN="$T19/bin/okf" STUB_LOG="$T19/argv.log" >/dev/null
+  phys=$(cd -P "$T19/real/docs" && pwd)
+  grep -q "$phys\$" "$T19/argv.log" && ok "LT-19e a symlinked directory is resolved to its real path before the search" \
+    || bad "LT-19e symlink resolved" "argv=$(cat "$T19/argv.log")"
+  grep -q "other note" "$T19/argv.log" && ok "LT-19f the query is the words of the new file's name" || bad "LT-19f query words" "argv=$(cat "$T19/argv.log")"
+else
+  skip "LT-19 guard closest notes — guard or jq absent" "install jq"
+fi
+
+# LT-20 (GitHub issue #7): .okfignore is read by every layer, written only by --init-ignore.
+T20="$TMP/t20"; mkbundle "$T20/b"
+mkdir -p "$T20/b/.trash" "$T20/b/archive" "$T20/b/live"
+printf -- 'no frontmatter at all\n' > "$T20/b/.trash/old.md"
+f=$(ls "$T20/b"/*.md | grep -v 'index.md\|log.md' | head -1)
+[ -n "$f" ] && sed 's/2099-01-01/2000-01-01/' "$f" > "$T20/b/archive/old.md"
+"$CHECK" "$T20/b" --fail-stale >"$TMP/o20a.txt" 2>&1; rc=$?
+[ "$rc" -ne 0 ] && ok "LT-20a baseline: an ignorable .trash note fails the gate without .okfignore (exit $rc)" \
+  || bad "LT-20a baseline" "expected non-zero, got 0"
+printf '.trash/\narchive/\n' > "$T20/b/.okfignore"
+"$CHECK" "$T20/b" --fail-stale >"$TMP/o20b.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 0 ] && ! grep -q 'trash\|archive/old' "$TMP/o20b.txt"; } \
+  && ok "LT-20b ignored paths are absent from every layer (exit 0, no mention)" \
+  || bad "LT-20b ignored paths" "rc=$rc $(grep -n 'trash\|archive\|FAIL' "$TMP/o20b.txt" | head -4 | tr '\n' ' ')"
+grep -q 'okfmirror\|/l1mirror' "$TMP/o20b.txt" && bad "LT-20b2 no temp path leaks into the report" "$(grep -n okfmirror "$TMP/o20b.txt" | head -2)" \
+  || ok "LT-20b2 no temp path leaks into the report"
+grep -qi 'okfignore.*2 file' "$TMP/o20b.txt" && ok "LT-20c the run states how many files .okfignore excluded" \
+  || bad "LT-20c excluded count" "$(grep -n -i ignore "$TMP/o20b.txt" | head -3)"
+"$CHECK" "$T20/b" --json 2>/dev/null | grep -q '"ignored":2' && ok "LT-20c2 --json reports ignored:2" || bad "LT-20c2 json ignored" "missing"
+printf '*\n' > "$T20/b/.okfignore"
+"$CHECK" "$T20/b" >"$TMP/o20d.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 2 ] && grep -qi 'excludes every' "$TMP/o20d.txt"; } \
+  && ok "LT-20d an ignore file that excludes every note is reported, exit 2" \
+  || bad "LT-20d excludes all" "rc=$rc $(head -c 200 "$TMP/o20d.txt")"
+rm -f "$T20/b/.okfignore"
+before=$(cd "$T20/b" && find . -type f | sort | tr '\n' ' ')
+"$CHECK" "$T20/b" >/dev/null 2>&1
+after=$(cd "$T20/b" && find . -type f | sort | tr '\n' ' ')
+{ [ "$before" = "$after" ] && [ ! -e "$T20/b/.okfignore" ]; } && ok "LT-20e a full run never creates .okfignore" || bad "LT-20e no auto-create" "tree changed"
+"$CHECK" --init-ignore "$T20/b" >/dev/null 2>&1; rc1=$?
+printf '# mine\n' > "$T20/b/.okfignore"; h=$(cksum < "$T20/b/.okfignore")
+"$CHECK" --init-ignore "$T20/b" >/dev/null 2>&1; rc2=$?
+{ [ "$rc1" -eq 0 ] && [ "$rc2" -ne 0 ] && [ "$h" = "$(cksum < "$T20/b/.okfignore")" ]; } \
+  && ok "LT-20f --init-ignore writes once and refuses to overwrite (rc $rc1 then $rc2)" \
+  || bad "LT-20f init-ignore" "rc1=$rc1 rc2=$rc2"
+# matcher: anchored vs name patterns, dir-only, comments, CRLF, negation skipped
+mkdir -p "$T20/m/a/b" "$T20/m/docs" "$T20/m/x/docs"
+for n in a/b/n.md a/keep.md docs/g.md x/docs/g.md top.tmp.md keep.md; do printf '# n\n' > "$T20/m/$n"; done
+printf '# c\r\n/docs/\r\n*.tmp.md\n!keep.md\na/b/\n' > "$T20/m/.okfignore"
+got=$(bash "$HERE/ignore-lib.sh" --list "$T20/m" 2>/dev/null | tr '\0' '\n' | sort | tr '\n' ' ')
+want="a/keep.md keep.md x/docs/g.md "
+[ "$got" = "$want" ] && ok "LT-20g matcher: anchored dir, name glob, nested dir, comment, CRLF, negation skipped" \
+  || bad "LT-20g matcher" "got=[$got] want=[$want]"
+
+# LT-20 review fixes (round 1): fail closed, same file set as without .okfignore.
+R20="$TMP/r20"; mkbundle "$R20/b"; mkdir -p "$R20/outside" "$R20/b/dec"
+printf -- 'no frontmatter\n' > "$R20/outside/escaped.md"; ln -s "$R20/outside" "$R20/b/linked"
+"$CHECK" "$R20/b" >"$TMP/r20a.txt" 2>&1; rc0=$?
+printf '# c\n' > "$R20/b/.okfignore"
+"$CHECK" "$R20/b" >"$TMP/r20b.txt" 2>&1; rc1=$?
+[ "$rc0" = "$rc1" ] && ok "LT-20h a no-op .okfignore gives the same verdict as none, with a symlinked dir (exit $rc1)" \
+  || bad "LT-20h symlinked dir" "without=$rc0 with=$rc1"
+rm -f "$R20/b/.okfignore"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nx\n' > "$R20/b/dec/n.md"
+chmod 000 "$R20/b/dec/n.md"
+printf '# c\n' > "$R20/b/.okfignore"
+"$CHECK" "$R20/b" >"$TMP/r20c.txt" 2>&1; rc=$?
+chmod 644 "$R20/b/dec/n.md"
+{ [ "$rc" -ne 0 ] && ! grep -q 'ALL GATES PASS' "$TMP/r20c.txt"; } && ok "LT-20i an unreadable note is not silently dropped from the mirror (exit $rc)" \
+  || bad "LT-20i unreadable note" "rc=$rc $(tail -3 "$TMP/r20c.txt" | tr '\n' ' ')"
+rm -rf "$R20/b/dec" "$R20/b/linked"; printf '*/\n' > "$R20/b/.okfignore"; mkdir -p "$R20/b/sub"; printf -- 'x\n' > "$R20/b/sub/a.md"
+for _f in "$R20/b"/*.md; do case "${_f##*/}" in index.md|log.md) ;; *) mv "$_f" "$R20/b/sub/moved.md";; esac; done
+"$CHECK" "$R20/b" >"$TMP/r20d.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 2 ] && ! grep -q 'ALL GATES PASS' "$TMP/r20d.txt"; } && ok "LT-20j excluding every concept (index.md and log.md remain) is reported, exit 2" \
+  || bad "LT-20j only reserved files left" "rc=$rc $(tail -3 "$TMP/r20d.txt" | tr '\n' ' ')"
+rm -f "$R20/b/.okfignore"; ln -s "$R20/elsewhere.txt" "$R20/b/.okfignore"
+"$CHECK" --init-ignore "$R20/b" >/dev/null 2>&1; rc=$?
+{ [ "$rc" -ne 0 ] && [ ! -e "$R20/elsewhere.txt" ]; } && ok "LT-20k --init-ignore refuses to write through a symlink" || bad "LT-20k init through symlink" "rc=$rc"
+rm -f "$R20/b/.okfignore"
+
 # LT-17 (GitHub issue #4): preflight and opt-in installer for the supported prerequisites.
 # A stub `uv` records every call; PATH is the stub dir plus system basics, so the machine's real
 # okflint and uv are never touched.
@@ -1784,6 +1895,34 @@ expect_no_match 'src.txt' "D-4b an undated source produces no finding at all" "$
 # D-5 (EDGE): a bundle with no sources at all is completely unaffected.
 DS5="$TMP/derived-none"; mkbundle "$DS5"
 expect_exit 0 "D-5 concepts without sources are untouched" -- "$CHECK" "$DS5" --fail-stale
+
+# LT-20 per-layer (review round 1): each layer must skip ignored notes, and the derived layer must
+# still resolve sources against the REAL bundle (a copy in TMP cannot see ../ or non-md files).
+PL="$TMP/pl-index"; mkcounted "$PL" '**3 concepts.**' 3
+mkdir -p "$PL/archive"; cp "$PL"/*.md "$PL/archive/" 2>/dev/null; rm -f "$PL/archive/index.md" "$PL/archive/log.md"
+"$CHECK" "$PL" >"$TMP/pl1.txt" 2>&1; rc0=$?
+printf 'archive/\n' > "$PL/.okfignore"
+"$CHECK" "$PL" >"$TMP/pl2.txt" 2>&1; rc1=$?
+{ [ "$rc0" -ne 0 ] && [ "$rc1" -eq 0 ]; } && ok "LT-20l L2 index counts skip ignored notes (exit $rc0 -> $rc1)" \
+  || bad "LT-20l L2 index" "without=$rc0 with=$rc1 $(grep -i 'index' "$TMP/pl2.txt" | head -2 | tr '\n' ' ')"
+PD="$TMP/pl-derived"; mksourced "$PD" "src.txt" "2000-01-01"
+printf 'source\n' > "$PD/src.txt"; touch -t 202601010000 "$PD/src.txt"
+"$CHECK" "$PD" --fail-stale >/dev/null 2>&1; rc0=$?
+mkdir -p "$PD/archive"; printf 'archive/\n' > "$PD/.okfignore"
+"$CHECK" "$PD" --fail-stale >/dev/null 2>&1; rc1=$?
+{ [ "$rc0" -eq 4 ] && [ "$rc1" -eq 4 ]; } && ok "LT-20m L3 derived still resolves sources with a .okfignore present (exit $rc0 -> $rc1)" \
+  || bad "LT-20m derived sources" "without=$rc0 with=$rc1 (want 4 and 4)"
+mv "$PD"/*.md "$PD/archive/" 2>/dev/null; cp "$PD/archive/index.md" "$PD/archive/log.md" "$PD/" 2>/dev/null
+cat "$PD/.okfignore" >/dev/null
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$PD/live.md"
+"$CHECK" "$PD" --fail-stale >/dev/null 2>&1; rc=$?
+[ "$rc" -eq 0 ] && ok "LT-20n L3 derived skips an ignored note whose source moved" || bad "LT-20n derived skips ignored" "exit $rc"
+
+PX="$TMP/pl-dangling"; mkbundle "$PX"; ln -s "$PX/nowhere.md" "$PX/d.md"
+"$CHECK" "$PX" >/dev/null 2>&1; rc0=$?
+printf '# c\n' > "$PX/.okfignore"
+"$CHECK" "$PX" >/dev/null 2>&1; rc1=$?
+[ "$rc0" = "$rc1" ] && ok "LT-20o a dangling symlink gives the same verdict with a no-op .okfignore (exit $rc1)" || bad "LT-20o dangling symlink" "without=$rc0 with=$rc1"
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

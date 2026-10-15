@@ -311,11 +311,34 @@ def check_path(raw: str, bundle: Path):
     return UNRESOLVED, f"parent {p.parent} does not exist either — different machine or layout"
 
 
+def not_ignored(bundle: Path):
+    """The set of notes .okfignore leaves in, from the one shared matcher (ignore-lib.sh), so L4
+    and okf-check cannot disagree. None = no .okfignore, or the matcher could not run (then
+    nothing is excluded: a broken matcher must not hide a note)."""
+    if not (bundle / ".okfignore").is_file():
+        return None
+    lib = Path(__file__).resolve().parent / "ignore-lib.sh"
+    try:
+        r = subprocess.run(["bash", str(lib), "--list", str(bundle)], capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0:
+        return None
+    return {x for x in r.stdout.decode("utf-8", "replace").split("\0") if x}
+
+
 def verify(bundle: Path, repos: list[Path]):
     results, no_claims = [], []
+    keep = not_ignored(bundle)
     for f in sorted(bundle.rglob("*.md")):
         if not f.is_file() or f.name in RESERVED:
             continue
+        if keep is not None:
+            try:
+                if str(f.relative_to(bundle)) not in keep:
+                    continue
+            except ValueError:
+                pass
         # relative to the bundle, not a basename: two `notes.md` in different
         # subdirectories were indistinguishable in the report
         try:
@@ -422,6 +445,14 @@ def main() -> int:
 
     repos = [r for r in a.repo if (r / ".git").exists()]
     skipped = [str(r) for r in a.repo if r not in repos]
+    keep = not_ignored(a.bundle)
+    if keep is not None:
+        total = sum(1 for f in a.bundle.rglob("*.md") if f.is_file() and f.name not in RESERVED)
+        left = sum(1 for k in keep if Path(k).name not in RESERVED)
+        print(f"ignore: {total - left} file(s) excluded by .okfignore, {left} verified", file=sys.stderr)
+        if left == 0:
+            print("error: .okfignore excludes every note - nothing was verified (not a pass)", file=sys.stderr)
+            return 2
     results, no_claims = verify(a.bundle, repos)
 
     counts = {v: sum(1 for r in results if r["verdict"] == v)

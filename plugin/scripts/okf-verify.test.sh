@@ -585,6 +585,23 @@ grep -q 'no checkable claim' "$TMP/out.txt" \
   && ok "Z-11b a bare backticked all-digit token is still not treated as a SHA" \
   || bad_hard "Z-11b an issue number was treated as a SHA" "precision lost: bare 1234567 must stay rejected"
 
+# I-1 (GitHub issue #7): a note under a .okfignore path is not verified.
+BI="$TMP/bi"; mkb "$BI"; mkdir -p "$BI/archive"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee `%s/ignored-not-here-xyz.txt`.\n' "$NONEPH" > "$BI/archive/c.md"
+rc=$(run "$BI" --repo "$REPO")
+[ "$rc" != "0" ] && ok "I-1a baseline: the refuted claim under archive/ fails without .okfignore" || bad "I-1a baseline" "exit 0"
+cp "$B4/c.md" "$BI/live.md"; printf 'archive/\n' > "$BI/.okfignore"
+rc=$(run "$BI" --repo "$REPO")
+[ "$rc" = "0" ] && ok "I-1b the same claim under an ignored path is not verified (exit 0)" || bad "I-1b ignored path skipped" "exit $rc"
+
+printf '*\n' > "$BI/.okfignore"
+rc=$(run "$BI" --repo "$REPO")
+[ "$rc" = "2" ] && ok "I-1c a .okfignore that excludes every note exits 2" || bad "I-1c all excluded" "exit $rc"
+
+mkdir -p "$TMP/bi-out"; printf -- 'x\n' > "$TMP/bi-out/o.md"; ln -s "$TMP/bi-out" "$BI/lnk"
+rc=$(run "$BI" --repo "$REPO")
+[ "$rc" = "2" ] && ok "I-1d a symlinked directory cannot hide that everything was excluded" || bad "I-1d symlink bypass" "exit $rc"
+
 echo
 if [ "$SKIPPED" -gt 0 ]; then
   echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"

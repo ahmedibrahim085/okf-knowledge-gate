@@ -46,7 +46,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.6.1"
+VERSION="0.7.0"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -68,6 +68,8 @@ HERE=$(cd -P "$(dirname "$_self")" && pwd)
 # program failed, stderr went to /dev/null, and the empty report read as "PASS nothing expired".
 [ -r "$HERE/l3-lib.sh" ] || { echo "okf-check: $HERE/l3-lib.sh is missing - cannot run L3; reinstall the plugin" >&2; exit $EXIT_DEP; }
 . "$HERE/l3-lib.sh"
+[ -r "$HERE/ignore-lib.sh" ] || { echo "okf-check: $HERE/ignore-lib.sh is missing - cannot read .okfignore; reinstall the plugin" >&2; exit $EXIT_DEP; }
+. "$HERE/ignore-lib.sh"
 ROOT=$(cd -P "$HERE/.." && pwd)
 VALIDATOR="$ROOT/vendor/okf_validate.py"
 # PyYAML is vendored (pure-python, no C extension) so L1 needs nothing installed.
@@ -112,6 +114,7 @@ for a in "$@"; do
     --fail-on-change) FAIL_ON_CHANGE=1 ;;
     --fingerprint) MODE="fingerprint" ;;
     --preflight)   MODE="preflight" ;;
+    --init-ignore) MODE="init-ignore" ;;
     --install-deps) MODE="install-deps" ;;
     --yes)         ASSUME_YES=1 ;;
     --latest)      USE_LATEST=1 ;;
@@ -132,7 +135,10 @@ done
 PY=""
 for c in python3 python; do command -v "$c" >/dev/null 2>&1 && { PY="$c"; break; }; done
 
-say()  { [ "$JSON" -eq 1 ] || printf '%s\n' "$*"; }
+# MIRROR_ROOT is set only when a .okfignore made the layers read a filtered copy; the report must
+# name the bundle the user pointed at, never the temp copy.
+MIRROR_ROOT=""
+say()  { [ "$JSON" -eq 1 ] && return 0; local m="$*"; [ -n "$MIRROR_ROOT" ] && m=${m//"$MIRROR_ROOT"/"$BUNDLE"}; printf '%s\n' "$m"; }
 # say_capped <limit> <indent>  — lines on stdin, capped, and HONEST about it.
 # Four dumps cut at 10-12 lines with no note of the cut: a reader sees twelve
 # §11 errors and concludes there are twelve. Same silent-cap defect fixed in
@@ -938,9 +944,21 @@ except Exception:
 bundle = pathlib.Path(sys.argv[1])
 RESERVED = {"index.md", "log.md"}
 stale, unmeasurable = [], []
+# .okfignore: the notes it leaves in (NUL-separated, relative). Sources are resolved against the
+# REAL bundle, so this layer reads the real tree and skips ignored notes itself.
+import os
+_kl = os.environ.get("OKF_KEEP_LIST")
+keep = None
+if _kl:
+    try:
+        keep = {x for x in open(_kl, encoding="utf-8", errors="replace").read().split("\0") if x}
+    except OSError:
+        keep = None
 
 for p in sorted(bundle.rglob("*.md")):
     if p.name in RESERVED:
+        continue
+    if keep is not None and str(p.relative_to(bundle)) not in keep:
         continue
     try:
         text = p.read_text(encoding="utf-8", errors="replace")
@@ -1181,6 +1199,13 @@ print(json.dumps({"bundle": sys.argv[1],
                  bundle_fingerprint "$BUNDLE"
                fi
                exit 0;;
+  init-ignore)  # The ONLY writer of .okfignore, and only on this explicit request.
+                [ -n "$BUNDLE" ] && [ -d "$BUNDLE" ] || { echo "usage: okf-check --init-ignore <bundle>" >&2; exit 64; }
+                if [ -e "$BUNDLE/.okfignore" ] || [ -L "$BUNDLE/.okfignore" ]; then
+                  echo "okf-check: $BUNDLE/.okfignore already exists - not overwritten" >&2; exit 1
+                fi
+                okfignore_starter > "$BUNDLE/.okfignore" || exit $EXIT_DEP
+                echo "wrote $BUNDLE/.okfignore (starter; edit it, then re-run okf-check)"; exit 0;;
   preflight)    preflight; exit 0;;   # a SessionStart hook must never fail the session
   install-deps) install_deps; exit $?;;
   doctor)   doctor; exit $?;;
@@ -1218,6 +1243,28 @@ if ! doctor >/dev/null 2>&1; then doctor; echo "L1 cannot run — fix the above.
 
 say "okf-check $VERSION — $BUNDLE"
 worst=0
+# .okfignore (issue #7): every layer sees a filtered COPY of the notes and config; the bundle
+# itself is never touched. No file: LAYER_BUNDLE is the bundle and nothing below changes.
+LAYER_BUNDLE="$BUNDLE"; IGNORED=""
+if [ -f "$BUNDLE/.okfignore" ]; then
+  [ -n "$TMP" ] || exit $EXIT_DEP
+  _ml=$(okfignore_mirror "$BUNDLE" "$TMP/okfmirror"); _mrc=$?
+  if [ "$_mrc" -ne 0 ]; then
+    say "  IGNORE           could not apply .okfignore (see the message above) - no verdict is possible"
+    exit $EXIT_DEP
+  fi
+  read -r _kept IGNORED <<< "$_ml"
+  okfignore_list "$BUNDLE" > "$TMP/keep.lst" 2>/dev/null
+  export OKF_KEEP_LIST="$TMP/keep.lst"
+  LAYER_BUNDLE="$TMP/okfmirror"; MIRROR_ROOT="$LAYER_BUNDLE"
+  say "  ignore           .okfignore: $IGNORED file(s) excluded, $_kept checked"
+  if [ "${_kept:-0}" -eq 0 ]; then
+    say "  IGNORE           .okfignore excludes every note - nothing was checked (not a pass)"
+    worse() { :; }; worst=$EXIT_DEP
+    [ "$JSON" -eq 1 ] && printf '{"bundle":"%s","exit":%d,"ignored":%s}\n' "$BUNDLE" "$EXIT_DEP" "${IGNORED:-0}"
+    exit $EXIT_DEP
+  fi
+fi
 FP_BEFORE=$(bundle_fingerprint "$BUNDLE")
 # A fingerprint that comes back EMPTY over a bundle that has concepts means the
 # comparison below is ""=="" — E-7 change detection silently OFF, every mid-scan
@@ -1237,10 +1284,10 @@ fi
 rank() { case "$1" in 0) echo 0;; 4) echo 1;; 6) echo 2;; 2) echo 3;; 3) echo 4;; 1) echo 5;; 5) echo 6;; *) echo 7;; esac; }
 worse() { [ "$(rank "$1")" -gt "$(rank "$worst")" ] && worst="$1"; return 0; }
 
-run_conformance "$BUNDLE"; worse $?
-run_profile     "$BUNDLE"; worse $?
-run_index       "$BUNDLE"; worse $?
-run_staleness   "$BUNDLE"; worse $?
+run_conformance "$LAYER_BUNDLE"; worse $?
+run_profile     "$LAYER_BUNDLE"; worse $?
+run_index       "$LAYER_BUNDLE"; worse $?
+run_staleness   "$LAYER_BUNDLE"; worse $?
 run_derived_stale "$BUNDLE"; worse $?
 FP_AFTER=$(bundle_fingerprint "$BUNDLE")
 
@@ -1308,8 +1355,9 @@ if [ "$JSON" -eq 1 ]; then
   if   [ "$FP_DEGRADED" -eq 1 ]; then _cd=degraded
   elif [ "$CONCURRENT"  -eq 1 ]; then _cd=changed
   else _cd=ok; fi
-  printf '{"bundle":"%s","exit":%d,"l1_errors":%s,"l1_warnings":%s,"concepts":%s,"change_detection":"%s"}\n' \
-    "$BUNDLE" "$worst" "${L1_ERR:-null}" "${L1_WARN:-null}" "${L1_CONCEPTS:-null}" "$_cd"
+  _ign=""; [ -n "$IGNORED" ] && _ign=",\"ignored\":$IGNORED"
+  printf '{"bundle":"%s","exit":%d,"l1_errors":%s,"l1_warnings":%s,"concepts":%s,"change_detection":"%s"%s}\n' \
+    "$BUNDLE" "$worst" "${L1_ERR:-null}" "${L1_WARN:-null}" "${L1_CONCEPTS:-null}" "$_cd" "$_ign"
 fi
 say ""
 # Never print a bare pass while the body reported something. A summary that

@@ -39,7 +39,9 @@ Also shipped:
 
 - A SessionStart preflight that reports a missing or unsupported prerequisite (`okf-check --preflight`).
 - A SessionStart hook that reports stale lessons (`lessons-staleness-check.sh`).
-- A PreToolUse hook that stops a duplicate document being written (`doc-reuse-guard.sh`).
+- A PreToolUse hook that stops a duplicate document being written (`doc-reuse-guard.sh`). With an
+  [`okf`](https://github.com/GoogleCloudPlatform/open-knowledge-format) search binary on PATH (or
+  `OKF_SEARCH_BIN`) it also names the three closest existing notes. The plugin never installs it.
 - A skill, `okf`, so an agent knows how to run the gate and read its result.
 
 ## Install
@@ -73,6 +75,7 @@ okf-check <bundle> --fail-stale    # staleness blocks (exit 4)
 okf-check <bundle> --json          # machine-readable summary
 okf-check --doctor                 # what is installed, and does okflint behave
 okf-check --selftest               # re-prove every gate still fires
+okf-check --init-ignore <bundle>   # write a starter .okfignore (never automatic, never overwrites)
 okf-verify <bundle> --repo DIR     # L4: are the cited SHAs and paths real
 ```
 
@@ -87,6 +90,9 @@ Read the exit code, do not just test for zero:
 | 4 | L3: stale concepts (with `--fail-stale`) |
 | 5 | `--selftest` failed: a gate stopped firing |
 | 6 | The bundle changed during the scan (with `--fail-on-change`) |
+
+**Leave paths out:** put globs in `<bundle>/.okfignore` (`archive/`, `.trash/`). Every layer skips
+them and the run says how many files it excluded. The plugin never creates the file by itself.
 
 The full behaviour contract, one row per scenario with its test, is
 [`docs/spec.md`](docs/spec.md).

@@ -220,6 +220,28 @@ and the brand-new machine this tool targets does not have it.
 | LT-18c | glob listed in `~/.config/okf/doc-dirs` (`OKF_DOC_DIRS_FILE`) | the reminder fires | ✅ |
 | LT-18d | config file unreadable or malformed | the guard stays silent and exits 0 (fail-open) | ✅ |
 | LT-18e | the guard source | contains no personal path or vault name | ✅ |
+| LT-19a | a search binary lists matches | the reminder names the three closest notes, no more | ✅ |
+| LT-19b | no search binary | the reminder is exactly the plain text | ✅ |
+| LT-19c | the binary hangs | killed at 2 s, back within 3 s; plain reminder | ✅ |
+| LT-19d | the binary fails | plain reminder, exit 0 | ✅ |
+| LT-19e | the target directory is a symlink | the search runs on the real path | ✅ |
+| LT-19f | any new file | the query is the words of the file name | ✅ |
+| LT-20a | a bundle with an ignorable note and no `.okfignore` | behaves as before (the note fails the gate) | ✅ |
+| LT-20b | `.okfignore` lists `.trash/` and `archive/` | those notes are absent from L1, L2, L3 and L3 derived | ✅ |
+| LT-20b2 | the layers read a filtered copy | the report never shows the temp path | ✅ |
+| LT-20c | `.okfignore` present | the run states how many files were excluded; `--json` carries `ignored` | ✅ |
+| LT-20d | `.okfignore` excludes every note | reported, exit 2, never a pass | ✅ |
+| LT-20e | a full run | never creates `.okfignore` | ✅ |
+| LT-20f | `--init-ignore` | writes a starter once, refuses to overwrite (exit 1) | ✅ |
+| LT-20g | patterns: anchored, name, dir-only, comment, CRLF, `!` | matched as documented; negation skipped with a notice | ✅ |
+| LT-20h | a symlinked directory in the bundle | a no-op `.okfignore` gives the same verdict as none (same file set) | ✅ |
+| LT-20i | a note cannot be copied | not dropped silently: no pass | ✅ |
+| LT-20j | only index.md and log.md remain | reported, exit 2 | ✅ |
+| LT-20k | `.okfignore` is a symlink | `--init-ignore` refuses | ✅ |
+| LT-20l | L2 index counts | skip ignored notes | ✅ |
+| LT-20m/n | L3 derived | still resolves sources against the real bundle; skips ignored notes | ✅ |
+| I-1c | `okf-verify`, everything excluded | exit 2 | ✅ |
+| I-1a/b | `okf-verify` on a bundle with `.okfignore` | an ignored note's claims are not verified | ✅ |
 | LT-10 | okflint crashes on a note (non-UTF-8) | L2 prints a `reason:` line with its last error line; skipped, stated, when okflint is absent | ✅ |
 
 ### L3 derived — has what the concept describes moved since? (0.5.0)

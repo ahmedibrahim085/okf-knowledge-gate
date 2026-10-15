@@ -9,6 +9,26 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-15
+
+### Fixed
+- The doc-reuse guard no longer prints two reminders when a path matches both a built-in location
+  and a `doc-dirs` glob.
+
+### Added
+- **`.okfignore`.** A file at the bundle root, one gitignore-style glob per line, keeps paths such
+  as `archive/` and `.trash/` out of every layer (L1, L2 profile and index, L3, L3 derived, and
+  `okf-verify`). A trailing `/` means directories only; a pattern without `/` matches a name at any
+  depth; `*` also crosses `/`; `!` negation is skipped with a notice. The run prints how many files
+  were excluded (`--json`: `ignored`). A file that excludes every note exits 2. Nothing is
+  created automatically: `okf-check --init-ignore <bundle>` writes a starter once and never
+  overwrites. Without `.okfignore` behaviour is unchanged. L1, L2 and L3 read a filtered copy
+  (symlinked directories are not followed, as in L1 without the file); L3 derived reads the real
+  bundle so source paths resolve. An unreadable `.okfignore` or an uncopyable note is exit 2.
+- The doc-reuse guard names the three closest existing notes (`Closest existing notes (okf search): a, b, c.`)
+  when an `okf` search binary is available (`OKF_SEARCH_BIN`, else `okf` on PATH). The plugin does
+  not install it. Absent, slow (2 s limit) or failing binary: the reminder is unchanged.
+
 ### Planned
 - Replace the vendored validator with the upstream release when
   [okf-skills#68](https://github.com/scaccogatto/okf-skills/pull/68) merges, and install

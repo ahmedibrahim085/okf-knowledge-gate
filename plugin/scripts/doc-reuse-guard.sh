@@ -11,17 +11,42 @@ case "$FP" in
   *) exit 0 ;;
 esac
 [ -e "$FP" ] && exit 0
+
+# closest_notes: " Closest existing notes (okf search): a, b, c." when a search binary exists.
+# Binary: OKF_SEARCH_BIN, else `okf` on PATH. Never installed or downloaded by the plugin. Any
+# problem (absent, slow, failing, empty) prints nothing: the reminder stays exactly as it was.
+closest_notes() {
+  local bin="${OKF_SEARCH_BIN:-}" dir q out pid wd rc ids
+  [ -n "$bin" ] || bin=$(command -v okf 2>/dev/null)
+  [ -n "$bin" ] && [ -x "$bin" ] || return 0
+  dir=$(cd -P "$(dirname "$FP")" 2>/dev/null && pwd) || return 0   # the tool refuses a symlinked root
+  q=$(basename "$FP" .md | tr '_-' '  ')
+  out=$(mktemp 2>/dev/null) || return 0
+  "$bin" search "$q" "$dir" >"$out" 2>/dev/null &
+  pid=$!
+  ( sleep 2; kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid" 2>/dev/null; rc=$?
+  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  if [ "$rc" -eq 0 ]; then
+    ids=$(sed -n 's/^[[:space:]]*[0-9][0-9]*\.[[:space:]]*\[[^]]*\][[:space:]]*\[[ 0-9.]*\][[:space:]]*\([^ ]*\).*/\1/p' "$out" | head -3 | paste -sd, - | sed 's/,/, /g')
+    [ -n "$ids" ] && printf ' Closest existing notes (okf search): %s.' "$ids"
+  fi
+  rm -f "$out"
+  return 0
+}
+
 case "$FP" in
   # OKF reserved files (§8/§9) are structure, not knowledge — they own no failure
   # class, so the lesson-reuse prompt is a false positive on them.
   */.claude/lessons/index.md|*/.claude/lessons/log.md|*/.claude/lessons/README.md) ;;
   */.claude/lessons/*)
     # The lessons store is small and fully readable — a duplicate is always avoidable.
-    jq -n --arg fp "$FP" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:("Lesson-reuse check (hook-enforced): you are about to CREATE a new lesson at " + $fp + ". FIRST read ~/.claude/lessons/index.md (the full store is ~38 files / 37k tokens — read it, do not guess) and check whether an existing lesson already owns this failure class; several families already exist (verify-the-method-before-the-result, multi-agent-coordination, writing-it-down-is-not-shipping-it). Prefer ADDING an addendum to the owning lesson and linking it from its family parent. Create a new file only when the trap is genuinely distinct, and say in one line which existing lesson it is NOT.")}}'
-    ;;
+    jq -n --arg fp "$FP" --arg extra "$(closest_notes)" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:("Lesson-reuse check (hook-enforced): you are about to CREATE a new lesson at " + $fp + ". FIRST read ~/.claude/lessons/index.md (the full store is ~38 files / 37k tokens — read it, do not guess) and check whether an existing lesson already owns this failure class; several families already exist (verify-the-method-before-the-result, multi-agent-coordination, writing-it-down-is-not-shipping-it). Prefer ADDING an addendum to the owning lesson and linking it from its family parent. Create a new file only when the trap is genuinely distinct, and say in one line which existing lesson it is NOT." + $extra)}}'
+    exit 0 ;;
   */docs/*|*/doc/*)
-    jq -n --arg fp "$FP" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:("Doc-reuse check (hook-enforced): you are about to CREATE a new durable doc at " + $fp + ". FIRST search for an existing home (your knowledge-base search for vault content, or grep existing *.md in the repo) and prefer UPDATING it. Note: search_notes is title-biased with index lag — no hits does not mean absent. Create new only when no suitable home exists, and state why in one line.")}}'
-    ;;
+    jq -n --arg fp "$FP" --arg extra "$(closest_notes)" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:("Doc-reuse check (hook-enforced): you are about to CREATE a new durable doc at " + $fp + ". FIRST search for an existing home (your knowledge-base search for vault content, or grep existing *.md in the repo) and prefer UPDATING it. Note: search_notes is title-biased with index lag — no hits does not mean absent. Create new only when no suitable home exists, and state why in one line." + $extra)}}'
+    exit 0 ;;
 esac
 
 # Extra durable-doc locations: one shell glob per line in ~/.config/okf/doc-dirs (OKF_DOC_DIRS_FILE
@@ -34,7 +59,7 @@ if [ -r "$CFG" ]; then
     # shellcheck disable=SC2254  # the glob comes from the user's own config on purpose
     case "$FP" in
       $pat)
-        jq -n --arg fp "$FP" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:("Doc-reuse check (hook-enforced): you are about to CREATE a new durable doc at " + $fp + ". FIRST search for an existing home (your knowledge-base search for vault content, or grep existing *.md in the repo) and prefer UPDATING it. Create new only when no suitable home exists, and say why in one line.")}}' 2>/dev/null
+        jq -n --arg fp "$FP" --arg extra "$(closest_notes)" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:("Doc-reuse check (hook-enforced): you are about to CREATE a new durable doc at " + $fp + ". FIRST search for an existing home (your knowledge-base search for vault content, or grep existing *.md in the repo) and prefer UPDATING it. Create new only when no suitable home exists, and say why in one line." + $extra)}}' 2>/dev/null
         break ;;
     esac
   done < "$CFG" 2>/dev/null
