@@ -2034,6 +2034,39 @@ env PATH="$H21/bin:$PATH" OKF_L2_TIMEOUT=2 "$CHECK" "$H21/b" >"$TMP/h21t.txt" 2>
 grep -q "timed out after 2 s" "$TMP/h21t.txt" && ok "LT-21d an okflint that ignores TERM is reported as timed out" || bad "LT-21d ignores TERM" "$(grep -n L2 "$TMP/h21t.txt" | head -2)"
 pkill -f '^sleep 8$' 2>/dev/null
 
+# LT-20p (issue #15): an ignore file that excludes nothing changes nothing, even when every note is
+# behind a symlinked directory.
+SL="$TMP/sl15"; mkdir -p "$SL/b" "$SL/out"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$SL/b/index.md"
+printf -- '---\ntype: Lesson\ntitle: S\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2000-01-01"\n---\nx\n' > "$SL/out/stale.md"
+ln -s "$SL/out" "$SL/b/lnk"
+"$CHECK" "$SL/b" --fail-stale >/dev/null 2>&1; rc0=$?
+printf '# nothing\n' > "$SL/b/.okfignore"
+"$CHECK" "$SL/b" --fail-stale >"$TMP/sl15.txt" 2>&1; rc1=$?
+{ [ "$rc0" = "4" ] && [ "$rc1" = "4" ] && ! grep -q "excludes every note" "$TMP/sl15.txt"; } \
+  && ok "LT-20p a no-op .okfignore keeps the verdict (exit $rc0 -> $rc1) and prints no false message" \
+  || bad "LT-20p no-op ignore file" "without=$rc0 with=$rc1 $(grep -n IGNORE "$TMP/sl15.txt" | head -1)"
+# LT-20q (issue #16): a leading **/ also matches at the bundle root.
+GQ="$TMP/gq16"; mkdir -p "$GQ/a"; for n in x.md a/x.md keep.md; do printf '# n\n' > "$GQ/$n"; done; printf '**/x.md\n' > "$GQ/.okfignore"
+got=$(bash "$HERE/ignore-lib.sh" --list "$GQ" 2>/dev/null | tr '\0' '\n' | sort | tr '\n' ' ')
+[ "$got" = "keep.md " ] && ok "LT-20q **/x.md excludes x.md at the root and a/x.md" || bad "LT-20q leading **/" "kept=[$got]"
+printf '/**/x.md\n' > "$GQ/.okfignore"
+got=$(bash "$HERE/ignore-lib.sh" --list "$GQ" 2>/dev/null | tr '\0' '\n' | sort | tr '\n' ' ')
+[ "$got" = "keep.md " ] && ok "LT-20q2 /**/x.md behaves like **/x.md" || bad "LT-20q2 slash then **/" "kept=[$got]"
+# LT-20r (review): excluding only NON-note files must not claim 'excludes every note'.
+JN="$TMP/jn"; mkdir -p "$JN/b"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$JN/b/index.md"; printf '{}\n' > "$JN/b/x.json"; printf '*.json\n' > "$JN/b/.okfignore"
+"$CHECK" "$JN/b" >"$TMP/jn.txt" 2>&1; rc=$?
+{ [ "$rc" = "0" ] && ! grep -q "excludes every note" "$TMP/jn.txt"; } && ok "LT-20r excluding only a non-note file is not 'every note' (exit $rc)" || bad "LT-20r non-note exclusion" "rc=$rc $(grep -n IGNORE "$TMP/jn.txt" | head -1)"
+# LT-22 (issue #18): the status vocabulary exists twice; the copies must stay equal.
+tpl=$(sed -n 's/.*status_values: \[\(.*\)\].*/\1/p' "$HERE/../config/okf-base.yaml.template" | head -1 | tr -d ' ' | tr ',' '\n' | sort | tr '\n' ' ')
+lib=$(sed -n 's/^function okfstatusok.*{ return \(.*\) }$/\1/p' "$HERE/l3-lib.sh" | grep -o '"[a-z]*"' | tr -d '"' | sort | tr '\n' ' ')
+{ [ -n "$tpl" ] && [ "$tpl" = "$lib" ]; } && ok "LT-22 status values in okf-base.yaml.template equal l3-lib.sh ($lib)" || bad "LT-22 status parity" "template=[$tpl] l3-lib=[$lib]"
+# LT-23 (issue #19): every user-facing environment variable is documented in README and SKILL.md.
+miss=""; for v in OKF_L2_TIMEOUT OKF_INSTALL_TIMEOUT OKF_DOC_DIRS_FILE OKF_SEARCH_BIN OKF_AUTO_INSTALL; do
+  grep -q "$v" "$HERE/../../README.md" 2>/dev/null || miss="$miss README:$v"
+  grep -q "$v" "$HERE/../skills/okf/SKILL.md" 2>/dev/null || miss="$miss SKILL:$v"
+done
+[ -z "$miss" ] && ok "LT-23 user-facing environment variables are documented" || bad "LT-23 env docs" "missing:$miss"
+
 echo
 if [ "$SKIPPED" -gt 0 ]; then
   echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"

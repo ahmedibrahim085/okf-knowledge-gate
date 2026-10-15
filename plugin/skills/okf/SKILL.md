@@ -35,7 +35,7 @@ slow one (2 s limit) or a failing one: the reminder is unchanged.
 ## Ignoring paths (`.okfignore`)
 
 A `.okfignore` at the bundle root (one glob per line, `#` comments, trailing `/` = directories
-only, no `/` = a name at any depth, `!` unsupported) keeps paths such as `archive/` or `.trash/`
+only, no `/` = a name at any depth, a leading `**/` = any depth with the root, `!` unsupported) keeps paths such as `archive/` or `.trash/`
 out of every layer, `okf-verify` included. The run prints `ignore: N file(s) excluded`; a file that
 excludes every note exits 2. Never create it yourself: only `okf-check --init-ignore <bundle>`
 writes it, once, on the owner's request.
@@ -82,6 +82,7 @@ lessons hook, from one shared `scripts/l3-lib.sh`):
 - A non-zero-padded date (`2026-9-3`) is normalised before the compare; a `stale_after`
   that is not a date at all is reported as **malformed**, never passed.
 - `status` outside stable, draft, deprecated is reported.
+- `OKF_L2_TIMEOUT=<seconds>` (default 120) cuts off a hung okflint in L2: exit 2, "timed out". `OKF_INSTALL_TIMEOUT` (200) bounds `--install-deps`. `OKF_AUTO_INSTALL=1` lets the session-start check install; it is off by default. `OKF_SEARCH_BIN` names the `okf` search binary; `OKF_DOC_DIRS_FILE` the extra doc-reuse locations file.
 - `OKF_TODAY=YYYY-MM-DD` pins "now" (tests and replays). Any other value exits 2, and a
   valid pin prints a NOTE line so a pinned run cannot pass for a real one.
 - A scan that cannot run (crashed awk, missing `l3-lib.sh`, unreadable file) exits 2

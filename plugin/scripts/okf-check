@@ -46,7 +46,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.7.1"
+VERSION="0.7.2"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -1261,16 +1261,22 @@ if [ -f "$BUNDLE/.okfignore" ]; then
     say "  IGNORE           could not apply .okfignore (see the message above) - no verdict is possible"
     exit $EXIT_DEP
   fi
-  read -r _kept IGNORED <<< "$_ml"
-  okfignore_list "$BUNDLE" > "$TMP/keep.lst" 2>/dev/null
-  export OKF_KEEP_LIST="$TMP/keep.lst"
-  LAYER_BUNDLE="$TMP/okfmirror"; MIRROR_ROOT="$LAYER_BUNDLE"
-  say "  ignore           .okfignore: $IGNORED file(s) excluded, $_kept checked"
-  if [ "${_kept:-0}" -eq 0 ]; then
-    say "  IGNORE           .okfignore excludes every note - nothing was checked (not a pass)"
-    worse() { :; }; worst=$EXIT_DEP
-    [ "$JSON" -eq 1 ] && printf '{"bundle":"%s","exit":%d,"ignored":%s}\n' "$BUNDLE" "$EXIT_DEP" "${IGNORED:-0}"
-    exit $EXIT_DEP
+  read -r _kept _exnotes _exall <<< "$_ml"
+  IGNORED="$_exall"
+  if [ "${_exall:-0}" -gt 0 ]; then
+    say "  ignore           .okfignore: $IGNORED file(s) excluded, $_kept checked"
+  else
+    say "  ignore           .okfignore: 0 file(s) excluded"
+  fi
+  if [ "${_exall:-0}" -gt 0 ]; then   # an ignore file that excludes nothing changes nothing (#15)
+    okfignore_list "$BUNDLE" > "$TMP/keep.lst" 2>/dev/null
+    export OKF_KEEP_LIST="$TMP/keep.lst"
+    LAYER_BUNDLE="$TMP/okfmirror"; MIRROR_ROOT="$LAYER_BUNDLE"
+    if [ "${_kept:-0}" -eq 0 ] && [ "${_exnotes:-0}" -gt 0 ]; then
+      say "  IGNORE           .okfignore excludes every note - nothing was checked (not a pass)"
+      [ "$JSON" -eq 1 ] && printf '{"bundle":"%s","exit":%d,"ignored":%s}\n' "$BUNDLE" "$EXIT_DEP" "${IGNORED:-0}"
+      exit $EXIT_DEP
+    fi
   fi
 fi
 FP_BEFORE=$(bundle_fingerprint "$BUNDLE")

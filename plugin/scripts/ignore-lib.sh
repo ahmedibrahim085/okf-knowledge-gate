@@ -4,7 +4,8 @@
 #
 # Syntax (v1): one gitignore-style glob per line. `#` starts a comment. A trailing `/` matches
 # directories only. A pattern with no `/` matches a file or directory NAME at any depth. A pattern
-# with a `/` is anchored at the bundle root. `*` also crosses `/` (simpler than gitignore).
+# with a `/` is anchored at the bundle root. A leading `**/` matches at any depth, the root
+# included. `*` also crosses `/` (simpler than gitignore).
 # Negation (`!pat`) is not supported and is skipped with a notice on stderr.
 # The file is only ever READ by the plugin. `okf-check --init-ignore` is the only writer.
 
@@ -31,7 +32,7 @@ okfignore_load() {
 
 # okfignore_match <relative file path>: exit 0 when a loaded pattern excludes it.
 okfignore_match() {
-  local rel="$1" pat g dironly anchored i n prefix
+  local rel="$1" pat g dironly anchored anywhere i n prefix
   local -a comp
   [ "${#OKFIGNORE_PATTERNS[@]}" -gt 0 ] || return 1
   IFS=/ read -r -a comp <<< "$rel"
@@ -39,7 +40,9 @@ okfignore_match() {
   for pat in "${OKFIGNORE_PATTERNS[@]}"; do
     g=$pat; dironly=0; anchored=0
     case "$g" in */) dironly=1; g=${g%/};; esac
+    anywhere=0
     case "$g" in /*) anchored=1; g=${g#/};; esac
+    case "$g" in '**/'*) g=${g#'**/'}; anywhere=1;; esac   # gitignore: any depth, root included
     case "$g" in */*) anchored=1;; esac
     [ -n "$g" ] || continue
     if [ "$anchored" -eq 0 ]; then
@@ -53,6 +56,7 @@ okfignore_match() {
         prefix=${prefix:+$prefix/}${comp[$i]}
         [ "$dironly" -eq 1 ] && [ "$i" -eq $((n-1)) ] && continue
         case "$prefix" in $g) return 0;; esac
+        [ "$anywhere" -eq 1 ] && case "$prefix" in */$g) return 0;; esac
       done
     fi
   done
@@ -74,12 +78,12 @@ okfignore_list() {
 }
 
 # okfignore_mirror <bundle> <dest>: copy the non-ignored notes and config (*.md, *.yaml, *.yml,
-# *.json) into <dest>. Prints "<kept> <excluded>" (counts of concept notes: *.md other than
+# *.json) into <dest>. Prints "<kept> <excluded-notes> <excluded-files>" (the first two count concept notes: *.md other than
 # index.md and log.md). Same file set L1 sees without .okfignore: symlinked directories are not
 # followed. Exit 1 (naming the file on stderr) when a copy fails, so a note is never dropped
 # silently. Nothing is deleted outside <dest>.
 okfignore_mirror() {
-  local bundle="${1%/}" dest="$2" f rel kept=0 excl=0 isnote rc
+  local bundle="${1%/}" dest="$2" f rel kept=0 excl=0 exall=0 isnote rc
   okfignore_load "$bundle"; rc=$?; [ "$rc" -eq 2 ] && return 2
   [ -n "$dest" ] && [ "$dest" != / ] || return 2
   rm -rf "$dest"; mkdir -p "$dest"
@@ -89,6 +93,7 @@ okfignore_mirror() {
     isnote=0
     case "$rel" in *.md) case "${rel##*/}" in index.md|log.md) ;; *) isnote=1;; esac;; esac
     if okfignore_match "$rel"; then
+      exall=$((exall+1))
       [ "$isnote" -eq 1 ] && excl=$((excl+1))
       continue
     fi
@@ -96,7 +101,7 @@ okfignore_mirror() {
     cp -p "$f" "$dest/$rel" 2>/dev/null || { echo "okfignore: cannot copy $rel" >&2; return 1; }
     [ "$isnote" -eq 1 ] && kept=$((kept+1))
   done < <(find "$bundle" -name .git -prune -o \( -type f -o -type l \) \( -name '*.md' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) -print0 2>/dev/null)
-  printf '%s %s\n' "$kept" "$excl"
+  printf '%s %s %s\n' "$kept" "$excl" "$exall"
 }
 
 # okfignore_starter: the file `--init-ignore` writes.

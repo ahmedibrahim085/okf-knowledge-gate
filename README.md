@@ -91,8 +91,20 @@ Read the exit code, do not just test for zero:
 | 5 | `--selftest` failed: a gate stopped firing |
 | 6 | The bundle changed during the scan (with `--fail-on-change`) |
 
-**Leave paths out:** put globs in `<bundle>/.okfignore` (`archive/`, `.trash/`). Every layer skips
+**Leave paths out:** put globs in `<bundle>/.okfignore` (`archive/`, `.trash/`; a leading `**/` matches at any depth, the root included). Every layer skips
 them and the run says how many files it excluded. The plugin never creates the file by itself.
+
+**Environment variables** (all optional):
+
+| Variable | Default | Effect |
+|---|---|---|
+| `OKF_L2_TIMEOUT` | 120 | Seconds before a hung `okflint` is cut off in L2 (exit 2, named). `0` or a non-number means the default. |
+| `OKF_INSTALL_TIMEOUT` | 200 | Seconds before `--install-deps` stops the installer. |
+| `OKF_AUTO_INSTALL` | off | `1` lets the session-start check run the install plan itself. |
+| `OKF_SEARCH_BIN` | `okf` on PATH | The `okf` search binary the doc-reuse reminder uses to name the closest notes. |
+| `OKF_DOC_DIRS_FILE` | `~/.config/okf/doc-dirs` | File of extra shell globs for locations the doc-reuse guard watches. |
+
+`OKF_TODAY`, `OKF_PINNED_VERSIONS` and `OKF_BUNDLE_DIR` exist for tests and replays.
 
 The full behaviour contract, one row per scenario with its test, is
 [`docs/spec.md`](docs/spec.md).

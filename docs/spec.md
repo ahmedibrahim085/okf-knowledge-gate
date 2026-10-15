@@ -248,6 +248,12 @@ and the brand-new machine this tool targets does not have it.
 | LT-21b | `OKF_L2_TIMEOUT=0` | falls back to the default; never an instant kill | ✅ |
 | LT-21c | a normal run | leaves no timer `sleep` behind | ✅ |
 | LT-21d | okflint ignores TERM | still reported as timed out | ✅ |
+| LT-20p | `.okfignore` that excludes nothing | same verdict and exit as no file (also with notes behind a symlinked dir) | ✅ |
+| LT-20q | `**/x.md` | also matches `x.md` at the bundle root | ✅ |
+| LT-20q2 | `/**/x.md` | behaves like `**/x.md` | ✅ |
+| LT-20r | only non-note files excluded | never reports "excludes every note" | ✅ |
+| LT-22 | status vocabulary in the template and in l3-lib | equal as sets | ✅ |
+| LT-23 | user-facing env variables | documented in README and SKILL.md | ✅ |
 | I-1a/b | `okf-verify` on a bundle with `.okfignore` | an ignored note's claims are not verified | ✅ |
 | LT-10 | okflint crashes on a note (non-UTF-8) | L2 prints a `reason:` line with its last error line; skipped, stated, when okflint is absent | ✅ |
 

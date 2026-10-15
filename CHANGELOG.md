@@ -9,6 +9,18 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-10-15
+
+### Fixed
+- A `.okfignore` that excludes no file no longer changes the verdict. With every note behind a
+  symlinked directory it turned exit 4 into exit 2 and said "excludes every note" (#15).
+- A leading `**/` in `.okfignore` also matches at the bundle root, with or without a leading `/` (#16).
+- Excluding only non-note files (for example `*.json`) no longer reports "excludes every note".
+
+### Added
+- A test that the status vocabulary in `okf-base.yaml.template` and in `l3-lib.sh` stay equal (#18).
+- README and SKILL.md document the user-facing environment variables (#19).
+
 ## [0.7.1] - 2026-10-15
 
 ### Fixed
