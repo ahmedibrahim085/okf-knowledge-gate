@@ -82,6 +82,7 @@ lessons hook, from one shared `scripts/l3-lib.sh`):
 - A non-zero-padded date (`2026-9-3`) is normalised before the compare; a `stale_after`
   that is not a date at all is reported as **malformed**, never passed.
 - `status` outside stable, draft, deprecated is reported.
+- `OKF_L2_ISOLATE_MAX=<notes>` (default 200): when okflint crashes on a bundle this small, L2 names the crashing notes, checks the rest and exits 2 (3 when the checked notes fail).
 - `OKF_L2_TIMEOUT=<seconds>` (default 120) cuts off a hung okflint in L2: exit 2, "timed out". `OKF_INSTALL_TIMEOUT` (200) bounds `--install-deps`. `OKF_AUTO_INSTALL=1` lets the session-start check install; it is off by default. `OKF_SEARCH_BIN` names the `okf` search binary; `OKF_DOC_DIRS_FILE` the extra doc-reuse locations file.
 - `OKF_TODAY=YYYY-MM-DD` pins "now" (tests and replays). Any other value exits 2, and a
   valid pin prints a NOTE line so a pinned run cannot pass for a real one.

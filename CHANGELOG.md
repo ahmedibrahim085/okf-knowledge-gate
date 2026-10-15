@@ -9,6 +9,14 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-15
+
+### Added
+- **Per-note isolation in L2.** When okflint crashes on a bundle of at most `OKF_L2_ISOLATE_MAX`
+  notes (default 200), L2 runs it note by note (about 0.2 s each), names the notes it crashes on,
+  and checks the rest. The run exits 2 (or 3 when the checked notes fail): a crashed note is never a pass. Larger bundles keep the
+  plain report. The whole rescue shares one `OKF_L2_TIMEOUT` budget (#17).
+
 ## [0.7.2] - 2026-10-15
 
 ### Fixed

@@ -254,6 +254,13 @@ and the brand-new machine this tool targets does not have it.
 | LT-20r | only non-note files excluded | never reports "excludes every note" | ✅ |
 | LT-22 | status vocabulary in the template and in l3-lib | equal as sets | ✅ |
 | LT-23 | user-facing env variables | documented in README and SKILL.md | ✅ |
+| LT-24a | okflint crashes on one note of a small bundle | the note is named, the others are checked, exit 2 | ✅ |
+| LT-24b | more notes than `OKF_L2_ISOLATE_MAX` | no rescue: the plain "crashed" report | ✅ |
+| LT-24c | no crashing note | unchanged | ✅ |
+| LT-24d | rescue run | the mirror is a full copy: no fabricated reserved-file error, no temp path | ✅ |
+| LT-24e | every concept note crashes | no PASS line, no "others were checked" | ✅ |
+| LT-24f | several crashing notes | listed sorted | ✅ |
+| LT-24g | findings in the checked notes plus a crash | exit 3, crashed notes still named | ✅ |
 | I-1a/b | `okf-verify` on a bundle with `.okfignore` | an ignored note's claims are not verified | ✅ |
 | LT-10 | okflint crashes on a note (non-UTF-8) | L2 prints a `reason:` line with its last error line; skipped, stated, when okflint is absent | ✅ |
 

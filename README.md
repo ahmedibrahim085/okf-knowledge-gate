@@ -99,6 +99,7 @@ them and the run says how many files it excluded. The plugin never creates the f
 | Variable | Default | Effect |
 |---|---|---|
 | `OKF_L2_TIMEOUT` | 120 | Seconds before a hung `okflint` is cut off in L2 (exit 2, named). `0` or a non-number means the default. |
+| `OKF_L2_ISOLATE_MAX` | 200 | When okflint crashes on a bundle of at most this many notes, L2 finds the crashing notes (one run each, about 0.2 s), names them and checks the rest. Larger bundles keep the plain "crashed" report. |
 | `OKF_INSTALL_TIMEOUT` | 200 | Seconds before `--install-deps` stops the installer. |
 | `OKF_AUTO_INSTALL` | off | `1` lets the session-start check run the install plan itself. |
 | `OKF_SEARCH_BIN` | `okf` on PATH | The `okf` search binary the doc-reuse reminder uses to name the closest notes. |

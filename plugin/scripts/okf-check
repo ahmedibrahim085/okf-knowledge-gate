@@ -46,7 +46,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.7.2"
+VERSION="0.8.0"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -138,7 +138,8 @@ for c in python3 python; do command -v "$c" >/dev/null 2>&1 && { PY="$c"; break;
 # MIRROR_ROOT is set only when a .okfignore made the layers read a filtered copy; the report must
 # name the bundle the user pointed at, never the temp copy.
 MIRROR_ROOT=""
-say()  { [ "$JSON" -eq 1 ] && return 0; local m="$*"; [ -n "$MIRROR_ROOT" ] && m=${m//"$MIRROR_ROOT"/"$BUNDLE"}; printf '%s\n' "$m"; }
+L2_MIRROR_ROOT=""
+say()  { [ "$JSON" -eq 1 ] && return 0; local m="$*"; [ -n "$MIRROR_ROOT" ] && m=${m//"$MIRROR_ROOT"/"$BUNDLE"}; [ -n "$L2_MIRROR_ROOT" ] && m=${m//"$L2_MIRROR_ROOT"/"$BUNDLE"}; printf '%s\n' "$m"; }
 # say_capped <limit> <indent>  — lines on stdin, capped, and HONEST about it.
 # Four dumps cut at 10-12 lines with no note of the cut: a reader sees twelve
 # §11 errors and concludes there are twelve. Same silent-cap defect fixed in
@@ -651,7 +652,68 @@ PY
 }
 
 # ------------------------------------------------------- L2 house profile
+# l2_isolate: okflint crashed on the whole bundle. Find the notes it crashes on (one run per note,
+# time-bounded), copy the rest into a mirror and run okflint once on that. Only for bundles of at
+# most OKF_L2_ISOLATE_MAX notes (default 200): each run is about 0.2 s. Sets, in the CALLER's
+# scope (bash dynamic scoping): bundle, ec, and the global L2_CRASHED. Returns 1 when it did not
+# help (too many notes, no single note to blame, or the rerun crashed too).
+l2_isolate() {
+  local max="${OKF_L2_ISOLATE_MAX:-200}" f rel n=0 probe="$TMP/l2probe" mirror="$TMP/l2mirror" prc plimit surv=0 start=$SECONDS c skip
+  local -a crashed=()
+  case "$max" in ''|*[!0-9]*) max=200;; esac
+  while IFS= read -r -d '' f; do n=$((n+1)); done < <(find "$bundle" -name '*.md' -type f -print0 2>/dev/null)
+  [ "$n" -gt 0 ] && [ "$n" -le "$max" ] || return 1
+  plimit=8; [ "$l2limit" -lt "$plimit" ] && plimit="$l2limit"
+  L2_CRASHED=()
+  # Pass 1: which notes does okflint crash on (one run each). The whole pass shares ONE budget,
+  # OKF_L2_TIMEOUT: a slow okflint must not turn into minutes of waiting.
+  while IFS= read -r -d '' f; do
+    [ $((SECONDS - start)) -lt "$l2limit" ] || return 1
+    rel=${f#"$bundle"/}
+    rm -rf "$probe"; mkdir -p "$probe/$(dirname "$rel")"
+    cp "$bundle/okf-base.yaml" "$probe/" 2>/dev/null; cp "$f" "$probe/$rel" 2>/dev/null
+    run_limited "$plimit" "$TMP/l2probe.out" sh -c 'cd "$1" && exec okflint validate . --manifest okf-base.yaml --json' _ "$probe"; prc=$?
+    case "$prc" in
+      0|1) case "${rel##*/}" in index.md|log.md) ;; *) surv=$((surv+1));; esac ;;   # concepts only
+      *)   crashed+=("$rel") ;;
+    esac
+  done < <(find "$bundle" -name '*.md' -type f -print0 2>/dev/null)
+  [ "${#crashed[@]}" -gt 0 ] && [ "$surv" -gt 0 ] || return 1
+  # Pass 2: a full COPY of the bundle without the crashed notes (reserved files, manifest and assets
+  # stay, so okflint sees the same tree), then one run on it.
+  rm -rf "$mirror"; mkdir -p "$mirror"
+  while IFS= read -r -d '' f; do
+    rel=${f#"$bundle"/}; skip=0
+    for c in "${crashed[@]}"; do [ "$c" = "$rel" ] && { skip=1; break; }; done
+    [ "$skip" -eq 1 ] && continue
+    mkdir -p "$mirror/$(dirname "$rel")" && cp -p "$f" "$mirror/$rel" 2>/dev/null
+  done < <(find "$bundle" -name .git -prune -o -type f -print0 2>/dev/null)
+  run_limited "$l2limit" "$TMP/l2.out" sh -c 'cd "$1" && exec okflint validate . --manifest okf-base.yaml --json' _ "$mirror"; ec=$?
+  cat "$TMP/l2.out" "$TMP/l2.out.err" > "$TMP/l2.txt" 2>/dev/null
+  case "$ec" in
+    0|1) bundle="$mirror"; L2_MIRROR_ROOT="$mirror"
+         while IFS= read -r c; do [ -n "$c" ] && L2_CRASHED+=("$c"); done < <(printf '%s\n' "${crashed[@]}" | sort)
+         return 0;;
+  esac
+  return 1
+}
+
+L2_CRASHED=()
+# run_profile: the L2 core, plus the crashed-note report and its exit status (issue #17).
 run_profile() {
+  local rc k
+  L2_CRASHED=()
+  __l2_core "$@"; rc=$?
+  if [ "${#L2_CRASHED[@]}" -gt 0 ]; then
+    say "  L2 profile       COULD NOT RUN on ${#L2_CRASHED[@]} note(s) - okflint crashed on:"
+    for k in "${!L2_CRASHED[@]}"; do say "                   $(printf '%s' "${L2_CRASHED[$k]}" | tr '\n\r\t' '   ')"; done
+    say "                   (a validator bug, not a verdict on the note; the other notes were checked above)"
+    [ "$rc" -eq "$EXIT_PROFILE" ] || rc=$EXIT_DEP
+  fi
+  return $rc
+}
+
+__l2_core() {
   # Two statements on purpose: `local a="$1" b="$a/x"` expands $a BEFORE it is
   # assigned, which under `set -u` is a fatal unbound-variable error. Caught by
   # --selftest, which is the entire reason --selftest exists.
@@ -693,10 +755,16 @@ run_profile() {
     143|137) say "  L2 profile       COULD NOT RUN — okflint timed out after ${l2limit} s (set OKF_L2_TIMEOUT to raise the limit)"
          say "                   NOT a pass: house rules were never evaluated."
          return $EXIT_DEP ;;
-    *)   say "  L2 profile       COULD NOT RUN — okflint exited $ec (crashed or missing)"
+    *)   if l2_isolate; then :   # ec/bundle now describe the survivors; the crashed notes are in L2_CRASHED
+         else
+         case "$ec" in
+           143|137) say "  L2 profile       COULD NOT RUN — okflint timed out after ${l2limit} s (set OKF_L2_TIMEOUT to raise the limit)";;
+           *)       say "  L2 profile       COULD NOT RUN — okflint exited $ec (crashed or missing)";;
+         esac
          say "                   NOT a pass: house rules were never evaluated."
          say_capped 3 "                   " < "$TMP/l2.txt"
-         return $EXIT_DEP ;;
+         return $EXIT_DEP
+         fi ;;
   esac
 
   # Parse the structured report. If okflint signalled findings (exit 1) but we

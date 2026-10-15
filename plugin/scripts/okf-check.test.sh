@@ -2061,11 +2061,64 @@ tpl=$(sed -n 's/.*status_values: \[\(.*\)\].*/\1/p' "$HERE/../config/okf-base.ya
 lib=$(sed -n 's/^function okfstatusok.*{ return \(.*\) }$/\1/p' "$HERE/l3-lib.sh" | grep -o '"[a-z]*"' | tr -d '"' | sort | tr '\n' ' ')
 { [ -n "$tpl" ] && [ "$tpl" = "$lib" ]; } && ok "LT-22 status values in okf-base.yaml.template equal l3-lib.sh ($lib)" || bad "LT-22 status parity" "template=[$tpl] l3-lib=[$lib]"
 # LT-23 (issue #19): every user-facing environment variable is documented in README and SKILL.md.
-miss=""; for v in OKF_L2_TIMEOUT OKF_INSTALL_TIMEOUT OKF_DOC_DIRS_FILE OKF_SEARCH_BIN OKF_AUTO_INSTALL; do
+miss=""; for v in OKF_L2_TIMEOUT OKF_L2_ISOLATE_MAX OKF_INSTALL_TIMEOUT OKF_DOC_DIRS_FILE OKF_SEARCH_BIN OKF_AUTO_INSTALL; do
   grep -q "$v" "$HERE/../../README.md" 2>/dev/null || miss="$miss README:$v"
   grep -q "$v" "$HERE/../skills/okf/SKILL.md" 2>/dev/null || miss="$miss SKILL:$v"
 done
 [ -z "$miss" ] && ok "LT-23 user-facing environment variables are documented" || bad "LT-23 env docs" "missing:$miss"
+
+# LT-24 (issue #17): a note that crashes okflint is named and the others are still checked;
+# above OKF_L2_ISOLATE_MAX notes the rescue is skipped (today's report).
+I24="$TMP/i24"; mkbundle "$I24/b"; mkdir -p "$I24/bin"
+cp "$HERE/../config/okf-base.yaml.template" "$I24/b/okf-base.yaml"
+for n in good1 good2 bad; do printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nx\n' > "$I24/b/$n.md"; done
+cat > "$I24/bin/okflint" <<'STUB'
+#!/bin/sh
+case "$*" in *--version*|*--help*|*validate-manifest*) echo "okflint 0.5.0"; exit 0;; esac
+if [ -f bad.md ]; then echo "Traceback: boom" >&2; exit 3; fi
+echo '[]'; exit 0
+STUB
+chmod +x "$I24/bin/okflint"
+env PATH="$I24/bin:$PATH" "$CHECK" "$I24/b" >"$TMP/i24a.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 2 ] && grep -q "bad.md" "$TMP/i24a.txt" && grep -q "L2 profile  *PASS" "$TMP/i24a.txt" && ! grep -q "exited 3 (crashed or missing)" "$TMP/i24a.txt"; } \
+  && ok "LT-24a a crashing note is named, the others are checked, exit 2 (never a pass)" \
+  || bad "LT-24a isolation" "rc=$rc $(grep -n 'L2\|bad.md' "$TMP/i24a.txt" | head -4 | tr '\n' ' ')"
+env PATH="$I24/bin:$PATH" OKF_L2_ISOLATE_MAX=1 "$CHECK" "$I24/b" >"$TMP/i24b.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 2 ] && grep -q "exited 3 (crashed or missing)" "$TMP/i24b.txt"; } \
+  && ok "LT-24b above the cap the rescue is skipped and the old report is kept" \
+  || bad "LT-24b cap" "rc=$rc $(grep -n 'L2' "$TMP/i24b.txt" | head -3 | tr '\n' ' ')"
+rm -f "$I24/b/bad.md"
+env PATH="$I24/bin:$PATH" "$CHECK" "$I24/b" >"$TMP/i24c.txt" 2>&1; rc=$?
+[ "$rc" -eq 0 ] && ok "LT-24c no crashing note: unchanged, exit 0" || bad "LT-24c clean" "rc=$rc"
+
+# LT-24d-g (review round 1): the rescue mirror is a full copy (reserved files, assets), crashed notes
+# are sorted, all-crash is not a PASS, and findings still decide the exit.
+J24="$TMP/j24"; mkbundle "$J24/b"; mkdir -p "$J24/bin"; cp "$HERE/../config/okf-base.yaml.template" "$J24/b/okf-base.yaml"
+for n in good1 bad2 bad1; do printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nx\n' > "$J24/b/$n.md"; done
+cat > "$J24/bin/okflint" <<'STUB'
+#!/bin/sh
+case "$*" in *--version*|*--help*|*validate-manifest*) echo "okflint 0.5.0"; exit 0;; esac
+if [ -f bad1.md ] || [ -f bad2.md ]; then echo "boom" >&2; exit 3; fi
+if [ ! -f index.md ]; then echo '[{"severity":"error","code":"R201","file":"index.md","message":"reserved file missing"}]'; exit 1; fi
+if [ -f good1.md ] && [ -n "$FIND_GOOD" ]; then echo '[{"severity":"error","code":"S999","file":"good1.md","message":"finding"}]'; exit 1; fi
+echo '[]'; exit 0
+STUB
+chmod +x "$J24/bin/okflint"
+env PATH="$J24/bin:$PATH" "$CHECK" "$J24/b" >"$TMP/j24a.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 2 ] && ! grep -q "R201" "$TMP/j24a.txt" && ! grep -q "l2mirror" "$TMP/j24a.txt"; } \
+  && ok "LT-24d the rescue mirror keeps index.md: no fabricated R201, no temp path (exit $rc)" \
+  || bad "LT-24d reserved files" "rc=$rc $(grep -n 'R201\|l2mirror' "$TMP/j24a.txt" | head -2 | tr '\n' ' ')"
+a=$(grep -n "bad1.md" "$TMP/j24a.txt" | head -1 | cut -d: -f1); b=$(grep -n "bad2.md" "$TMP/j24a.txt" | head -1 | cut -d: -f1)
+{ [ -n "$a" ] && [ -n "$b" ] && [ "$a" -lt "$b" ]; } && ok "LT-24f crashed notes are listed sorted" || bad "LT-24f order" "bad1 line=$a bad2 line=$b"
+env PATH="$J24/bin:$PATH" FIND_GOOD=1 "$CHECK" "$J24/b" >"$TMP/j24c.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 3 ] && grep -q "S999" "$TMP/j24c.txt" && grep -q "bad1.md" "$TMP/j24c.txt"; } \
+  && ok "LT-24g findings in the checked notes keep exit 3 and the crashed notes are still named" \
+  || bad "LT-24g findings plus crash" "rc=$rc"
+for _f in "$J24/b"/*.md; do case "${_f##*/}" in index.md|log.md|bad1.md|bad2.md) ;; *) rm -f "$_f";; esac; done
+env PATH="$J24/bin:$PATH" "$CHECK" "$J24/b" >"$TMP/j24d.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 2 ] && ! grep -q "L2 profile  *PASS" "$TMP/j24d.txt" && ! grep -q "other notes were checked" "$TMP/j24d.txt"; } \
+  && ok "LT-24e when every note crashes there is no PASS line and no 'others were checked'" \
+  || bad "LT-24e all crash" "rc=$rc $(grep -n 'L2' "$TMP/j24d.txt" | head -3 | tr '\n' ' ')"
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then
