@@ -318,7 +318,9 @@ done < <(find "$PLUGIN/scripts" -type f -print0 2>/dev/null)
 # Traceability, not correctness: it proves a row is CLAIMED by some assertion,
 # which is what a ✅ asserts. Whether that assertion has teeth is what mutation
 # testing is for.
+# The public export keeps the spec at docs/spec.md (issue #11).
 SPEC="$MKT_ROOT/.okf/specs/okf-check.md"
+[ -f "$SPEC" ] || SPEC="$MKT_ROOT/docs/spec.md"
 if [ ! -f "$SPEC" ]; then
   skip "D-1 spec traceability — no spec beside this copy (installed plugin, not a source tree)"
 else

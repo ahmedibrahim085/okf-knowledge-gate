@@ -15,6 +15,9 @@ esac
 # closest_notes: " Closest existing notes (okf search): a, b, c." when a search binary exists.
 # Binary: OKF_SEARCH_BIN, else `okf` on PATH. Never installed or downloaded by the plugin. Any
 # problem (absent, slow, failing, empty) prints nothing: the reminder stays exactly as it was.
+# descendants PID: every child, grandchild... of PID (empty when pgrep is absent).
+descendants() { local c; for c in $(pgrep -P "$1" 2>/dev/null); do echo "$c"; descendants "$c"; done; }
+
 closest_notes() {
   local bin="${OKF_SEARCH_BIN:-}" dir q out pid wd rc ids
   [ -n "$bin" ] || bin=$(command -v okf 2>/dev/null)
@@ -24,10 +27,10 @@ closest_notes() {
   out=$(mktemp 2>/dev/null) || return 0
   "$bin" search "$q" "$dir" >"$out" 2>/dev/null &
   pid=$!
-  ( sleep 2; kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  ( sleep 2; kids=$(descendants "$pid"); kill -KILL "$pid" 2>/dev/null; [ -n "$kids" ] && kill -KILL $kids 2>/dev/null ) >/dev/null 2>&1 &
   wd=$!
   wait "$pid" 2>/dev/null; rc=$?
-  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  kill $(descendants "$wd") "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
   if [ "$rc" -eq 0 ]; then
     ids=$(sed -n 's/^[[:space:]]*[0-9][0-9]*\.[[:space:]]*\[[^]]*\][[:space:]]*\[[ 0-9.]*\][[:space:]]*\([^ ]*\).*/\1/p' "$out" | head -3 | paste -sd, - | sed 's/,/, /g')
     [ -n "$ids" ] && printf ' Closest existing notes (okf search): %s.' "$ids"

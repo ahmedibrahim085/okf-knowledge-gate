@@ -9,6 +9,19 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-10-15
+
+### Fixed
+- A hung `okflint` no longer stalls L2 for as long as it hangs. The call is cut off after
+  `OKF_L2_TIMEOUT` seconds (default 120) and the report says it timed out (#10).
+- The doc-reuse guard leaves no orphan child process when it kills a hung search binary (#9).
+- The spec-traceability test (D-1) runs in the public tree too: it finds the spec at
+  `docs/spec.md` (#11).
+
+### Added
+- Test fixtures captured from the real `okf search` output, including a two-digit score (#12).
+- `OKF_L2_TIMEOUT=0` means the default, and an okflint that ignores TERM is still reported as timed out.
+
 ## [0.7.0] - 2026-10-15
 
 ### Fixed

@@ -417,6 +417,79 @@ STUB
   grep -q "$phys\$" "$T19/argv.log" && ok "LT-19e a symlinked directory is resolved to its real path before the search" \
     || bad "LT-19e symlink resolved" "argv=$(cat "$T19/argv.log")"
   grep -q "other note" "$T19/argv.log" && ok "LT-19f the query is the words of the new file's name" || bad "LT-19f query words" "argv=$(cat "$T19/argv.log")"
+  # LT-19g (issue #12): output captured from the real okf v0.6.1 binary, 4 hits, 1-2 digit scores.
+  cat > "$T19/bin/okf-real" <<'REAL'
+#!/bin/sh
+cat <<'OUT'
+Found 4 matching concept(s):
+
+ 1. [context]    [1.84] alpha-note (Lesson)
+    about alpha topics
+    Matches: title, description, id, body
+
+ 2. [context]    [1.84] alpha-note-two (Lesson)
+    about alpha topics
+    Matches: title, description, id, body
+
+ 3. [context]    [1.21] alpha-three (Lesson)
+    about alpha topics
+    Matches: title, description, id, body
+
+ 4. [context]    [0.58] beta-other (Lesson)
+    about alpha topics
+    Matches: description, body
+
+OUT
+REAL
+  chmod +x "$T19/bin/okf-real"
+  cat > "$T19/bin/okf-real2" <<'REAL'
+#!/bin/sh
+cat <<'OUT'
+Found 3 matching concept(s):
+
+ 1. [context]    [10.56] alpha-note (Lesson)
+    alpha note about alpha note
+    Matches: title, tags, description, id, body
+
+ 2. [context]    [4.60] alpha-two (Lesson)
+    alpha topics
+    Matches: title, description, id, body
+
+ 3. [context]    [0.13] other-three (Lesson)
+    other
+    Matches: body
+
+OUT
+REAL
+  chmod +x "$T19/bin/okf-real2"
+  out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf-real2")
+  printf '%s' "$out" | grep -q "alpha-note, alpha-two, other-three" \
+    && ok "LT-19g2 real okf output with a two-digit score [10.56] parses" || bad "LT-19g2 two-digit score" "out=$(printf '%s' "$out" | head -c 240)"
+  out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf-real")
+  printf '%s' "$out" | grep -q "alpha-note, alpha-note-two, alpha-three" \
+    && ok "LT-19g real okf output (captured) parses to the three closest ids" || bad "LT-19g real output" "out=$(printf '%s' "$out" | head -c 240)"
+  # LT-19h (issue #9): a hung binary's child process is not left behind.
+  cat > "$T19/bin/okf-fork" <<'FORK'
+#!/bin/sh
+sleep 37 &
+wait
+FORK
+  chmod +x "$T19/bin/okf-fork"
+  g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf-fork" >/dev/null
+  sleep 1
+  cat > "$T19/bin/okf-grand" <<'GRAND'
+#!/bin/sh
+sh -c 'sleep 38; :' &
+wait
+GRAND
+  chmod +x "$T19/bin/okf-grand"
+  g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf-grand" >/dev/null
+  sleep 1
+  _gleft=$(pgrep -f 'sleep 38' | wc -l | tr -d ' '); pkill -f 'sleep 38' 2>/dev/null
+  [ "$_gleft" = "0" ] && ok "LT-19i no orphan GRANDCHILD is left either" || bad "LT-19i grandchild" "$_gleft process(es) left"
+  _left=$(pgrep -f 'sleep 37' | wc -l | tr -d ' ')
+  pkill -f 'sleep 37' 2>/dev/null
+  [ "$_left" = "0" ] && ok "LT-19h no orphan child is left after a hung search binary is killed" || bad "LT-19h orphan" "$_left process(es) left"
 else
   skip "LT-19 guard closest notes — guard or jq absent" "install jq"
 fi
@@ -1923,6 +1996,43 @@ PX="$TMP/pl-dangling"; mkbundle "$PX"; ln -s "$PX/nowhere.md" "$PX/d.md"
 printf '# c\n' > "$PX/.okfignore"
 "$CHECK" "$PX" >/dev/null 2>&1; rc1=$?
 [ "$rc0" = "$rc1" ] && ok "LT-20o a dangling symlink gives the same verdict with a no-op .okfignore (exit $rc1)" || bad "LT-20o dangling symlink" "without=$rc0 with=$rc1"
+
+# LT-21 (issue #10): a hung okflint is cut off and named; it never stalls the run.
+H21="$TMP/h21"; mkbundle "$H21/b"; mkdir -p "$H21/bin"
+cp "$HERE/../config/okf-base.yaml.template" "$H21/b/okf-base.yaml" 2>/dev/null
+cat > "$H21/bin/okflint" <<'STUB'
+#!/bin/sh
+case "$*" in *--version*|*--help*|*validate-manifest*) echo "okflint 0.5.0"; exit 0;; esac
+sleep 40
+STUB
+chmod +x "$H21/bin/okflint"
+t0=$(date +%s); env PATH="$H21/bin:$PATH" OKF_L2_TIMEOUT=3 "$CHECK" "$H21/b" >"$TMP/h21.txt" 2>&1; rc=$?; t1=$(date +%s)
+{ [ "$rc" -eq 2 ] && [ $((t1-t0)) -lt 15 ] && grep -q "timed out after 3 s" "$TMP/h21.txt"; } \
+  && ok "LT-21 a hung okflint is cut off after OKF_L2_TIMEOUT and named (exit 2 in $((t1-t0))s)" \
+  || bad "LT-21 hung okflint" "rc=$rc ${t1}-${t0} $(grep -n L2 "$TMP/h21.txt" | head -2 | tr '\n' ' ')"
+pkill -f 'sleep 40' 2>/dev/null
+# F1: 0 is not "kill at once"
+cat > "$H21/bin/okflint" <<'STUB'
+#!/bin/sh
+case "$*" in *--version*|*--help*|*validate-manifest*) echo "okflint 0.5.0"; exit 0;; esac
+echo '{"errors":[],"warnings":[],"summary":{"errors":0,"warnings":0}}'; sleep 2
+STUB
+env PATH="$H21/bin:$PATH" OKF_L2_TIMEOUT=0 "$CHECK" "$H21/b" >"$TMP/h21z.txt" 2>&1
+grep -q "timed out" "$TMP/h21z.txt" && bad "LT-21b OKF_L2_TIMEOUT=0 must not kill at once" "timed out" \
+  || ok "LT-21b OKF_L2_TIMEOUT=0 falls back to the default, not instant kill"
+# F2: a finished run leaves no timer sleep behind
+env PATH="$H21/bin:$PATH" OKF_L2_TIMEOUT=97 "$CHECK" "$H21/b" >/dev/null 2>&1; sleep 1
+_o=$(pgrep -f '^sleep 97$' | wc -l | tr -d ' '); pkill -f '^sleep 97$' 2>/dev/null
+[ "$_o" = "0" ] && ok "LT-21c no timer sleep is left behind after a normal run" || bad "LT-21c orphan timer" "$_o left"
+# F4: an okflint that ignores TERM is still reported as timed out
+cat > "$H21/bin/okflint" <<'STUB'
+#!/bin/sh
+case "$*" in *--version*|*--help*|*validate-manifest*) echo "okflint 0.5.0"; exit 0;; esac
+trap '' TERM; sleep 8
+STUB
+env PATH="$H21/bin:$PATH" OKF_L2_TIMEOUT=2 "$CHECK" "$H21/b" >"$TMP/h21t.txt" 2>&1
+grep -q "timed out after 2 s" "$TMP/h21t.txt" && ok "LT-21d an okflint that ignores TERM is reported as timed out" || bad "LT-21d ignores TERM" "$(grep -n L2 "$TMP/h21t.txt" | head -2)"
+pkill -f '^sleep 8$' 2>/dev/null
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

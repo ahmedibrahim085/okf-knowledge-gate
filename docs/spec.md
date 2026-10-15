@@ -226,6 +226,9 @@ and the brand-new machine this tool targets does not have it.
 | LT-19d | the binary fails | plain reminder, exit 0 | ✅ |
 | LT-19e | the target directory is a symlink | the search runs on the real path | ✅ |
 | LT-19f | any new file | the query is the words of the file name | ✅ |
+| LT-19g | output captured from the real okf binary | parses to the three closest ids | ✅ |
+| LT-19h | the search binary hangs and has a child | no orphan child is left | ✅ |
+| LT-19i | the binary has a grandchild | no orphan grandchild is left | ✅ |
 | LT-20a | a bundle with an ignorable note and no `.okfignore` | behaves as before (the note fails the gate) | ✅ |
 | LT-20b | `.okfignore` lists `.trash/` and `archive/` | those notes are absent from L1, L2, L3 and L3 derived | ✅ |
 | LT-20b2 | the layers read a filtered copy | the report never shows the temp path | ✅ |
@@ -241,6 +244,10 @@ and the brand-new machine this tool targets does not have it.
 | LT-20l | L2 index counts | skip ignored notes | ✅ |
 | LT-20m/n | L3 derived | still resolves sources against the real bundle; skips ignored notes | ✅ |
 | I-1c | `okf-verify`, everything excluded | exit 2 | ✅ |
+| LT-21 | okflint hangs in L2 | cut off after `OKF_L2_TIMEOUT` (default 120 s), named, exit 2 | ✅ |
+| LT-21b | `OKF_L2_TIMEOUT=0` | falls back to the default; never an instant kill | ✅ |
+| LT-21c | a normal run | leaves no timer `sleep` behind | ✅ |
+| LT-21d | okflint ignores TERM | still reported as timed out | ✅ |
 | I-1a/b | `okf-verify` on a bundle with `.okfignore` | an ignored note's claims are not verified | ✅ |
 | LT-10 | okflint crashes on a note (non-UTF-8) | L2 prints a `reason:` line with its last error line; skipped, stated, when okflint is absent | ✅ |
 

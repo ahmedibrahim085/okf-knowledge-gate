@@ -46,7 +46,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.7.0"
+VERSION="0.7.1"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -417,6 +417,8 @@ run_limited() {
   ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
   wd=$!
   wait "$pid" 2>/dev/null; rc=$?
+  # The timer's own `sleep` is a child of $wd: kill it too, or every run leaves one behind.
+  pkill -P "$wd" 2>/dev/null
   kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
   return $rc
 }
@@ -673,8 +675,11 @@ run_profile() {
   # directions (a WARNING containing ❌ used to be counted as an error). The
   # documented contract is: 0 clean, 1 findings, 2 bad manifest. (R-2)
   local out ec
-  out=$(cd "$bundle" && okflint validate . --manifest okf-base.yaml --json 2>&1); ec=$?
-  printf '%s' "$out" > "$TMP/l2.txt"
+  # Time-bounded (issue #10): a hung okflint used to stall the run for as long as it hung.
+  local l2limit="${OKF_L2_TIMEOUT:-120}"
+  case "$l2limit" in ''|*[!0-9]*|0) l2limit=120;; esac
+  run_limited "$l2limit" "$TMP/l2.out" sh -c 'cd "$1" && exec okflint validate . --manifest okf-base.yaml --json' _ "$bundle"; ec=$?
+  cat "$TMP/l2.out" "$TMP/l2.out.err" > "$TMP/l2.txt" 2>/dev/null
 
   # ANY status outside the documented set means okflint did not reach a verdict —
   # a missing binary (127), a signal, an internal error. Previously only `2` was
@@ -684,6 +689,9 @@ run_profile() {
     0|1) ;;
     2)   say "  L2 profile       COULD NOT RUN — manifest rejected by okflint"
          say_capped 3 "                   " < "$TMP/l2.txt"
+         return $EXIT_DEP ;;
+    143|137) say "  L2 profile       COULD NOT RUN — okflint timed out after ${l2limit} s (set OKF_L2_TIMEOUT to raise the limit)"
+         say "                   NOT a pass: house rules were never evaluated."
          return $EXIT_DEP ;;
     *)   say "  L2 profile       COULD NOT RUN — okflint exited $ec (crashed or missing)"
          say "                   NOT a pass: house rules were never evaluated."
