@@ -1,0 +1,24 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "ahmedmaged-okf",
+  "description": "Ahmed Maged's OKF catalog: the Open Knowledge Format gate (conformance + house rules + staleness) with a dependency doctor and a selftest that re-proves every gate still fires.",
+  "owner": {
+    "name": "ahmedmaged"
+  },
+  "plugins": [
+    {
+      "name": "okf",
+      "description": "One gate over the Open Knowledge Format toolchain: spec conformance (vendored v0.2 checker), house rules (okflint manifest), and staleness — with a doctor that names missing dependencies, an opt-in installer for the supported ones, and a selftest that re-proves every gate still fires.",
+      "version": "0.6.1",
+      "source": "./plugin",
+      "category": "productivity",
+      "tags": [
+        "okf",
+        "knowledge-base",
+        "conformance",
+        "staleness"
+      ]
+    }
+  ],
+  "version": "0.1.0"
+}

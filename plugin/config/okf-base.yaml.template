@@ -1,0 +1,41 @@
+# okflint house profile — copy to <bundle>/okf-base.yaml and edit.
+#
+# This is the HOUSE layer. It answers "is this valid OUR OKF?" — required fields
+# per type, controlled vocabularies, hygiene levels. The SPEC layer ("is this
+# valid OKF at all?") is the vendored okf_validate.py and needs no config.
+#
+# Values below are the ones verified against ~/.claude/lessons on 2026-07-30:
+# they caught 2 real errors (a status outside vocabulary, and a missing log.md)
+# and both RED probes fired.
+
+okf_version: "0.2"
+
+base:
+  name: CHANGE ME
+  roots:
+    - path: .
+  reserved_files:
+    index: index.md
+    log: log.md
+
+profile:
+  types:
+    Lesson:
+      # stale_after is REQUIRED here on purpose: an undated lesson cannot rot
+      # visibly, and invisible rot is the failure this whole gate exists to stop.
+      required: [type, title, description, stale_after]
+      optional: [status, tags, generated, verified, sources]
+      status_values: [draft, stable, deprecated]
+    Lesson Family:
+      required: [type, title, description, stale_after]
+      optional: [status, tags, generated, verified]
+      status_values: [draft, stable, deprecated]
+    Reference:
+      required: [type, title]
+      optional: [status, tags, generated, stale_after]
+
+hygiene:
+  broken_links: warn      # OKF §6.1 requires consumers to TOLERATE broken links
+  split_candidates: warn  # S202 fires on ~90% of prose-heavy bundles — advisory only
+  reserved_files: error
+  unknown_fields: off     # OKF explicitly allows producer-defined keys

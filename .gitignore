@@ -1,0 +1,14 @@
+.DS_Store
+__pycache__/
+*.pyc
+
+# Code-knowledge graph indexes — derived artifacts, rebuilt from source in
+# seconds. They are machine-local and MUST NOT be committed: an index carried
+# between machines is stale by construction, and a stale graph answering
+# "no callers" is worse than no graph at all.
+.codegraph/
+.gitnexus/
+graphify-out/
+
+# Empty dirs a test run with a relative HOME can leave under plugin/scripts; the plugin copy would ship them
+plugin/scripts/nonexistent-xyz/

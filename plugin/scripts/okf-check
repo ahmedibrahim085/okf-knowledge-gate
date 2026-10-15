@@ -1,0 +1,1324 @@
+#!/usr/bin/env bash
+# okf-check — one gate over the OKF toolchain.
+#
+#   L0  doctor       runtimes + dependencies + version pins
+#   L1  conformance  is this valid OKF?         (vendored okf_validate.py, spec layer)
+#   L2  profile      is this valid OUR OKF?     (okflint + okf-base.yaml, house layer)
+#   L3  staleness    is it still true?          (stale_after vs today)
+#   --selftest       re-prove every gate still FIRES on input that should trip it
+#   --preflight      SessionStart check: python3 and okflint present at the supported version?
+#                    Silent when fine; one line naming the problem otherwise. Never fails.
+#   --install-deps   print the plan for the supported okflint (changes nothing);
+#                    add --yes to run it, --latest for the newest release instead of the pin.
+#                    OKF_AUTO_INSTALL=1 lets --preflight run the plan itself (off by default).
+#
+# WHY ONE ENTRY POINT
+# Three tools that must be remembered get remembered zero times. The measured
+# failure of every knowledge store on this machine was never the format — it was
+# the absence of something that runs without being chosen.
+#
+# PORTABILITY (assume a brand-new machine, assume nothing is installed)
+#   - bash 3.2 only: no `declare -A`, no `mapfile`, no `${var^^}` (macOS ships 3.2)
+#   - BSD and GNU `stat` both handled
+#   - `jq` is OPTIONAL — JSON is parsed with python3, which L1 already requires
+#   - `okflint` is OPTIONAL — L2 is SKIPPED WITH A STATED REASON, never silently
+#   - the conformance checker is VENDORED — no clone, no network, no install
+#
+# EXIT CODES — by PRECEDENCE, not by numeric maximum.
+#   5  --selftest failure            — A GATE STOPPED FIRING (the worst outcome)
+#   1  L1 OKF conformance ERROR      — the bundle is not conformant OKF
+#   3  L2 house-profile ERROR        — your own rules are broken
+#   2  L0/L2 could not run           — a gate was unable to reach a verdict
+#   6  bundle changed mid-scan       — only with --fail-on-change
+#   4  L3 stale concepts             — only with --fail-stale
+#   0  all gates pass
+#
+# `max(rc)` was WRONG and is why this list is ordered. A bundle with a real §11
+# conformance error AND an unusable manifest returned 2 — documented as "could
+# not run" — so CI would retry or reinstall instead of failing the bundle. A
+# verdict that was REACHED always outranks a gate that could not reach one.
+#
+# Usage:
+#   okf-check <bundle>            okf-check <bundle> --json
+#   okf-check --doctor            okf-check <bundle> --selftest
+#   okf-check <bundle> --fail-stale        make L3 staleness blocking (exit 4)
+#   okf-check <bundle> --fail-on-change    make a mid-scan change blocking (exit 6)
+set -uo pipefail
+unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
+
+VERSION="0.6.1"
+EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
+EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
+CONCURRENT=0; FAIL_ON_CHANGE=0
+# Initialised HERE, not in main(): --selftest calls the layer functions directly
+# and never enters main, so declaring these there left them unbound under `set -u`.
+# (Regression introduced by the summary-counter change; caught by okf-check.test.sh.)
+ADVISORIES=0; SKIPPED=0
+
+# ---------------------------------------------------------------- locate self
+# Symlink-safe without readlink -f (absent on macOS): walk the link chain.
+_self="$0"
+while [ -L "$_self" ]; do
+  _dir=$(cd -P "$(dirname "$_self")" && pwd)
+  _self=$(readlink "$_self")
+  case "$_self" in /*) ;; *) _self="$_dir/$_self" ;; esac
+done
+HERE=$(cd -P "$(dirname "$_self")" && pwd)
+# A gate that cannot load its helper must not reach a verdict: with the lib absent the awk
+# program failed, stderr went to /dev/null, and the empty report read as "PASS nothing expired".
+[ -r "$HERE/l3-lib.sh" ] || { echo "okf-check: $HERE/l3-lib.sh is missing - cannot run L3; reinstall the plugin" >&2; exit $EXIT_DEP; }
+. "$HERE/l3-lib.sh"
+ROOT=$(cd -P "$HERE/.." && pwd)
+VALIDATOR="$ROOT/vendor/okf_validate.py"
+# PyYAML is vendored (pure-python, no C extension) so L1 needs nothing installed.
+#
+# NOT exported. `export PYTHONPATH` leaked the vendored copy into every CHILD
+# process — including okflint, which ships its own newer, COMPILED PyYAML.
+# Measured: okflint standalone loaded libyaml=True from its own site-packages;
+# as a child of okf-check it loaded the vendored libyaml=False copy instead.
+# Python resolves PYTHONPATH ahead of site-packages regardless of where the entry
+# sits within the variable, so "appended" bought nothing for children.
+#
+# The earlier claim that "a system PyYAML wins if present" was verified only for
+# this script's own import, never for anything it spawns. It is now applied per
+# invocation, to the validator alone. Covered by G-2.
+#
+# PREPENDED, not appended. Python searches PYTHONPATH left to right, so an entry
+# already in the variable outranked the vendored copy. A `yaml` module on an
+# inherited PYTHONPATH then replaced the parser this gate's verdict rests on —
+# G-7 demonstrates a decoy that reports every file as conformant, turning a
+# bundle with no `type` key into a PASS. The pin exists to make the verdict
+# reproducible; ambient environment is exactly the variance it must outrank.
+# Measured cost of the pure-python loader at this scale: none (46 frontmatter
+# blocks, libyaml=True 10.7 ms vs libyaml=False 10.6 ms).
+VENDOR_PY="$ROOT/vendor/pyyaml"
+py_with_vendor() {  # run $PY with the vendored PyYAML visible to IT ONLY
+  if [ -d "$VENDOR_PY" ]; then
+    PYTHONPATH="$VENDOR_PY${PYTHONPATH:+:$PYTHONPATH}" "$PY" "$@"
+  else
+    "$PY" "$@"
+  fi
+}
+PINS="${OKF_PINNED_VERSIONS:-$ROOT/config/pinned-versions.txt}"
+TEMPLATE="$ROOT/config/okf-base.yaml.template"
+
+BUNDLE=""; MODE="check"; JSON=0; FAIL_STALE=0; ASSUME_YES=0; USE_LATEST=0
+for a in "$@"; do
+  case "$a" in
+    --doctor)      MODE="doctor" ;;
+    --selftest)    MODE="selftest" ;;
+    --json)        JSON=1 ;;
+    --fail-stale)  FAIL_STALE=1 ;;
+    --fail-on-change) FAIL_ON_CHANGE=1 ;;
+    --fingerprint) MODE="fingerprint" ;;
+    --preflight)   MODE="preflight" ;;
+    --install-deps) MODE="install-deps" ;;
+    --yes)         ASSUME_YES=1 ;;
+    --latest)      USE_LATEST=1 ;;
+    --version)     echo "okf-check $VERSION"; exit 0 ;;
+    -h|--help)     sed -n '2,40p' "$_self"; exit 0 ;;
+    -*)            echo "unknown flag: $a" >&2; exit 64 ;;
+    *)             # A second positional silently replaced the first, so
+                   # `okf-check <FAILING> <CLEAN>` examined only the last and
+                   # exited 0. A glob over several bundles checked one. (R-9)
+                   if [ -n "$BUNDLE" ]; then
+                     echo "error: more than one bundle given ('$BUNDLE' and '$a') — check them one at a time" >&2
+                     exit 64
+                   fi
+                   BUNDLE="$a" ;;
+  esac
+done
+
+PY=""
+for c in python3 python; do command -v "$c" >/dev/null 2>&1 && { PY="$c"; break; }; done
+
+say()  { [ "$JSON" -eq 1 ] || printf '%s\n' "$*"; }
+# say_capped <limit> <indent>  — lines on stdin, capped, and HONEST about it.
+# Four dumps cut at 10-12 lines with no note of the cut: a reader sees twelve
+# §11 errors and concludes there are twelve. Same silent-cap defect fixed in
+# okf-verify's no-claims list (D-13) and never applied here. Everything still
+# goes through say(), so --json stays clean (R-3). (G-11)
+say_capped() {
+  local limit="$1" indent="$2" buf total line _grc
+  buf="$TMP/capped.$$"
+  cat > "$buf"
+  # `grep -c` PRINTS 0 and EXITS 1 when nothing matches, so `|| echo 0` appended a
+  # second zero and `[ "$total" -gt ... ]` died with "integer expression expected".
+  # grep exits 1 for "no match" and 2 for "could not read" — one variable was
+  # carrying both, so a grep that FAILED became "0 lines" and silently suppressed
+  # the "and N more" line. That is lessons/shell-or-swallows-errors.md exactly:
+  # one exit code with two meanings, failing OPEN in the direction of looking
+  # clean. Branch on the code; never infer a count from an empty stdout.
+  total=$(grep -c . "$buf" 2>/dev/null); _grc=$?
+  case "$_grc" in
+    0) ;;                 # matched: $total is the real count
+    1) total=0 ;;         # genuinely empty
+    *) total=-1 ;;        # grep itself failed — we do NOT know the count
+  esac
+  while IFS= read -r line; do say "${indent}${line}"; done < <(head -"$limit" "$buf")
+  if [ "$total" -lt 0 ]; then
+    say "${indent}... and an unknown number more — the detail buffer could not be read"
+  elif [ "$total" -gt "$limit" ]; then
+    say "${indent}... and $((total - limit)) more (use --json for all of them)"
+  fi
+  rm -f "$buf"
+  return 0
+}
+# err_capped — say_capped's twin for STDERR. The readability guards fire before
+# any layer runs, so their output is not part of the --json report and must not
+# go through say(); the honesty rule is identical. (U-1)
+err_capped() {
+  local limit="$1" indent="$2" buf total line _grc
+  buf="$TMP/errcapped.$$"
+  cat > "$buf"
+  # grep exits 1 for "no match" and 2 for "could not read" — one variable was
+  # carrying both, so a grep that FAILED became "0 lines" and silently suppressed
+  # the "and N more" line. That is lessons/shell-or-swallows-errors.md exactly:
+  # one exit code with two meanings, failing OPEN in the direction of looking
+  # clean. Branch on the code; never infer a count from an empty stdout.
+  total=$(grep -c . "$buf" 2>/dev/null); _grc=$?
+  case "$_grc" in
+    0) ;;                 # matched: $total is the real count
+    1) total=0 ;;         # genuinely empty
+    *) total=-1 ;;        # grep itself failed — we do NOT know the count
+  esac
+  while IFS= read -r line; do printf '%s%s\n' "$indent" "$line" >&2; done < <(head -"$limit" "$buf")
+  # only the leading WHITESPACE of the item prefix, never the label itself:
+  # "unreadable: ... and 2 more" reads as a filename called "... and 2 more".
+  if [ "$total" -lt 0 ]; then
+    printf '%s... and an unknown number more — the detail buffer could not be read\n' "${indent%%[! ]*}" >&2
+  elif [ "$total" -gt "$limit" ]; then
+    printf '%s... and %s more\n' "${indent%%[! ]*}" "$((total - limit))" >&2
+  fi
+  rm -f "$buf"
+  return 0
+}
+pin_of() { [ -f "$PINS" ] && awk -v k="$1" '$1==k{print $2}' "$PINS" | head -1; }
+
+# --- concurrency detection (E-7) --------------------------------------------
+# The layers run in sequence, so a write landing between them yields ONE report
+# built from TWO different bundle states. Proven reproducibly: on a 40-concept
+# bundle a file written 0.2s in was counted by L3 and missed by L1, and the
+# report claimed a stable verdict anyway.
+#
+# We cannot lock another agent's writes and should not try. What we CAN do is
+# refuse to present a point-in-time reading as a stable one — the same rule
+# lessons/negative-claims-state-scope.md applies to negatives: state the scope.
+# R-6 made the bundle ROOT fail closed and stopped there. Every scan below then
+# used `find … 2>/dev/null`, which swallows a permission error in any SUBTREE:
+# L1 counted the concepts it could see, L3 announced "nothing expired", and the
+# run exited 0 over a directory nobody was allowed to read — with a concept
+# expired since 2000 sitting inside it. A partial read presented as a verdict.
+#
+# Tests -r AND -x: a directory needs both to be listed and descended.
+#
+# Uses find's own LISTING, not its stderr. With `-L`, a dangling symlink also
+# writes to stderr, and E-7a requires those to be skipped rather than fatal —
+# keying on stderr would trade this fail-open for that regression. (G-8)
+# NUL-delimited: reading newline-delimited split a directory whose NAME contains
+# a newline into fragments, none of which exist, so every such bundle was
+# declared unreadable and failed closed — R-7's own scenario, broken by the fix
+# for G-8. Caught by R-7 before it shipped, which is what R-7 is for.
+unreadable_dirs() {
+  find -L "$1" -type d -print0 2>/dev/null | while IFS= read -r -d '' d; do
+    { [ -r "$d" ] && [ -x "$d" ]; } || printf '%s\n' "$d"
+  done | sort          # find's order varies run to run; a gate's output should not
+}
+
+_stat_flavor=""
+bundle_fingerprint() {
+  # "size mtime name" per concept, sorted. Sub-second mtime where the platform
+  # offers it (BSD %Fm / GNU %y) — 1-second granularity hid a real stale index
+  # at an equal-second boundary once already.
+  #
+  # KNOWN LIMIT: a modification keeping byte-size AND timestamp identical is
+  # invisible here. Sub-second mtime makes that vanishingly unlikely, and hashing
+  # every file twice costs more than the residual risk is worth.
+  #
+  # NUL-delimited, and NEVER through a shell variable. The list used to be
+  # captured newline-separated, which split a filename containing a literal
+  # newline into two nonexistent fragments — the file vanished from the
+  # fingerprint with no warning, taking its mid-scan change detection with it.
+  # `$(...)` cannot carry the fix either: command substitution STRIPS NUL bytes,
+  # so -print0 into a variable loses every delimiter and yields one giant
+  # argument. It goes to a file instead. (V-4, same bug class as G-8 next door)
+  #
+  # No `xargs -r`: that flag is GNU-only. The `-s` test on the file is the
+  # portable equivalent, and keeps stat from being invoked with zero arguments.
+  local list="$TMP/fingerprint.files"
+  find -L "$1" -name '*.md' -type f -print0 2>/dev/null > "$list"
+  [ -s "$list" ] || return 0
+  if [ -z "$_stat_flavor" ]; then
+    if stat -f '%z' /dev/null >/dev/null 2>&1; then _stat_flavor=bsd; else _stat_flavor=gnu; fi
+  fi
+  # `stat -L` follows the link. Without it `find -L` yielded a symlinked
+  # concept's path and stat described the LINK — so rewriting the TARGET left the
+  # fingerprint byte-identical and a mid-scan edit to a symlinked concept went
+  # undetected. Caught by E-9c. (Reviewer-reported blind spot in E-7.)
+  if [ "$_stat_flavor" = bsd ]; then
+    xargs -0 stat -L -f '%z %Fm %N' < "$list" 2>/dev/null | sort
+  else
+    xargs -0 stat -L -c '%s %y %n' < "$list" 2>/dev/null | sort
+  fi
+}
+
+# okflint has no `--version` flag (that invocation errors with a usage dump, which
+# an earlier version of this script happily captured AS the version). Ask the
+# package metadata instead, via whichever interpreter actually owns the binary —
+# survives uv-tool, pipx, pip --user and venv layouts alike.
+okflint_version() {
+  local bin py v
+  if command -v uv >/dev/null 2>&1; then
+    v=$(uv tool list 2>/dev/null | awk '/^okflint /{print $2}' | tr -d 'v' | head -1)
+    [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+  fi
+  bin=$(command -v okflint 2>/dev/null) || { printf 'unknown'; return 1; }
+  py=$(head -1 "$bin" 2>/dev/null | sed 's/^#!//')
+  case "$py" in
+    *[!a-zA-Z0-9/_.@-]*|"") py="" ;;
+  esac
+  if [ -n "$py" ] && [ -x "$py" ]; then
+    v=$("$py" -c 'import importlib.metadata as m; print(m.version("okflint"))' 2>/dev/null)
+    [ -n "$v" ] && { printf '%s' "$v"; return 0; }
+  fi
+  printf 'unknown'
+}
+
+# ------------------------------------------------------------------ L0 doctor
+# Returns 0 if L1 can run at all. The DOCTOR never installs anything: it names the command (installing is `--install-deps`)
+# and stops. (Same read/write split as code-knowledge-graphs:ask — a tool that
+# installs on its own initiative cannot be audited before it acts.)
+# ------------------------------------------------- prerequisites (GitHub issue #4)
+# Install is explicit, not silent: a plugin that runs `uv tool install` on every session start
+# is a supply-chain risk. `--preflight` only REPORTS; `--install-deps` prints a plan and acts
+# only with --yes; OKF_AUTO_INSTALL=1 is the owner's opt-in to let the preflight act.
+okflint_target() {  # prints: <spec>|<where it comes from>   (exit 2: pins unreadable or spec unsafe)
+  local want src
+  if [ "$USE_LATEST" -eq 1 ]; then printf '%s|%s' "okflint" "PyPI, latest release"; return 0; fi
+  # A pins file we cannot read must not turn into an unpinned install (fail closed).
+  if [ ! -r "$PINS" ]; then printf 'pins file unreadable: %s' "$PINS"; return 2; fi
+  want=$(pin_of okflint); src=$(pin_of okflint_source)
+  if [ -n "$src" ]; then
+    # Only a PyPI name or an https git URL: a value starting with "-" would be read by uv as an option.
+    case "$src" in
+      okflint|okflint==[0-9]*|git+https://[A-Za-z0-9]*) ;;
+      *) printf 'refusing an unsafe okflint_source: %s' "$src"; return 2 ;;
+    esac
+    case "$src" in *[!A-Za-z0-9._~:/@%+=-]*) printf 'refusing an unsafe okflint_source: %s' "$src"; return 2 ;; esac
+    printf '%s|%s' "$src" "pinned source (carries the okflint#11 fixes)"
+  elif [ -n "$want" ]; then printf '%s|%s' "okflint==$want" "PyPI, supported version"
+  else printf '%s|%s' "okflint" "PyPI, latest release"; fi
+}
+
+preflight() {
+  local issues="" want got=""
+  [ -n "$PY" ] || issues="$issues python3 is missing (L1 needs it);"
+  [ -r "$PINS" ] || issues="$issues the pins file is unreadable ($PINS), so nothing can be checked;"
+  want=$(pin_of okflint)
+  if ! command -v okflint >/dev/null 2>&1; then
+    issues="$issues okflint is not installed, so L2 is skipped (supported: ${want:-any});"
+  else
+    got=$(okflint_version)
+    if [ -n "$want" ] && [ "$got" != "$want" ]; then
+      issues="$issues okflint $got is not the supported $want;"
+    fi
+  fi
+  # Same version number, wrong build. The supported build is the PATCHED one when a source is pinned,
+  # and stock PyPI okflint prints the same version, so one BOM probe tells them apart (~0.5 s).
+  # Inconclusive output (no report, hung) stays silent: a preflight must not nag on a guess.
+  if [ -z "$issues" ] && [ -n "$(pin_of okflint_source)" ] && [ -f "$TEMPLATE" ] && command -v okflint >/dev/null 2>&1; then
+    local pf="$TMP/preflight-probe"
+    rm -rf "$pf"; mkdir -p "$pf"
+    sed 's/^  name: CHANGE ME/  name: Probe/' "$TEMPLATE" > "$pf/okf-base.yaml"
+    printf -- '\357\273\277---\ntype: Lesson\ntitle: Probe\n---\nbody\n' > "$pf/probe-bom.md"
+    run_limited 8 "$TMP/preflight.out" sh -c 'cd "$1" && exec okflint validate . --manifest okf-base.yaml --json' _ "$pf"
+    if grep -q '"F001"' "$TMP/preflight.out" 2>/dev/null; then
+      issues="$issues okflint $got is the stock build (it rejects a BOM note); the supported build carries the okflint#11 fixes;"
+    fi
+  fi
+  [ -z "$issues" ] && return 0
+  if [ "${OKF_AUTO_INSTALL:-0}" = "1" ]; then
+    install_deps yes; return $?
+  fi
+  printf 'okf preflight:%s run: bash %s/okf-check --install-deps   (shows the plan; add --yes to install)\n' "$issues" "$HERE"
+}
+
+install_deps() {  # install_deps [yes]  — "yes" is the caller's consent (the OKF_AUTO_INSTALL opt-in)
+  local go="$ASSUME_YES" target spec where prev have_uv=0 rc tdir bdir limit="${OKF_INSTALL_TIMEOUT:-200}"
+  [ "${1:-}" = "yes" ] && go=1
+  JSON=0   # an install request always shows its plan and result
+  target=$(okflint_target); rc=$?
+  if [ "$rc" -ne 0 ]; then
+    say "okf-check $VERSION — prerequisites"
+    say "  okflint   $target"
+    say "  result    NOT RUN (exit 2): fix the pins file or use --latest"
+    return $EXIT_DEP
+  fi
+  spec=${target%%|*}; where=${target#*|}
+  command -v uv >/dev/null 2>&1 && have_uv=1
+  prev=""; command -v okflint >/dev/null 2>&1 && prev=$(okflint_version)
+  say "okf-check $VERSION — prerequisites"
+  if [ -n "$PY" ]; then say "  python3   present ($($PY -V 2>&1))"
+  else say "  python3   MISSING — install Python 3 (https://www.python.org/downloads/); okf-check cannot install it"; fi
+  say "  pyyaml    vendored, nothing to install"
+  if [ "$have_uv" -eq 1 ]; then say "  uv        present (the installer)"
+  else say "  uv        MISSING — okflint is installed with uv: https://docs.astral.sh/uv/getting-started/installation/"; fi
+  say "  okflint   ${prev:-not installed} -> $spec   [$where]"
+  if [ "$USE_LATEST" -eq 1 ]; then
+    say "  note      the newest PyPI okflint may lack the okflint#11 fixes (BOM, non-UTF-8, impossible date);"
+    say "            --doctor will then report UNPATCHED, and a later preflight with the pin reinstalls the pin"
+  fi
+  if command -v jq >/dev/null 2>&1; then say "  jq        present (optional)"
+  else say "  jq        absent (optional): doc-reuse-guard.sh is off without it; install with your package manager"; fi
+  say "  plan      uv tool install --force $spec"
+  if [ -z "$PY" ] || [ "$have_uv" -eq 0 ]; then
+    [ "$go" -eq 1 ] && { say "  result    NOT RUN: a prerequisite the installer needs is missing (exit 2)"; return $EXIT_DEP; }
+    say "  dry run   nothing was changed"; return 0
+  fi
+  if [ "$go" -ne 1 ]; then
+    say "  dry run   nothing was changed; add --yes to run the plan"; return 0
+  fi
+  # Keep the exact previous tool directory: `uv tool install --force` can remove the old install
+  # before it fails, and a PyPI reinstall of "the same version" would swap a fork build for stock.
+  tdir=$(uv tool dir 2>/dev/null)/okflint; bdir=$(uv tool dir --bin 2>/dev/null)
+  rm -rf "$TMP/okflint.bak"
+  [ -d "$tdir" ] && cp -R "$tdir" "$TMP/okflint.bak" 2>/dev/null
+  run_limited "$limit" "$TMP/install.out" uv tool install --force "$spec"; rc=$?
+  if [ "$rc" -eq 0 ]; then
+    say "  result    installed: $spec"
+    doctor; return $?
+  fi
+  if [ "$rc" -eq 143 ]; then say "  result    INSTALL TIMED OUT after ${limit}s (exit 143)"
+  else say "  result    INSTALL FAILED (exit $rc): $(tail -1 "$TMP/install.out.err" 2>/dev/null | cut -c1-140)"; fi
+  if [ -d "$TMP/okflint.bak" ]; then
+    rm -rf "$tdir" && mv "$TMP/okflint.bak" "$tdir" \
+      && [ -n "$bdir" ] && [ -x "$tdir/bin/okflint" ] && ln -sf "$tdir/bin/okflint" "$bdir/okflint" 2>/dev/null
+    say "  restore   the previous okflint ($prev) was put back exactly"
+  elif [ -n "$prev" ]; then
+    say "  restore   nothing to put back; reinstall with: okf-check --install-deps --yes"
+  fi
+  return $EXIT_DEP
+}
+
+# run_limited SECS OUTFILE CMD...: run CMD, stdout in OUTFILE and stderr in OUTFILE.err; kill it
+# after SECS. (A crash is "no stdout"; merging stderr would make a traceback look like a verdict.)
+# macOS has no `timeout`. Returns CMD's status, or 143 when it was killed.
+run_limited() {
+  local secs="$1" out="$2" pid wd rc
+  shift 2
+  "$@" >"$out" 2>"$out.err" &
+  pid=$!
+  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
+  wd=$!
+  wait "$pid" 2>/dev/null; rc=$?
+  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  return $rc
+}
+
+doctor() {
+  local fatal=0 okflint_state="MISSING"
+  say "okf-check $VERSION — doctor"
+
+  if [ -n "$PY" ]; then
+    say "  python3            $($PY -V 2>&1)"
+  else
+    say "  python3            MISSING   <- install: https://www.python.org/downloads/"
+    fatal=1
+  fi
+
+  # PyYAML is vendored, so this reports WHICH copy is in play rather than whether
+  # one exists. It is no longer fatal: a stock machine with no site-packages now
+  # runs L1 from the vendored pure-python copy.
+  if [ -n "$PY" ] && py_with_vendor -c 'import yaml' >/dev/null 2>&1; then
+    local ysrc ylibyaml
+    ysrc=$(py_with_vendor -c 'import yaml,os;print(os.path.dirname(yaml.__file__))' 2>/dev/null)
+    ylibyaml=$(py_with_vendor -c 'import yaml;print(yaml.__with_libyaml__)' 2>/dev/null)
+    case "$ysrc" in
+      "$VENDOR_PY"/*) say "  pyyaml             vendored (pure python, libyaml=$ylibyaml)" ;;
+      *)              say "  pyyaml             system: $ysrc (libyaml=$ylibyaml)" ;;
+    esac
+  elif [ -n "$PY" ]; then
+    say "  pyyaml             MISSING and the vendored copy did not import"
+    say "                     <- reinstall okf-check, or: $PY -m pip install pyyaml"
+    fatal=1
+  fi
+
+  if [ -f "$VALIDATOR" ]; then
+    say "  okf_validate.py    vendored @ $(pin_of okf_validate | cut -c1-12)"
+  else
+    say "  okf_validate.py    MISSING from $VALIDATOR  <- reinstall okf-check"
+    fatal=1
+  fi
+
+  if command -v okflint >/dev/null 2>&1; then
+    local got want
+    got=$(okflint_version)
+    want=$(pin_of okflint)
+    if [ "$got" = "$want" ]; then
+      okflint_state="OK"; say "  okflint            $got  (pinned $want)"
+    else
+      okflint_state="SKEW"
+      say "  okflint            $got  (gate verified against $want)"
+      say "                     VERSION-SKEW — rule codes and exit semantics unverified here."
+      say "                     run: okf-check --selftest"
+    fi
+    # BEHAVIOUR, not version: the patched okflint (mattdav/okflint#11) and stock 0.5.0 print the
+    # same version string, so a pin cannot tell them apart. The probes run okflint on small
+    # notes. They run ONLY under an explicit `--doctor` (every normal run calls doctor first, and
+    # a hung okflint made every run stall), each bounded by a timeout.
+    if [ "$MODE" = "doctor" ]; then
+      if [ ! -f "$TEMPLATE" ]; then
+        say "  okflint behaviour  UNKNOWN   (config/okf-base.yaml.template is missing: probes skipped)"
+        say "  okflint manifest check  UNAVAILABLE   (template missing)"
+      else
+        local probe="$TMP/okflint-probe" pout prc bad="" ctl_ok=1
+        _okflint_probe() {  # name | printf format of the note
+          rm -rf "$probe"; mkdir -p "$probe"
+          sed 's/^  name: CHANGE ME/  name: Probe/' "$TEMPLATE" > "$probe/okf-base.yaml"
+          printf -- "$2" > "$probe/probe-$1.md"
+          run_limited 8 "$TMP/probe.out" sh -c 'cd "$1" && exec okflint validate . --manifest okf-base.yaml --json' _ "$probe"; prc=$?
+          pout=$(cat "$TMP/probe.out" 2>/dev/null)
+          [ -s "$probe/probe-$1.md" ] || pout=""   # an empty fixture proves nothing
+        }
+        # Control first: a clean note must get a verdict. If it does not, okflint itself is not
+        # working here (bad template, wrong flags, hung) and the three probes prove nothing.
+        _okflint_probe ctl '---\ntype: Lesson\ntitle: Probe\n---\nbody\n'
+        if [ -z "$pout" ] || [ "$prc" -gt 1 ]; then
+          ctl_ok=0
+          say "  okflint behaviour  UNKNOWN   (okflint gave no verdict on a clean note; probes inconclusive)"
+          say "                     reason: $(cat "$TMP/probe.out.err" "$TMP/probe.out" 2>/dev/null | grep -v '^[[:space:]]*$' | tail -1 | cut -c1-140)"
+        fi
+        if [ "$ctl_ok" -eq 1 ]; then
+          _okflint_probe bom '\357\273\277---\ntype: Lesson\ntitle: Probe\n---\nbody\n'
+          if [ -z "$pout" ] || printf '%s' "$pout" | grep -q '"F001"'; then bad="$bad a BOM note (#8),"; fi
+          _okflint_probe latin1 '---\ntype: Lesson\ntitle: caf\351\n---\nbody\n'
+          if [ -z "$pout" ] || [ "$prc" -gt 1 ]; then bad="$bad a non-UTF-8 note (#9),"; fi
+          _okflint_probe baddate '---\ntype: Lesson\ntitle: Probe\ndecided: 2026-02-30\n---\nbody\n'
+          if [ -z "$pout" ] || [ "$prc" -gt 1 ]; then bad="$bad an impossible date (#10),"; fi
+          if [ -z "$bad" ]; then
+            say "  okflint behaviour  PATCHED   (BOM, non-UTF-8 and impossible-date probes all reach a verdict)"
+          else
+            say "  okflint behaviour  UNPATCHED — fails on:${bad%,}"
+            say "                     fixes: mattdav/okflint#11. Install: git clone ahmedibrahim085/okflint, checkout"
+            say "                     fix/encoding-and-dates-8-10, then: uv tool install ."
+            say "                     advisory only: okf-check still names a crashing note (exit 2)."
+          fi
+        fi
+        unset -f _okflint_probe
+        # okflint >= 0.4.0 can check a manifest without scanning (validate-manifest). Run it on the
+        # template we ship: proves the command exists here and that the template still passes
+        # THIS okflint. Advisory: the bundle's own manifest is checked by `okflint validate`.
+        run_limited 8 "$TMP/help.out" okflint --help
+        if grep -q 'validate-manifest' "$TMP/help.out" 2>/dev/null; then
+          local mf="$TMP/doctor-manifest.yaml" mrc
+          sed 's/^  name: CHANGE ME/  name: Doctor/' "$TEMPLATE" > "$mf"
+          run_limited 8 "$TMP/manifest.out" okflint validate-manifest "$mf"; mrc=$?
+          if [ "$mrc" -eq 0 ]; then
+            say "  okflint manifest check  OK   (validate-manifest accepts the shipped okf-base template)"
+          else
+            local mwhy; mwhy=$(cat "$TMP/manifest.out.err" "$TMP/manifest.out" 2>/dev/null | grep -i 'error' | head -1)
+            [ -n "$mwhy" ] || mwhy=$(cat "$TMP/manifest.out.err" "$TMP/manifest.out" 2>/dev/null | grep -v '^[[:space:]]*$' | head -1)
+            say "  okflint manifest check  REJECTED — $(printf '%s' "$mwhy" | cut -c1-140)"
+            say "                     the shipped template no longer passes this okflint; advisory only."
+          fi
+        else
+          say "  okflint manifest check  UNAVAILABLE   (this okflint has no validate-manifest; added in 0.4.0)"
+        fi
+      fi
+    fi
+  else
+    say "  okflint            MISSING   <- install: uv tool install okflint   (or: pip install okflint)"
+    say "                     L2 (house profile) will be SKIPPED, not silently passed."
+  fi
+
+  command -v jq >/dev/null 2>&1 && say "  jq                 present (optional)" || say "  jq                 absent (optional — not required)"
+  say ""
+  OKFLINT_STATE="$okflint_state"
+  # EXIT_DEP, not a bare 1: `1` is EXIT_CONFORM, so returning it here made
+  # "the bundle is not conformant" and "the gate could not run" indistinguishable
+  # to CI — the exact confusion the layered exit codes exist to prevent.
+  # Caught by okf-check.test.sh N-13/N-14.
+  [ "$fatal" -eq 0 ] || return $EXIT_DEP
+  return 0
+}
+
+# ------------------------------------------------------- L1 spec conformance
+# Delegates to the vendored checker and reads its --json report through python3
+# rather than jq, so a machine without jq still gets a real verdict.
+# One note the vendored validator crashes on (a `status` list, an impossible date: upstream
+# okf-skills #62/#63) used to blank the whole L1 verdict and name nothing (ticket 11).
+# Isolation: run the validator on each note alone, name the ones that die, validate the rest.
+run_conformance() {
+  local bundle="$1" out probe="$TMP/l1probe" mirror="$TMP/l1mirror" f rel why ncrash=0 rc k
+  local -a crashed_rel=() crashed_why=()
+  # `a/b/` and `a/b` must behave the same: find prints one slash, so a trailing one breaks
+  # the relative-name strip below.
+  while [ "${#bundle}" -gt 1 ] && [ "${bundle%/}" != "$bundle" ]; do bundle=${bundle%/}; done
+  out=$(py_with_vendor "$VALIDATOR" "$bundle" --json 2>/dev/null)
+  if [ -z "$out" ]; then
+    # Pass 1: find the notes the validator dies on, one note per run.
+    local -a keep=()
+    while IFS= read -r -d '' f; do
+      rel=${f#"$bundle"/}
+      rm -rf "$probe"; mkdir -p "$probe"; cp "$f" "$probe/note.md" 2>/dev/null || continue
+      if [ -z "$(py_with_vendor "$VALIDATOR" "$probe" --json 2>/dev/null)" ]; then
+        why=$(py_with_vendor "$VALIDATOR" "$probe" --json 2>&1 >/dev/null | tail -1)
+        crashed_rel+=("$rel"); crashed_why+=("$why"); ncrash=$((ncrash+1))
+      else
+        keep+=("$rel")
+      fi
+    done < <(find -L "$bundle" -name '*.md' -type f -print0 2>/dev/null)
+    if [ "$ncrash" -eq 0 ]; then
+      say "  L1 conformance   COULD NOT RUN (validator produced no output)"; return $EXIT_DEP
+    fi
+    # Pass 2: a mirror made of COPIES of the surviving notes only. Nothing is ever deleted: an
+    # earlier cp -R + rm -f followed a symlinked directory and removed files outside the bundle.
+    rm -rf "$mirror"; mkdir -p "$mirror"
+    for rel in "${keep[@]+"${keep[@]}"}"; do
+      mkdir -p "$mirror/$(dirname "$rel")" && cp "$bundle/$rel" "$mirror/$rel" 2>/dev/null
+    done
+    say "  L1 conformance   COULD NOT RUN on $ncrash note(s) — the vendored validator crashed on:"
+    for k in "${!crashed_rel[@]}"; do
+      # Display only: control characters in a name must not break the report layout.
+      say "                   $(printf '%s' "${crashed_rel[$k]}" | tr '\n\r\t' '   '): ${crashed_why[$k]}"
+    done
+    say "                   (a validator bug, not a verdict on the note; fix or quote the field)"
+    say "                   the other notes were checked:"
+    __l1_core "$mirror"; rc=$?
+    [ "$rc" -eq "$EXIT_CONFORM" ] && return $EXIT_CONFORM
+    return $EXIT_DEP
+  fi
+  __l1_core "$bundle" "$out"
+}
+
+__l1_core() {
+  local bundle="$1" out="${2:-}"
+  [ -n "$out" ] || out=$(py_with_vendor "$VALIDATOR" "$bundle" --json 2>/dev/null)
+  [ -n "$out" ] || { say "  L1 conformance   COULD NOT RUN (validator produced no output)"; return $EXIT_DEP; }
+  printf '%s' "$out" > "$TMP/l1.json"
+  # SHAPE-CHECKED, not just parsed. `d.get("errors",[])` turned any valid JSON
+  # of the wrong shape — `{}`, or a validator that renamed its keys across an
+  # upgrade — into "0 errors" and a confident PASS. This is G-4 exactly, one
+  # layer up: parsed is not understood, and a checker that cannot fail is
+  # worthless. Silence about a missing key is the failure mode, so say so. (G-9)
+  "$PY" - "$TMP/l1.json" <<'PY' > "$TMP/l1.txt" 2>/dev/null
+import json,sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception:
+    print("SHAPE|not parseable as JSON"); raise SystemExit(0)
+if not isinstance(d, dict) or "errors" not in d or "warnings" not in d:
+    print("SHAPE|report has no 'errors'/'warnings' key — schema changed?"); raise SystemExit(0)
+# PRESENT is not WELL-FORMED. len() and `for..in` both work on a str, so
+# {"errors": ""} counted zero errors and printed PASS — the exact case the
+# key-presence guard was added to stop. A str of length 10 became "10 error(s)"
+# with ten single-character messages; a dict became one error named after its
+# key. Fabricated detail is worse than a refusal. (V-1..V-3)
+if not isinstance(d["errors"], list) or not isinstance(d["warnings"], list):
+    print("SHAPE|'errors'/'warnings' is not a list — schema changed?"); raise SystemExit(0)
+print(len(d["errors"]), len(d["warnings"]), d.get("counts", {}).get("concepts", 0))
+for e in d["errors"]: print("E|" + e)
+PY
+  if grep -q '^SHAPE|' "$TMP/l1.txt" 2>/dev/null; then
+    say "  L1 conformance   COULD NOT RUN — $(sed -n 's/^SHAPE|//p' "$TMP/l1.txt" | head -1)"
+    say "                   run: okf-check --selftest"
+    return $EXIT_DEP
+  fi
+  L1_ERR=$(head -1 "$TMP/l1.txt" | awk '{print $1}')
+  L1_WARN=$(head -1 "$TMP/l1.txt" | awk '{print $2}')
+  L1_CONCEPTS=$(head -1 "$TMP/l1.txt" | awk '{print $3}')
+  case "$L1_ERR" in
+    ''|*[!0-9]*) say "  L1 conformance   COULD NOT RUN (unreadable validator report)"; return $EXIT_DEP ;;
+  esac
+  if [ "${L1_ERR:-1}" -eq 0 ]; then
+    say "  L1 conformance   PASS   ${L1_CONCEPTS} concepts, 0 errors, ${L1_WARN} warning(s)"
+    return 0
+  fi
+  say "  L1 conformance   FAIL   ${L1_ERR} error(s) — bundle is not conformant OKF"
+  # Through say(), not raw stdout: these detail lines used to bypass it and
+  # corrupt --json on every non-clean bundle. E-4 only ever tested a CLEAN
+  # bundle, so the suite was green over it. (R-3)
+  grep '^E|' "$TMP/l1.txt" | sed 's/^E|//' | say_capped 12 "                   "
+  return $EXIT_CONFORM
+}
+
+# ------------------------------------------------------- L2 house profile
+run_profile() {
+  # Two statements on purpose: `local a="$1" b="$a/x"` expands $a BEFORE it is
+  # assigned, which under `set -u` is a fatal unbound-variable error. Caught by
+  # --selftest, which is the entire reason --selftest exists.
+  local bundle="$1"
+  local manifest="$bundle/okf-base.yaml"
+  if ! command -v okflint >/dev/null 2>&1; then
+    SKIPPED=$((${SKIPPED:-0} + 1))
+    say "  L2 profile       SKIPPED — okflint not installed (install: uv tool install okflint)"
+    say "                   house rules are NOT enforced — this is a skip, not a pass."
+    return 0
+  fi
+  if [ ! -f "$manifest" ]; then
+    SKIPPED=$((${SKIPPED:-0} + 1))
+    say "  L2 profile       SKIPPED — no okf-base.yaml in $bundle"
+    say "                   house rules are NOT enforced. Start from: $TEMPLATE"
+    return 0
+  fi
+  # --json, not the human output. Counting '❌' meant that an okflint whose
+  # format differs — precisely the VERSION-SKEW the doctor warns about — had
+  # every error rendered invisible and L2 reported PASS. Fails OPEN, in both
+  # directions (a WARNING containing ❌ used to be counted as an error). The
+  # documented contract is: 0 clean, 1 findings, 2 bad manifest. (R-2)
+  local out ec
+  out=$(cd "$bundle" && okflint validate . --manifest okf-base.yaml --json 2>&1); ec=$?
+  printf '%s' "$out" > "$TMP/l2.txt"
+
+  # ANY status outside the documented set means okflint did not reach a verdict —
+  # a missing binary (127), a signal, an internal error. Previously only `2` was
+  # handled, so a crashed validator produced "L2 PASS" and ALL GATES PASS. That
+  # is lessons/shell-or-swallows-errors.md: one status carrying two meanings. (R-1)
+  case "$ec" in
+    0|1) ;;
+    2)   say "  L2 profile       COULD NOT RUN — manifest rejected by okflint"
+         say_capped 3 "                   " < "$TMP/l2.txt"
+         return $EXIT_DEP ;;
+    *)   say "  L2 profile       COULD NOT RUN — okflint exited $ec (crashed or missing)"
+         say "                   NOT a pass: house rules were never evaluated."
+         say_capped 3 "                   " < "$TMP/l2.txt"
+         return $EXIT_DEP ;;
+  esac
+
+  # Parse the structured report. If okflint signalled findings (exit 1) but we
+  # cannot parse them, that is COULD NOT RUN — never a pass.
+  local counts errs warns
+  counts=$("$PY" - "$TMP/l2.txt" <<'PY' 2>/dev/null
+import json, sys
+raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+
+# `raw.find("[")` grabbed the FIRST bracket anywhere — including one inside
+# okflint's pre-JSON banner (`unknown okf_version=[0.3]`), which then made the
+# real report unparseable. Try every candidate start until one yields a LIST. (G-5)
+doc = None
+for i, ch in enumerate(raw):
+    if ch != "[":
+        continue
+    try:
+        cand = json.loads(raw[i:])
+    except ValueError:
+        continue
+    if isinstance(cand, list):
+        doc = cand
+        break
+# The body must be a LIST of findings. A dict (`{"findings": []}`) or anything
+# else is a report we do not understand — and an unrecognised shape must never be
+# summarised as "reported nothing". (G-4a)
+if doc is None:
+    sys.exit(1)
+
+def sev(x):
+    return str(x.get("severity", "")).lower() if isinstance(x, dict) else ""
+
+# A finding with NO severity key is not a warning — it is a finding we cannot
+# classify. Counting it as a warning let okflint exit 1 while L2 said PASS. (G-4b)
+errors  = [x for x in doc if sev(x) == "error"]
+unknown = [x for x in doc if isinstance(x, dict) and "severity" not in x]
+others  = [x for x in doc if sev(x) not in ("error",) and x not in unknown]
+print(len(errors), len(others), len(unknown))
+for x in errors + unknown:
+    print("E|%s %s — %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", "")))
+# Advisory findings grouped by rule code, most frequent first (ecosystem ticket 01): a flat
+# "226 warnings" hides which okflint rule family produced them.
+from collections import Counter
+for code, n in sorted(Counter(str(x.get("code", "?")) for x in others).items(), key=lambda kv: (-kv[1], kv[0])):
+    print("C|%s|%d" % (code.replace("|", "/"), n))
+PY
+  ) || counts=""
+  if [ -z "$counts" ]; then
+    # Previously an exit-0 run with an unparseable body printed "PASS 0 errors
+    # (okflint reported nothing)" — indistinguishable from a genuinely clean run.
+    # An unrecognised report means house rules were NOT evaluated, whatever the
+    # exit status said. (G-4a)
+    say "  L2 profile       COULD NOT RUN — okflint exited $ec and its report was not a findings list"
+    say "                   reason: $(grep -v '^[[:space:]]*$' "$TMP/l2.txt" | tail -1 | cut -c1-160)"
+    say "                   NOT a pass: treat house rules as unevaluated."
+    return $EXIT_DEP
+  fi
+  printf '%s' "$counts" > "$TMP/l2parsed.txt"
+  errs=$(head -1 "$TMP/l2parsed.txt" | awk '{print $1}')
+  warns=$(head -1 "$TMP/l2parsed.txt" | awk '{print $2}')
+  unknown=$(head -1 "$TMP/l2parsed.txt" | awk '{print $3}')
+  # okflint's EXIT STATUS is authoritative about whether findings exist. If it
+  # said 1 and we parsed zero errors, our classification is wrong — not okflint.
+  # Failing open here is how R-2 happened. (G-4b)
+  if [ "$ec" -eq 1 ] && [ "${errs:-0}" -eq 0 ] && [ "${unknown:-0}" -eq 0 ]; then
+    say "  L2 profile       COULD NOT RUN — okflint reported findings (exit 1) but none parsed as errors"
+    say "                   NOT a pass: its report format may have changed (see VERSION-SKEW in --doctor)."
+    return $EXIT_DEP
+  fi
+  if [ "${unknown:-0}" -gt 0 ]; then
+    say "  L2 profile       FAIL   ${unknown} finding(s) with no severity — treated as errors, not warnings"
+    grep '^E|' "$TMP/l2parsed.txt" | sed 's/^E|//' | say_capped 12 "                   "
+    return $EXIT_PROFILE
+  fi
+  # "by rule: S208 x12, S209 x4": top six codes, then a remainder count.
+  local bycode
+  bycode=$(awk -F'|' '$1=="C"{ if (n<6) printf "%s%s x%s", (n?", ":""), $2, $3; n++ } END { if (n>6) printf " (+%d more codes)", n-6 }' "$TMP/l2parsed.txt")
+  if [ "${errs:-0}" -eq 0 ]; then
+    say "  L2 profile       PASS   0 errors, ${warns:-0} warning(s) (advisory)"
+    [ -n "$bycode" ] && say "                   by rule: $bycode"
+    return 0
+  fi
+  say "  L2 profile       FAIL   ${errs} house-rule error(s)"
+  [ -n "$bycode" ] && say "                   advisory by rule: $bycode"
+  grep '^E|' "$TMP/l2parsed.txt" | sed 's/^E|//' | say_capped 12 "                   "
+  return $EXIT_PROFILE
+}
+
+# ------------------------------------------------------- L3 staleness
+# One awk pass. `find` not a bare glob: an empty dir must yield an empty loop,
+# not a shell error (lessons/monitor-zsh-glob-trap.md).
+# ------------------------------------------------- L2 index self-consistency
+# index.md is the only file in a bundle that ASSERTS a fact ABOUT the bundle,
+# and it was the one file nothing checked. Measured on ~/.claude/lessons in this
+# session: it claimed 43 concepts, then claimed 0 lessons in all three families,
+# and this gate exited 0 both times. It is wrong again as this is written —
+# "51 concepts" over a directory holding 50 — because the hand count followed
+# table ROWS and one lesson is deliberately cross-listed under two families.
+#
+# NATIVE, not an okflint rule. L2 profile SKIPS entirely when okflint is not
+# installed, and the brand-new machine this project exists to serve does not
+# have it. A check that only runs where an optional dependency happens to be
+# present cannot be the thing that catches a lying index.
+#
+# Only an explicit BOLD summary line is read. A first attempt matched any
+# "<n> <word>s" in prose and mis-fired immediately on "Three families cover 37
+# of the 48 lessons" — a true sentence about a subset. Verifying a declared
+# total is the job; counting sentences is not.
+run_index() {
+  local bundle="$1"
+  [ -f "$bundle/index.md" ] || { say "  L2 index         SKIPPED — no index.md in this bundle"; return $EXIT_OK; }
+  if [ -z "$PY" ]; then
+    say "  L2 index         SKIPPED — no python3; declared counts are NOT verified"
+    say "                   this is a skip, not a pass."
+    return $EXIT_OK
+  fi
+  local out ec
+  # "$PY" directly, not py_with_vendor: this reconciler reads frontmatter with a
+  # regex and parses no YAML, so it needs nothing from the vendored PyYAML and
+  # should not depend on it being present.
+  out=$("$PY" - "$bundle" <<'PYEOF'
+import pathlib, re, sys
+
+bundle = pathlib.Path(sys.argv[1])
+# The SAME concept set L1 counts: everything except the two files OKF v0.2
+# reserves. README.md is NOT reserved — it carries frontmatter and L1 counts it,
+# which is why L1 reports 51 for the lessons bundle where the untracked-file
+# count is 50. Excluding it here produced a reconciler that disagreed with the
+# conformance layer standing directly above it in the same report, and two
+# definitions of "concept" inside one tool are worse than no check at all.
+RESERVED = {"index.md", "log.md"}
+concepts = [p for p in bundle.rglob("*.md") if p.name not in RESERVED]
+
+def declared_type(p):
+    try:
+        t = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    if not t.startswith("---"):
+        return None
+    end = t.find("\n---", 3)
+    m = re.search(r"^type:\s*(.+?)\s*$", t[:end if end > 0 else len(t)], re.M)
+    return m.group(1).strip().strip("\"'") if m else None
+
+types = {}
+for p in concepts:
+    t = declared_type(p)
+    if t:
+        types[t.lower()] = types.get(t.lower(), 0) + 1
+
+idx = (bundle / "index.md").read_text(encoding="utf-8", errors="replace")
+# The declaration is a whole BOLD line, so a bold phrase inside a sentence is
+# not mistaken for a total.
+bold = None
+for line in idx.splitlines():
+    s = line.strip()
+    if s.startswith("**") and s.endswith("**") and re.search(r"\d", s):
+        bold = s[2:-2]
+        break
+if bold is None:
+    print("SKIP index.md declares no counts")
+    sys.exit(0)
+
+bad, good, unknown = [], [], []
+for seg in re.split(r"[·|,]", bold):
+    m = re.match(r"^\s*(\d+)\s+(.+?)\s*\.?\s*$", seg)
+    if not m:
+        continue
+    n, label = int(m.group(1)), m.group(2).strip().lower()
+    singular = label[:-1] if label.endswith("s") else label
+    if singular in ("concept", "note", "file"):
+        actual = len(concepts)
+    elif singular in types:
+        actual = types[singular]
+    else:
+        # Not derivable from any `type:` in the bundle. Saying so is the honest
+        # outcome; silently treating it as verified would be the failure this
+        # whole rule exists to stop.
+        unknown.append(f"{n} {label}")
+        continue
+    (good if n == actual else bad).append((n, label, actual))
+
+for n, label, actual in bad:
+    # "{actual} on disk", not "{actual} are on disk": the count can be 1, and
+    # "1 are on disk" in the line an operator reads is a defect in the report.
+    print(f"MISMATCH index.md claims {n} {label}; {actual} on disk")
+for n, label, actual in good:
+    print(f"OK {n} {label}")
+for u in unknown:
+    print(f"UNVERIFIABLE {u}")
+sys.exit(1 if bad else 0)
+PYEOF
+  ); ec=$?
+  if [ "$ec" -ne 0 ] && [ "$ec" -ne 1 ]; then
+    say "  L2 index         COULD NOT RUN — the reconciler exited $ec"
+    say "                   NOT a pass: declared counts were never evaluated."
+    return $EXIT_DEP
+  fi
+  local n_bad
+  n_bad=$(printf '%s\n' "$out" | grep -c '^MISMATCH ' 2>/dev/null); [ -n "$n_bad" ] || n_bad=0
+  if [ "$n_bad" -gt 0 ]; then
+    say "  L2 index         FAIL   index.md does not describe this bundle"
+    printf '%s\n' "$out" | while IFS= read -r l; do
+      case "$l" in MISMATCH\ *) say "                   ${l#MISMATCH }" ;; esac
+    done
+    return $EXIT_PROFILE
+  fi
+  case "$out" in
+    SKIP\ *) say "  L2 index         SKIPPED — ${out#SKIP }" ;;
+    *)       say "  L2 index         PASS   $(printf '%s\n' "$out" | grep -c '^OK ') declared count(s) match the files on disk"
+             printf '%s\n' "$out" | while IFS= read -r l; do
+               case "$l" in UNVERIFIABLE\ *) say "                   not derivable from any type: \"${l#UNVERIFIABLE }\"" ;; esac
+             done ;;
+  esac
+  return $EXIT_OK
+}
+
+# -------------------------------------------------- L3 staleness, DERIVED
+# `stale_after` is a date somebody typed — a promise, not a measurement. A
+# concept stamped 2099 reads as fresh forever even if the artefact it describes
+# changed yesterday, so L3 has been checking the promise and calling it
+# staleness.
+#
+# OKF v0.2 already models the measurement and nothing was using it: §5.1
+# `sources[]` carries a required `resource` and an optional ISO `last_modified`,
+# so a concept can record which artefact it was written against and when. No
+# concept in either bundle on this machine declares one — the mechanism existed
+# unused. So this is strictly opt-in: a bundle without `sources` behaves exactly
+# as before.
+#
+# Advisory unless --fail-stale, matching declared staleness. Sources that are
+# not local files (URLs, opaque identifiers) are UNMEASURABLE and said so —
+# never silently counted as verified, which is the failure this layer exists to
+# remove. Nothing here touches the network.
+run_derived_stale() {
+  local bundle="$1"
+  if [ -z "$PY" ]; then
+    say "  L3 derived       SKIPPED — no python3; recorded sources are NOT compared"
+    return $EXIT_OK
+  fi
+  local out ec
+  # py_with_vendor, unlike the index reconciler: `sources` is nested structure,
+  # and hand-rolling a YAML list-of-mappings parser with regexes is how a gate
+  # starts quietly disagreeing with the validator standing above it.
+  out=$(py_with_vendor - "$bundle" <<'PYEOF'
+import datetime, pathlib, sys
+try:
+    import yaml
+except Exception:
+    print("NOYAML")
+    sys.exit(0)
+
+bundle = pathlib.Path(sys.argv[1])
+RESERVED = {"index.md", "log.md"}
+stale, unmeasurable = [], []
+
+for p in sorted(bundle.rglob("*.md")):
+    if p.name in RESERVED:
+        continue
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        continue
+    if not text.startswith("---"):
+        continue
+    end = text.find("\n---", 3)
+    if end < 0:
+        continue
+    try:
+        meta = yaml.safe_load(text[3:end]) or {}
+    except Exception:
+        continue
+    if not isinstance(meta, dict):
+        continue
+    srcs = meta.get("sources")
+    if not isinstance(srcs, list):
+        continue
+    rel = str(p.relative_to(bundle))
+    for src in srcs:
+        if not isinstance(src, dict):
+            continue
+        res = str(src.get("resource", "")).strip()
+        recorded = src.get("last_modified")
+        if not res or recorded is None:
+            # Nothing to compare against. Not a finding — a concept may cite a
+            # source without dating it, and guessing would invent staleness.
+            continue
+        cand = [p.parent / res, bundle / res, pathlib.Path(res)]
+        target = next((c for c in cand if c.is_file()), None)
+        if target is None:
+            unmeasurable.append((rel, res))
+            continue
+        try:
+            mtime = datetime.date.fromtimestamp(target.stat().st_mtime)
+            rec = datetime.date.fromisoformat(str(recorded))
+        except (OSError, ValueError):
+            unmeasurable.append((rel, res))
+            continue
+        if mtime > rec:
+            stale.append((rel, res, str(rec), mtime.isoformat()))
+
+for rel, res, rec, mt in stale:
+    print(f"STALE {rel}: {res} changed {mt}, but this concept records it as of {rec}")
+for rel, res in unmeasurable:
+    print(f"UNMEASURABLE {rel}: {res} is not a local file — freshness could not be measured")
+sys.exit(1 if stale else 0)
+PYEOF
+  ); ec=$?
+  if [ "$ec" -ne 0 ] && [ "$ec" -ne 1 ]; then
+    say "  L3 derived       COULD NOT RUN — the source comparison exited $ec"
+    say "                   NOT a pass: recorded sources were never compared."
+    return $EXIT_DEP
+  fi
+  case "$out" in
+    NOYAML*) say "  L3 derived       SKIPPED — PyYAML unavailable; sources NOT compared"; return $EXIT_OK ;;
+    "")      return $EXIT_OK ;;   # no concept declares sources: silent by design
+  esac
+  local n_stale
+  n_stale=$(printf '%s\n' "$out" | grep -c '^STALE ' 2>/dev/null); [ -n "$n_stale" ] || n_stale=0
+  printf '%s\n' "$out" | while IFS= read -r l; do
+    case "$l" in
+      STALE\ *)        say "  L3 derived       ${l#STALE }" ;;
+      UNMEASURABLE\ *) say "  L3 derived       ${l#UNMEASURABLE }" ;;
+    esac
+  done
+  if [ "$n_stale" -gt 0 ]; then
+    if [ "$FAIL_STALE" -eq 1 ]; then
+      say "                   a recorded source has moved since the concept was written"
+      return $EXIT_STALE
+    fi
+    say "                   advisory; use --fail-stale to make this blocking"
+  fi
+  return $EXIT_OK
+}
+
+run_staleness() {
+  local bundle="$1" today report scan_rc
+  # OKF_TODAY pins "now" for tests. A value that is not YYYY-MM-DD is refused: applied as-is,
+  # "zzz" flags everything and "1999-01-01" hides every expiry with nothing in the output.
+  today=${OKF_TODAY:-$(date -u +%Y-%m-%d)}
+  case "$today" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+    *) say "  L3 staleness     COULD NOT RUN (OKF_TODAY='$today' is not YYYY-MM-DD)"; return $EXIT_DEP ;;
+  esac
+  [ -z "${OKF_TODAY:-}" ] || say "  L3 staleness     NOTE   date pinned by OKF_TODAY=$today"
+  # NO `-maxdepth 1`: L1 walks the whole tree (`rglob`), so bounding L3 to the top
+  # level made every NESTED concept invisible to staleness while L1 counted it —
+  # the E-6b bug one level deeper, and worse. This repo's own .okf keeps all its
+  # concepts in subdirectories, so L3 was scanning ZERO of them and reporting
+  # "nothing expired" from an empty set. Caught by E-9.
+  #
+  # `find -L`, not plain `find`: without -L a SYMLINK to a .md never matches
+  # `-type f`, so L3 silently skipped symlinked concepts that L1 counted (python
+  # is_file() follows links). The two layers then disagreed about the bundle's
+  # contents and an expired symlinked concept read as "nothing expired".
+  # -L also drops broken symlinks, which is correct — they cannot be read anyway.
+  # Same class as lessons/readdir-symlink-dirent-trap.md. Caught by E-6b.
+  # `find -print0` piped straight to xargs -0. The previous `find | tr '\n' '\0'`
+  # split on newlines, so a bundle path CONTAINING a newline was cut into
+  # fragments and L3 silently scanned nothing — same class as E-2b, which had
+  # only ever covered spaces. (R-7)
+  #
+  # `b` keeps the path RELATIVE TO THE BUNDLE rather than a basename: now that
+  # the scan is recursive, two expired `notes.md` in different directories
+  # rendered as two identical, unactionable lines. Introduced by the E-9 fix
+  # itself. (R-8)
+  # root travels via the ENVIRONMENT, not `-v`: awk rejects a newline in a -v
+  # assignment outright ("awk: newline in string"), which killed L3 for any
+  # bundle path containing one. ENVIRON has no such restriction. (R-7)
+  # Prefix-assigned on the xargs stage, NOT exported: `export` here leaked the
+  # name into every process spawned afterwards, the same shape as G-2's
+  # PYTHONPATH. No consumer reads it today — G-2 was also harmless until okflint
+  # silently changed parser. xargs passes its environment to awk, so ENVIRON
+  # still sees it and R-7 (newline-safe root) is preserved. (G-12)
+  report=$(find -L "$bundle" -name '*.md' -type f -print0 2>/dev/null | OKF_L3_ROOT="$bundle/" xargs -0 awk -v today="$today" "$L3_AWK_LIB"'
+    BEGIN { root = ENVIRON["OKF_L3_ROOT"] }
+    { sub(/\r$/, "") }   # CRLF notes: "---\r" never equalled "---" (LT-02)
+    FNR==1 { b=FILENAME; n=index(b,root); if (n==1) b=substr(b,length(root)+1)
+             base=b; sub(/^.*\//,"",base)
+             skip=(l3_begin($0, base=="index.md"||base=="log.md") != "open"); next }
+    skip { next }
+    l3_line($0) {
+      if (L3_sa!="" && !okfisdate(L3_sa)) printf "  malformed %s (stale_after %s is not a date)\n", b, L3_sa   # LT-03d
+      else if (L3_sa!="" && L3_sa<today) printf "  expired  %s (stale_after %s)\n", b, L3_sa
+      if (L3_st!="" && !okfstatusok(L3_st)) printf "  status   %s (%s)\n", b, L3_st
+    }
+  ' 2>/dev/null; exit "${PIPESTATUS[1]}")
+  scan_rc=$?
+  # A crashed awk printed nothing and nothing read as "PASS nothing expired" (ticket 07).
+  if [ "$scan_rc" -ne 0 ]; then say "  L3 staleness     COULD NOT RUN (the awk/xargs scan exited $scan_rc)"; return $EXIT_DEP; fi
+  if [ -z "$report" ]; then say "  L3 staleness     PASS   nothing expired"; return 0; fi
+  local n; n=$(printf '%s\n' "$report" | grep -c .)
+  ADVISORIES=$((ADVISORIES + n))
+  say "  L3 staleness     ${n} concept(s) need attention"
+  # through say(), or --json is corrupted by the detail lines (R-3)
+  printf '%s\n' "$report" | say_capped 10 ""
+  [ "$FAIL_STALE" -eq 1 ] && return $EXIT_STALE
+  return 0
+}
+
+# ------------------------------------------------------------------ selftest
+# A gate is only verified when you have watched it FAIL. Each probe plants a
+# defect that MUST be caught, and the baseline must be clean — so a probe that
+# passes for the wrong reason (a gate that fires on everything) also fails here.
+selftest() {
+  local fails=0 b="$TMP/selftest-bundle"
+  mkdir -p "$b"
+  printf -- '---\nokf_version: "0.2"\n---\n# Selftest\n' > "$b/index.md"
+  printf -- '# Log\n\n## 2026-01-01\n* created\n' > "$b/log.md"
+  printf -- '---\ntype: Lesson\ntitle: Baseline\ndescription: Clean concept.\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:selftest\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$b/good.md"
+  [ -f "$TEMPLATE" ] && sed 's/^  name: CHANGE ME/  name: Selftest/' "$TEMPLATE" > "$b/okf-base.yaml"
+
+  probe() { # name | expect-marker | layer-fn | file | content
+    local name="$1" marker="$2" fn="$3" f="$4" content="$5" out
+    printf '%b' "$content" > "$b/$f"
+    out=$("$fn" "$b" 2>&1; true)          # do NOT set JSON=1 here: say() would
+    rm -f "$b/$f"                          # swallow the very output we grep
+    if printf '%s' "$out" | grep -q "$marker"; then
+      say "    FIRED      $name"
+    else
+      say "    NOT FIRED  $name  (expected to match: $marker)"
+      # Through say(), like every other line here. Inert today — the `selftest)`
+      # dispatch forces JSON=0 (R-5) — but a raw write is only safe BECAUSE of
+      # that line. Lift it and this dump corrupts --json output again (R-3). No
+      # runtime test can reach this: the two flags cannot coexist. (G-6)
+      printf '%s\n' "$out" | say_capped 4 "               "
+      fails=$((fails+1))
+    fi
+  }
+
+  say "okf-check $VERSION — selftest (each gate must catch input that should trip it)"
+  say "  baseline must be clean first:"
+  local base; base=$(run_conformance "$b" 2>&1)
+  if printf '%s' "$base" | grep -q "PASS"; then say "    CLEAN    baseline bundle passes L1"
+  else say "    BASELINE DIRTY — probes below prove nothing"; say "$base"; fails=$((fails+1)); fi
+
+  say "  L1 (spec conformance):"
+  probe "no frontmatter -> §11.1" "11.1" run_conformance "bad.md" 'no frontmatter here\n'
+  probe "empty type -> §11.2"     "11.2" run_conformance "bad.md" '---\ntype: ""\n---\nbody\n'
+
+  if command -v okflint >/dev/null 2>&1 && [ -f "$b/okf-base.yaml" ]; then
+    say "  L2 (house profile):"
+    probe "missing stale_after -> F102"  "F102" run_profile "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\n---\nbody\n'
+    probe "status outside vocab -> F105" "F105" run_profile "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: current\nstale_after: "2099-01-01"\n---\nbody\n'
+  else
+    say "  L2 (house profile): SKIPPED — okflint absent, so its gates are UNVERIFIED here"
+  fi
+
+  say "  L3 (staleness):"
+  # Marker is "need attention", NOT "expired": the PASS line reads "nothing
+  # expired", so grepping for "expired" matches success and failure alike — a
+  # tautological probe that can never fail. Found by mutation-testing.
+  probe "expired stale_after" "need attention" run_staleness "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n---\nbody\n'
+
+  say ""
+  if [ "$fails" -eq 0 ]; then say "  SELFTEST PASS — every gate still fires"; return 0; fi
+  say "  SELFTEST FAIL — $fails gate(s) stopped firing. Do NOT trust a green okf-check run."
+  return $EXIT_SELFTEST
+}
+
+# ---------------------------------------------------------------------- main
+TMP=$(mktemp -d 2>/dev/null || mktemp -d -t okfcheck)
+trap 'rm -rf "$TMP"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+case "$MODE" in
+  # Prints the E-7 change-detection fingerprint. Exists so that detection can be
+  # tested DETERMINISTICALLY: the race-based test could only SKIP when it missed
+  # its window, and a mutation re-adding `-maxdepth 1` to the fingerprint slipped
+  # through exactly that way. Also answers "why did it say CONCURRENT?".
+  fingerprint) [ -n "$BUNDLE" ] || { echo "usage: okf-check --fingerprint <bundle>" >&2; exit 64; }
+               [ -d "$BUNDLE" ] || { echo "error: $BUNDLE is not a directory" >&2; exit 64; }
+               # The R-6 fail-closed guard was added to the normal path in the
+               # same commit that introduced this mode, and not ported here: an
+               # unreadable directory produced empty output and exit 0, a silent
+               # clean read of a path we were never allowed to see. (G-3)
+               ls "$BUNDLE" >/dev/null 2>&1 || {
+                 echo "error: $BUNDLE is not readable — cannot fingerprint it (this is not 'unchanged')" >&2
+                 exit $EXIT_DEP; }
+               # ...and every directory below it, or a fingerprint taken over a
+               # subtree we cannot see compares equal to itself forever. (G-8)
+               _u=$(unreadable_dirs "$BUNDLE")
+               [ -z "$_u" ] || {
+                 echo "error: $BUNDLE contains unreadable directories — a fingerprint over them is not 'unchanged'" >&2
+                 printf '%s\n' "$_u" | err_capped 3 "  unreadable: "
+                 exit $EXIT_DEP; }
+               # `--json` used to print raw `size mtime path` lines here and exit
+               # 0 — the R-3 defect, in the mode added after R-3 was fixed. (G-10)
+               if [ "$JSON" -eq 1 ]; then
+                 [ -n "$PY" ] || { echo '{"error":"python3 required for --fingerprint --json"}'; exit $EXIT_DEP; }
+                 bundle_fingerprint "$BUNDLE" | "$PY" -c 'import json,sys
+print(json.dumps({"bundle": sys.argv[1],
+                  "fingerprint": [l.rstrip("\n") for l in sys.stdin if l.strip()]}))' "$BUNDLE"
+               else
+                 bundle_fingerprint "$BUNDLE"
+               fi
+               exit 0;;
+  preflight)    preflight; exit 0;;   # a SessionStart hook must never fail the session
+  install-deps) install_deps; exit $?;;
+  doctor)   doctor; exit $?;;
+  selftest) # The probes read the layers' HUMAN output, which say() suppresses
+            # under --json. With `--selftest --json` every probe saw nothing,
+            # reported a dead gate and exited 5 — the code documented as the
+            # worst outcome — on entirely healthy code. A false alarm on the one
+            # signal that must never lie. selftest is a report, not a data feed;
+            # force human output for it. (R-5)
+            JSON=0
+            doctor >/dev/null 2>&1 || { doctor; echo "cannot selftest: dependencies missing" >&2; exit $EXIT_DEP; }
+            selftest; exit $?;;
+esac
+
+[ -n "$BUNDLE" ] || { echo "usage: okf-check <bundle> [--doctor|--selftest|--json|--fail-stale]" >&2; exit 64; }
+[ -d "$BUNDLE" ] || { echo "error: $BUNDLE is not a directory" >&2; exit 64; }
+# An UNREADABLE directory used to yield "L1 PASS 0 concepts" and exit 0 — a
+# permission problem, or a typo'd path, read as a clean bill of health. The
+# fail-closed principle E-7b enforces for a single unreadable FILE was simply
+# absent for the DIRECTORY. (R-6)
+if ! ls "$BUNDLE" >/dev/null 2>&1; then
+  echo "error: $BUNDLE is not readable — cannot reach a verdict (this is not a pass)" >&2
+  exit $EXIT_DEP
+fi
+# ...and the same question about every directory BELOW it. (G-8)
+_unreadable=$(unreadable_dirs "$BUNDLE")
+if [ -n "$_unreadable" ]; then
+  echo "error: $BUNDLE contains directories this process cannot read — no verdict is possible" >&2
+  printf '%s\n' "$_unreadable" | err_capped 3 "  unreadable: "
+  echo "  a partial scan is not a pass; fix the permissions or point at a subtree you can read" >&2
+  exit $EXIT_DEP
+fi
+
+if ! doctor >/dev/null 2>&1; then doctor; echo "L1 cannot run — fix the above." >&2; exit $EXIT_DEP; fi
+
+say "okf-check $VERSION — $BUNDLE"
+worst=0
+FP_BEFORE=$(bundle_fingerprint "$BUNDLE")
+# A fingerprint that comes back EMPTY over a bundle that has concepts means the
+# comparison below is ""=="" — E-7 change detection silently OFF, every mid-scan
+# write reading as "unchanged", and the run still printing ALL GATES PASS. Found
+# by mutating the GNU branch to emit nothing: the gate never noticed. A broken
+# `stat`, an unsupported format string, or a platform branch nobody has run all
+# produce it. State it; a lane that quietly stopped working is the defect this
+# whole tool exists to catch. (Z-3)
+FP_DEGRADED=0
+if [ -z "$FP_BEFORE" ] && [ -n "$(find -L "$BUNDLE" -name '*.md' -type f -print -quit 2>/dev/null)" ]; then
+  FP_DEGRADED=1
+fi
+# PRECEDENCE, not max(). `worst=max(rc)` returned 2 ("could not run") for a
+# bundle that had BOTH a real §11 conformance error and an unusable manifest,
+# so CI would retry or reinstall instead of failing the bundle. A verdict that
+# was REACHED always outranks a gate that could not reach one. (R-4)
+rank() { case "$1" in 0) echo 0;; 4) echo 1;; 6) echo 2;; 2) echo 3;; 3) echo 4;; 1) echo 5;; 5) echo 6;; *) echo 7;; esac; }
+worse() { [ "$(rank "$1")" -gt "$(rank "$worst")" ] && worst="$1"; return 0; }
+
+run_conformance "$BUNDLE"; worse $?
+run_profile     "$BUNDLE"; worse $?
+run_index       "$BUNDLE"; worse $?
+run_staleness   "$BUNDLE"; worse $?
+run_derived_stale "$BUNDLE"; worse $?
+FP_AFTER=$(bundle_fingerprint "$BUNDLE")
+
+# The readability guard is check-then-act: it walks the tree once, and the layers
+# read it afterwards. A directory locked in that gap is invisible to both — the
+# guard already passed, and L1's own scan drops unreadable subtrees in silence.
+# Reproduced with the window widened: a concept vanished and the run printed
+# "PASS 0 concepts", exit 0. The natural window is tens of milliseconds and no
+# accident will hit it, but "narrow" is not "closed" and this is the exact
+# fail-open class R-6 and G-8 exist to stop.
+#
+# The race cannot be removed — another agent owns its own writes, the same
+# constraint E-7 documents. So it is DETECTED and STATED, which is what E-7 does
+# for content. The fingerprint cannot cover it: that stats *.md size and mtime,
+# never a directory's permission bits. (T-1)
+_unreadable_after=$(unreadable_dirs "$BUNDLE")
+if [ -n "$_unreadable_after" ]; then
+  say "  UNREADABLE       a directory became unreadable DURING this scan"
+  say "                   The layers above read a tree they were no longer allowed"
+  say "                   to read in full. This is not a verdict."
+  printf '%s\n' "$_unreadable_after" | err_capped 3 "  unreadable: "
+  worse $EXIT_DEP
+fi
+
+# E-7. The layers ran against whatever was on disk at the moment each one looked.
+# If that moved, this verdict is a point-in-time reading and must not be
+# presented as a stable one.
+if [ "$FP_DEGRADED" -eq 1 ]; then
+  ADVISORIES=$((ADVISORIES + 1))
+  say "  DEGRADED         change detection is OFF — the fingerprint came back empty"
+  say "                   on a bundle that has concepts. \`stat\` may be missing or"
+  say "                   unsupported here; run: okf-check --doctor"
+    # `--fail-on-change` is a CI caller stating "a mid-scan write must fail this
+    # run". With the fingerprint degraded that detection is OFF and exit 6 is
+    # UNREACHABLE, so the run used to exit 0 — the safety net silently absent
+    # while the flag requesting it was set. Asking for a guarantee this tool
+    # cannot currently provide is COULD NOT RUN, which is what every other
+    # layer here returns when it cannot reach a verdict. (Z-8)
+    if [ "$FAIL_ON_CHANGE" -eq 1 ]; then
+      say "                   --fail-on-change was requested but cannot be honoured."
+      worse $EXIT_DEP
+    fi
+elif [ "$FP_BEFORE" != "$FP_AFTER" ]; then
+  CONCURRENT=1
+  ADVISORIES=$((ADVISORIES + 1))
+  say "  CONCURRENT       the bundle CHANGED during this scan"
+  say "                   Layers run in sequence, so this report may mix two states."
+  say "                   The verdict is a point-in-time reading, not a snapshot — re-run"
+  say "                   when writers are idle if you need a stable answer."
+  # THROUGH `worse`, not a raw numeric compare. `[ $worst -lt 6 ]` was ALWAYS
+  # true — the three gates only ever return 0..4 — so a mid-scan write silently
+  # overwrote a real conformance failure with exit 6. That is R-4's "verdict
+  # masked by an unrelated code" defect, reintroduced by the same commit that
+  # fixed R-4 for the other gates. A REACHED verdict outranks a disturbed one. (G-1)
+  [ "$FAIL_ON_CHANGE" -eq 1 ] && worse $EXIT_CHANGED
+fi
+
+if [ "$JSON" -eq 1 ]; then
+  # `change_detection` exists because the DEGRADED warning goes through say(),
+  # which --json suppresses by design (R-3) — so a machine consumer read
+  # {"exit":0,...} with no hint that the E-7 lane was off. Not corruption: a
+  # silent capability gap, and worse for a reader who cannot see the human
+  # text. Emitted on EVERY run, not only the degraded one, so its absence is
+  # never something a consumer has to infer. (Z-9)
+  if   [ "$FP_DEGRADED" -eq 1 ]; then _cd=degraded
+  elif [ "$CONCURRENT"  -eq 1 ]; then _cd=changed
+  else _cd=ok; fi
+  printf '{"bundle":"%s","exit":%d,"l1_errors":%s,"l1_warnings":%s,"concepts":%s,"change_detection":"%s"}\n' \
+    "$BUNDLE" "$worst" "${L1_ERR:-null}" "${L1_WARN:-null}" "${L1_CONCEPTS:-null}" "$_cd"
+fi
+say ""
+# Never print a bare pass while the body reported something. A summary that
+# contradicts its own output is how a gate stops being read.
+if [ "$worst" -ne 0 ]; then
+  say "  FAILED (exit $worst)"
+elif [ "$ADVISORIES" -gt 0 ] || [ "$SKIPPED" -gt 0 ]; then
+  say "  PASS — no blocking errors, but ${ADVISORIES} advisory(ies) and ${SKIPPED} skipped layer(s) above"
+else
+  say "  ALL GATES PASS"
+fi
+exit $worst

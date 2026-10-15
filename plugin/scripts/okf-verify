@@ -1,0 +1,473 @@
+#!/usr/bin/env python3
+# /// script
+# requires-python = ">=3.9"
+# dependencies = ["pyyaml>=6"]
+# ///
+"""okf-verify — L4: is what this bundle SAYS still true?
+
+L1 answers "is this valid OKF?" and L2 "is this valid OUR OKF?". Both are
+questions about FORM. A concept citing a commit that no longer exists is
+perfectly conformant and quietly wrong — and that is not hypothetical: a history
+rewrite on 2026-07-30 orphaned every SHA one lesson cited, while the fix it
+described was still running in production.
+
+Nothing else in the OKF ecosystem checks this. The upstream validator says so
+itself: a target outside the bundle is "legitimate and unverifiable from here".
+
+THE LOAD-BEARING DISTINCTION
+----------------------------
+    CONFIRMED   the claim was checked and holds
+    REFUTED     the claim was checked and does NOT hold
+    UNRESOLVED  the claim could NOT be checked
+
+UNRESOLVED is not a soft REFUTED. Collapsing the two would make this tool
+actively harmful: it would report a corpus as false when the truth is that
+nobody looked. Same rule as negative-claims-state-scope.md — a negative is only
+as strong as the scope actually searched, and the scope is printed with it.
+
+Which is why SHAs and paths are treated ASYMMETRICALLY:
+
+  * A missing FILE PATH can be REFUTED — but only when its parent directory
+    exists. Then we know we searched the right place and the file is genuinely
+    absent. If the parent is missing too, this is a different machine or layout:
+    UNRESOLVED.
+
+  * A missing SHA is NEVER refuted. It depends entirely on which repositories
+    were searched, and it does not survive a history rewrite. Absence here is
+    ignorance, not falsehood. When the commit SUBJECT still resolves, that is
+    reported as the likely rewrite.
+
+Usage:
+    okf-verify <bundle> [--repo DIR]... [--json] [--strict]
+    --strict  also fail on UNRESOLVED (for a corpus that must stay checkable)
+"""
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+CONFIRMED, REFUTED, UNRESOLVED = "CONFIRMED", "REFUTED", "UNRESOLVED"
+
+# A bare 7-40 hex run matches far too much ordinary prose ("deadbeef", "acceded",
+# a CSS colour, a checksum). Require a git-ish context: backticked, or adjacent to
+# a commit word. Precision over recall — a false claim of verification is worse
+# than a missed one.
+SHA_CTX = re.compile(
+    r"(?:`([0-9a-f]{7,40})`"
+    r"|(?:commit|sha|rev|fix(?:ed)?\s+in)\s+[`']?([0-9a-f]{7,40})[`']?"
+    # A commit URL is the commonest citation form in the wild and matched nothing:
+    # the context word had to be followed by whitespace, and a URL uses a slash.
+    # Covers github/gitlab `/commit/<sha>` and `/commits/<sha>`. (D-8)
+    r"|/commits?/([0-9a-f]{7,40})\b)",
+    re.I,
+)
+# The closing delimiter is a BACKREFERENCE, not another character class. The
+# unpaired form accepted `` `/x/y.md' `` — a backtick opening and an apostrophe
+# closing — so an apostrophe landing after an inline-code span turned ordinary
+# prose into a cited path. That path is then absent, and the run manufactures a
+# REFUTED: the one verdict this tool exists to never invent. (D-12)
+PATH_RE = re.compile(r"([`\"'])((?:~|/)[A-Za-z0-9._/ -]*[A-Za-z0-9._-]\.[A-Za-z0-9]{1,6})\1")
+QUOTED = re.compile(r"[\"“]([^\"”\n]{12,120})[\"”]")
+RESERVED = {"index.md", "log.md"}
+FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})")
+INDENTED = re.compile(r"^(?: {4,}|\t)")
+# Transient by definition. Absence in one of these proves nothing about whether
+# the claim was ever true, so they can never be REFUTED — only UNRESOLVED.
+# /private/var/... is what realpath() returns for /var/... on macOS; omitting the
+# canonical form let the same directory be judged two different ways. (D-3)
+EPHEMERAL = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/",
+             "/var/tmp/", "/private/var/tmp/", "/dev/shm/")
+
+
+def strip_code_fences(body: str) -> tuple[str, bool]:
+    """Drop code blocks before extracting claims.
+
+    A path inside a code block is a LITERAL — `const LOG = '/tmp/net-spy.log'`
+    tells you where to write output; it does not assert the file exists. Live-firing
+    produced exactly that false REFUTED, and a tool that cries wolf gets ignored.
+
+    CommonMark rules, because the naive version was demonstrably wrong (D-4/D-5):
+      * a fence is closed only by the SAME character, at least as long as the
+        opener. Toggling on any fence meant a ``~~~`` block DOCUMENTING a ``` fence
+        untoggled at the inner fence and leaked its literals — the precise
+        cry-wolf failure this function exists to prevent.
+      * 4-space / tab indented blocks are code too, and were not handled at all.
+    """
+    out, fence_char, fence_len = [], "", 0
+    for line in body.split("\n"):
+        m = FENCE.match(line)
+        if fence_char:
+            # only a matching, at-least-as-long fence of the same char closes it
+            if m and m.group(2)[0] == fence_char and len(m.group(2)) >= fence_len:
+                fence_char, fence_len = "", 0
+            continue
+        if m:
+            fence_char, fence_len = m.group(2)[0], len(m.group(2))
+            continue
+        if INDENTED.match(line):
+            continue
+        out.append(line)
+    # An unclosed fence runs to end-of-document under CommonMark, so the parse is
+    # CORRECT — but every claim after it is silently swallowed. Correct is not the
+    # same as safe: return the fact so the caller can say so. (D-6)
+    return "\n".join(out), bool(fence_char)
+
+
+def frontmatter_end(text: str) -> int:
+    if not text.startswith("---\n"):
+        return 0
+    e = text.find("\n---\n", 3)
+    return e + 5 if e != -1 else 0
+
+
+# Returned by git() when the command could not be RUN to a conclusion, as
+# opposed to running and finding nothing. Those were the same value (1, "")
+# until now: TimeoutExpired is a subclass of SubprocessError, so a git call that
+# blew its deadline on a loaded machine looked exactly like a clean "no match",
+# and the caller went on to state "not found in the searched repos" — a claim
+# about a search that never happened. Seen twice in review as an intermittent
+# 4-failure run and never reproducible on demand, because it needed real load.
+#
+# In production it silently downgrades CONFIRMED to UNRESOLVED: "checked and
+# true" becoming "nobody checked", inside the one layer built to keep those
+# apart. See lessons/shell-or-swallows-errors.md — one value, two meanings. (Z-4)
+# -1000, not -1. subprocess returns the NEGATED signal number when a child is
+# killed, so a git killed by SIGHUP returns exactly -1 — measured, not assumed —
+# and would have been indistinguishable from this sentinel. The outcome happened
+# to be right (both mean "could not run to a conclusion"), but a sentinel that
+# collides with real data is a trap waiting for the next reader. Signal deaths
+# are -1..-64, so -1000 cannot collide.
+GIT_UNAVAILABLE = -1000
+
+
+def git(repo: Path, *args: str) -> tuple[int, str]:
+    """Run git. GIT_UNAVAILABLE means it could not be RUN — not that it found nothing."""
+    try:
+        p = subprocess.run(["git", "-C", str(repo), *args],
+                           capture_output=True, text=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        return GIT_UNAVAILABLE, "git timed out"
+    except (OSError, subprocess.SubprocessError):
+        return GIT_UNAVAILABLE, "git could not be executed"
+    if p.returncode < 0:
+        return GIT_UNAVAILABLE, f"git killed by signal {-p.returncode}"
+    return p.returncode, p.stdout.strip()
+
+
+def repo_usable(repo: Path) -> tuple[bool, str]:
+    """Can git run here, and is this actually a repository? Asked ONCE per repo.
+
+    Exit 128 is overloaded: `cat-file -e` returns it for an ABSENT object, and
+    git returns it for "not a repository" and for assorted real errors. The code
+    alone cannot separate them, so an earlier attempt to treat "not 0 or 1" as a
+    failure turned every genuinely-absent SHA into "could not query" — the same
+    false claim as before, pointing the other way.
+
+    Establishing usability up front makes a later 128 unambiguous: git works and
+    the repository is valid, therefore the object is absent. Two questions, two
+    checks, instead of one exit code carrying both. (Z-5)
+    """
+    rc, out = git(repo, "rev-parse", "--git-dir")
+    if rc == GIT_UNAVAILABLE:
+        return False, out
+    if rc != 0:
+        return False, "not a usable git repository"
+    return True, ""
+
+
+def check_sha(sha: str, repos: list[Path], subjects: list[str]):
+    """A SHA is CONFIRMED or UNRESOLVED. Never REFUTED — see the module docstring."""
+    if not repos:
+        return UNRESOLVED, "no repository searched (pass --repo to check SHAs)"
+
+    unavailable: list[str] = []
+    usable: list[Path] = []
+    for r in repos:
+        ok_, why = repo_usable(r)
+        (usable if ok_ else unavailable).append(r if ok_ else f"{r.name} ({why})")
+
+    for r in usable:
+        rc, _ = git(r, "cat-file", "-e", f"{sha}^{{commit}}")
+        if rc == 0:
+            # The follow-up subject lookup can fail on its own, and its return
+            # code used to be discarded — so its ERROR STRING was rendered as
+            # the commit subject: "resolves in repo: git exited 128". The
+            # verdict was right and the evidence beside it was fabricated,
+            # which is the more corrosive half. The SHA is already confirmed
+            # here; a missing subject is a missing subject, not a wrong one.
+            src, subj = git(r, "log", "-1", "--format=%s", sha)
+            if src != 0 or not subj:
+                return CONFIRMED, f"resolves in {r.name} (subject unavailable)"
+            return CONFIRMED, f"resolves in {r.name}: {subj[:60]}"
+
+    # Not found. Before shrugging, look for a surviving commit SUBJECT quoted in
+    # the same concept — that is the signature of a rewritten history, and it
+    # tells the reader the claim is probably TRUE with a dead anchor.
+    for subj in subjects:
+        for r in usable:
+            rc, out = git(r, "log", "--all", "--format=%h|%s", f"--grep={subj[:60]}", "-F", "-1")
+            if rc != 0:
+                # `log --grep` exits 0 even when nothing matches, so non-zero here
+                # is a real failure. The first version of this fix `continue`d
+                # without recording it, so a subject search that never ran still
+                # produced "not found in the searched repos". (Z-5)
+                entry = f"{r.name} (subject search failed)"
+                if entry not in unavailable:
+                    unavailable.append(entry)
+                continue
+            if out:
+                new_sha, found = (out.split("|", 1) + [""])[:2]
+                return UNRESOLVED, (f"SHA absent but the commit subject survives in {r.name} "
+                                    f"as {new_sha} — likely a history rewrite, not a false claim")
+
+    # Never claim a completed search that did not complete.
+    if unavailable:
+        where = ", ".join(r.name for r in usable) or "none"
+        return UNRESOLVED, (f"could not query {'; '.join(unavailable)} — that lookup did not run, "
+                            f"which is not the same as absent (searched: {where})")
+    searched = ", ".join(r.name for r in usable)
+    return UNRESOLVED, f"not found in the searched repos ({searched}); other repos not searched"
+
+
+def case_exact(p: Path) -> bool:
+    """Does every component of `p` appear on disk with the case as written?
+
+    APFS and NTFS are case-INSENSITIVE by default, so `exists()` answers yes
+    for a name that is nowhere on the filesystem: a concept citing `Notes.MD`
+    against a repo holding `notes.md` was reported CONFIRMED. The tool then
+    asserts it verified a path that does not exist as written — and the whole
+    point of the CONFIRMED verdict is that it was checked, not approximated.
+
+    Returns True when we CANNOT tell (unreadable parent): a verdict must never
+    be manufactured out of a failed look. (D-11)
+    """
+    cur = Path(p.anchor) if p.anchor else Path(".")
+    parts = p.parts[1:] if p.anchor else p.parts
+    for part in parts:
+        try:
+            if part not in os.listdir(cur):
+                return False
+        except OSError:
+            return True
+        cur = cur / part
+    return True
+
+
+def check_path(raw: str, bundle: Path):
+    """A path CAN be refuted — but only where we know we looked in the right place."""
+    p = Path(os.path.expanduser(raw))
+    if not p.is_absolute():
+        p = bundle / raw
+
+    # EXISTENCE IS CHECKED FIRST. An earlier draft tested `ephemeral` before
+    # `exists()`, which made a file that demonstrably EXISTS in a temp directory
+    # report UNRESOLVED — caught by V-2. Ephemerality is only relevant to
+    # ABSENCE: it says "gone from here proves nothing", never "present here
+    # proves nothing".
+    #
+    # `exists() == False` is THREE states, not one, and only the last justifies
+    # REFUTED. Conflating them was the root cause of the refuted central claim:
+    #   raises OSError  -> unreadable (EACCES); we were not allowed to look
+    #   lexists()       -> the entry EXISTS but does not resolve (ELOOP, dangling)
+    #   neither         -> genuinely absent
+    try:
+        if p.exists():
+            # UNRESOLVED, not REFUTED: the file is plainly there under another
+            # case, so the claim is not false — it is unverified as written.
+            if not case_exact(p):
+                return UNRESOLVED, ("only a case-variant of this path exists and the "
+                                    "filesystem is case-insensitive — present, but not "
+                                    "as written, which is not the same as confirmed")
+            return CONFIRMED, "exists"
+    except OSError as e:                                                  # (D-2)
+        return UNRESOLVED, (f"cannot stat ({type(e).__name__}) — unreadable, "
+                            f"which is not the same as absent")
+    if os.path.lexists(p):                                                # (D-1)
+        return UNRESOLVED, ("a directory entry exists but does not resolve "
+                            "(looping or dangling symlink) — unresolvable, not absent")
+
+    # Now that absence is established: was it ever reasonable to expect the file
+    # to still be there? Canonicalise first — realpath($TMPDIR) on macOS is
+    # /private/var/folders/..., so a prefix test on the raw string let the
+    # CANONICAL form of the very same directory fall through to REFUTED, two
+    # verdicts for one byte-identical location. (D-3)
+    try:
+        real = os.path.realpath(p)
+    except OSError:
+        real = str(p)
+    if str(real).startswith(EPHEMERAL) or str(p).startswith(EPHEMERAL):
+        return UNRESOLVED, "ephemeral location — absence here proves nothing about the claim"
+    try:
+        parent_exists = p.parent.exists()
+    except OSError as e:
+        return UNRESOLVED, f"parent unreadable ({type(e).__name__}) — could not check"
+    if parent_exists:
+        return REFUTED, f"parent {p.parent} exists but the file does not"
+    return UNRESOLVED, f"parent {p.parent} does not exist either — different machine or layout"
+
+
+def verify(bundle: Path, repos: list[Path]):
+    results, no_claims = [], []
+    for f in sorted(bundle.rglob("*.md")):
+        if not f.is_file() or f.name in RESERVED:
+            continue
+        # relative to the bundle, not a basename: two `notes.md` in different
+        # subdirectories were indistinguishable in the report
+        try:
+            rel = str(f.relative_to(bundle))
+        except ValueError:
+            rel = f.name
+        try:
+            text = f.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            results.append({"concept": rel, "kind": "file", "claim": str(f),
+                            "verdict": UNRESOLVED, "detail": "unreadable"})
+            continue
+        body, unclosed = strip_code_fences(text[frontmatter_end(text):])
+        if unclosed:
+            results.append({"concept": rel, "kind": "parse", "claim": "unclosed code fence",
+                            "verdict": UNRESOLVED,
+                            "detail": ("an unclosed code fence swallowed the rest of this "
+                                       "concept — any claim after it was NOT checked")})
+        subjects = QUOTED.findall(body)
+        found = 0
+        seen: set[tuple[str, str]] = set()
+
+        for m in SHA_CTX.finditer(body):
+            # group(1) is the BARE backticked form; groups 2 and 3 carry an
+            # explicit signal — a commit/sha/fix-in keyword, or a /commit/ URL.
+            bare = m.group(1) is not None
+            sha = (m.group(1) or m.group(2) or m.group(3) or "").lower()
+            # NO digit at all is an English word or a sentinel — `defaced`,
+            # `effaced`, `acceded`, `deadbeef`, `cafebabe`, `feedface` all
+            # satisfy the hex charset. A real 7-char SHA has no digit with
+            # probability (6/16)^7 ≈ 0.1%, so requiring one costs almost nothing
+            # and removes the whole false-positive class. (D-7)
+            #
+            # ALL digits is different, and rejecting it outright was a real bug.
+            # A 7-char abbreviation is all digits with probability (10/16)^7 ≈
+            # 3.7% — 37x more likely than the case the rule above was written
+            # for — so roughly one citation in twenty-seven was silently dropped
+            # as "no checkable claim". That is what the intermittent five-failure
+            # run in this suite's own fixtures was, blamed on machine load
+            # through three review rounds. The comment did the arithmetic for one
+            # case and never for the other.
+            #
+            # The disambiguator is CONTEXT, not charset: `commit 1234567` and
+            # `/commit/1234567` are unambiguous. A bare backticked `1234567` is
+            # not — it is as likely an issue number — so only that stays
+            # rejected. (Z-11)
+            if (not sha or not any(c.isdigit() for c in sha)
+                    or (bare and sha.isdigit())
+                    or ("sha", sha) in seen):
+                continue
+            seen.add(("sha", sha))
+            found += 1
+            v, d = check_sha(sha, repos, subjects)
+            results.append({"concept": rel, "kind": "sha", "claim": sha,
+                            "verdict": v, "detail": d})
+
+        for _delim, raw in PATH_RE.findall(body):
+            if ("path", raw) in seen:
+                continue
+            seen.add(("path", raw))
+            found += 1
+            v, d = check_path(raw, bundle)
+            results.append({"concept": rel, "kind": "path", "claim": raw,
+                            "verdict": v, "detail": d})
+
+        if found == 0:
+            no_claims.append(rel)
+    return results, no_claims
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description="Verify that a bundle's claims still hold (L4).")
+    ap.add_argument("bundle", type=Path)
+    ap.add_argument("--repo", type=Path, action="append", default=[],
+                    help="repository to resolve cited SHAs in (repeatable)")
+    ap.add_argument("--json", action="store_true")
+    ap.add_argument("--strict", action="store_true", help="also fail on UNRESOLVED")
+    a = ap.parse_args()
+
+    if not a.bundle.is_dir():
+        print(f"error: {a.bundle} is not a directory", file=sys.stderr)
+        return 2
+
+    # `rglob` skips a directory it cannot read, without a word. A concept whose
+    # claim was REFUTED simply vanished and the run printed "no refuted claims"
+    # and exited 0 — the worst possible shape of this failure in the one tool
+    # whose entire job is to separate "checked and false" from "not checked".
+    # Same defect okf-check carries as G-8; found by sweeping for siblings. (G-13)
+    unreadable = sorted(
+        str(d) for d in [a.bundle, *(p for p in a.bundle.rglob("*") if p.is_dir())]
+        if not os.access(d, os.R_OK | os.X_OK)
+    )
+    if unreadable:
+        print(f"error: {a.bundle} contains directories this process cannot read — "
+              f"no verdict is possible", file=sys.stderr)
+        for d in unreadable[:3]:
+            print(f"  unreadable: {d}", file=sys.stderr)
+        # D-13 removed exactly this silent cap from the no-claims list, and the
+        # commit that copied G-8's guard across put it straight back. (U-3)
+        if len(unreadable) > 3:
+            print(f"  ... and {len(unreadable) - 3} more", file=sys.stderr)
+        print("  a partial scan is not 'no refuted claims'", file=sys.stderr)
+        return 2
+
+    repos = [r for r in a.repo if (r / ".git").exists()]
+    skipped = [str(r) for r in a.repo if r not in repos]
+    results, no_claims = verify(a.bundle, repos)
+
+    counts = {v: sum(1 for r in results if r["verdict"] == v)
+              for v in (CONFIRMED, REFUTED, UNRESOLVED)}
+    # --strict is sold as "for a corpus that must stay checkable", yet a corpus
+    # with NOTHING checkable passed it — precisely the corpus it exists to catch.
+    # Under --strict an unverifiable concept is a failure, not a free pass. (D-9)
+    failed = (counts[REFUTED] > 0
+              or (a.strict and (counts[UNRESOLVED] > 0 or bool(no_claims))))
+
+    if a.json:
+        print(json.dumps({"bundle": str(a.bundle), "counts": counts,
+                          "no_checkable_claims": no_claims,
+                          "repos_searched": [str(r) for r in repos],
+                          "repos_skipped_not_git": skipped,
+                          "passed": not failed, "results": results}, indent=2))
+        return 0 if not failed else 1
+
+    print(f"okf-verify — {a.bundle}")
+    print(f"  repos searched: {', '.join(r.name for r in repos) if repos else 'NONE (SHAs cannot be checked)'}")
+    for s in skipped:
+        print(f"  ! not a git repo, skipped: {s}")
+    for r in results:
+        mark = {CONFIRMED: "ok  ", REFUTED: "REFUTED", UNRESOLVED: "unresolved"}[r["verdict"]]
+        # Ellipsis, not a bare cut: a claim sliced at 48 characters read as the
+        # whole claim, which matters when the reader is deciding whether the
+        # verdict addressed what they wrote. (U-4)
+        claim = r["claim"] if len(r["claim"]) <= 48 else r["claim"][:47] + "…"
+        print(f"  {mark:11s} {r['concept']}  [{r['kind']}] {claim}")
+        if r["verdict"] != CONFIRMED:
+            print(f"              {r['detail']}")
+    if no_claims:
+        print(f"  {len(no_claims)} concept(s) carry no checkable claim — unverifiable, not verified:")
+        for n in no_claims[:8]:
+            print(f"              {n}")
+        # A list that stops at 8 without saying so reads as the whole list.
+        # Same class as a gate that skips a layer silently. (D-13)
+        if len(no_claims) > 8:
+            print(f"              ... and {len(no_claims) - 8} more "
+                  f"(use --json for the full list)")
+    print(f"\n  CONFIRMED {counts[CONFIRMED]}   REFUTED {counts[REFUTED]}   UNRESOLVED {counts[UNRESOLVED]}")
+    if counts[UNRESOLVED]:
+        print("  UNRESOLVED means NOT CHECKED — it is not a soft REFUTED and must not be read as one.")
+    print("  FAILED" if failed else "  no refuted claims")
+    return 0 if not failed else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

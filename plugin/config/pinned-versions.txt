@@ -1,0 +1,14 @@
+# Versions okf-check's gates were VERIFIED against.
+#
+# A drift from these is not an error — it is an UNVERIFIED state. The gate may
+# still work; nobody has watched it fail at the new version. `okf-check --selftest`
+# is what converts unverified back into verified.
+#
+# Format:  <tool> <pinned-version-or-sha>
+# Override per-machine with OKF_PINNED_VERSIONS=/path/to/your/file
+
+okf_validate  7ed3084267d050f198eea6cd9f67d5357e9ed047
+okflint       0.5.0
+# Where the SUPPORTED okflint comes from while okflint#11 is unmerged: the fork commit that carries the
+# BOM, non-UTF-8 and impossible-date fixes. After it merges, delete this line (PyPI okflint==<pin> is then enough).
+okflint_source git+https://github.com/ahmedibrahim085/okflint@c505b8405b9ef07396a81734c2bdfaa33c57aa25
