@@ -2060,10 +2060,12 @@ JN="$TMP/jn"; mkdir -p "$JN/b"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' 
 tpl=$(sed -n 's/.*status_values: \[\(.*\)\].*/\1/p' "$HERE/../config/okf-base.yaml.template" | head -1 | tr -d ' ' | tr ',' '\n' | sort | tr '\n' ' ')
 lib=$(sed -n 's/^function okfstatusok.*{ return \(.*\) }$/\1/p' "$HERE/l3-lib.sh" | grep -o '"[a-z]*"' | tr -d '"' | sort | tr '\n' ' ')
 { [ -n "$tpl" ] && [ "$tpl" = "$lib" ]; } && ok "LT-22 status values in okf-base.yaml.template equal l3-lib.sh ($lib)" || bad "LT-22 status parity" "template=[$tpl] l3-lib=[$lib]"
-# LT-23 (issue #19): every user-facing environment variable is documented in README and SKILL.md.
+# LT-23 (issue #19): every user-facing environment variable is documented in README and in the skill.
+# "The skill" is SKILL.md plus the reference files it links (0.9.0 moved the maintainer detail into
+# skills/okf/references/, one level deep, as Anthropic's skill guidance asks); the variables did not go away.
 miss=""; for v in OKF_L2_TIMEOUT OKF_L2_ISOLATE_MAX OKF_INSTALL_TIMEOUT OKF_DOC_DIRS_FILE OKF_SEARCH_BIN OKF_AUTO_INSTALL; do
   grep -q "$v" "$HERE/../../README.md" 2>/dev/null || miss="$miss README:$v"
-  grep -q "$v" "$HERE/../skills/okf/SKILL.md" 2>/dev/null || miss="$miss SKILL:$v"
+  grep -rq "$v" "$HERE/../skills/okf" 2>/dev/null || miss="$miss SKILL:$v"
 done
 [ -z "$miss" ] && ok "LT-23 user-facing environment variables are documented" || bad "LT-23 env docs" "missing:$miss"
 
@@ -2119,6 +2121,425 @@ env PATH="$J24/bin:$PATH" "$CHECK" "$J24/b" >"$TMP/j24d.txt" 2>&1; rc=$?
 { [ "$rc" -eq 2 ] && ! grep -q "L2 profile  *PASS" "$TMP/j24d.txt" && ! grep -q "other notes were checked" "$TMP/j24d.txt"; } \
   && ok "LT-24e when every note crashes there is no PASS line and no 'others were checked'" \
   || bad "LT-24e all crash" "rc=$rc $(grep -n 'L2' "$TMP/j24d.txt" | head -3 | tr '\n' ' ')"
+
+# --- 0.9.0 T1 (#22): L1 warnings are LISTED, not only counted (cases S1, S2, S13) ---
+# 0.8.1 printed "1 warning(s)" and named nothing; the text was visible only by running
+# the vendored validator by hand. A count a reader cannot act on is a count they stop reading.
+mkwarnnote() { # <bundle> <file> <actor> — a note whose generated.by is <actor>
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: %s\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nbody\n' "$3" > "$1/$2"
+}
+W1="$TMP/w1"; mkbundle "$W1"; mkwarnnote "$W1" n.md "Human:dana"
+"$CHECK" "$W1" >"$TMP/w1.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 0 ] && grep -q '1 warning(s)' "$TMP/w1.txt" && grep -Eq '^ +n\.md: .*near-miss' "$TMP/w1.txt"; } \
+  && ok "LT-25a S1-H1 a near-miss actor warning is listed as '<note>: <message>' (exit 0)" \
+  || bad "LT-25a S1-H1 listing" "rc=$rc $(grep -n 'warning\|n.md' "$TMP/w1.txt" | head -3 | tr '\n' ' ')"
+
+W0="$TMP/w0"; mkbundle "$W0"
+"$CHECK" "$W0" >"$TMP/w0.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 0 ] && grep -q '0 warning(s)' "$TMP/w0.txt" && ! grep -Eq '^ +[^ ]+\.md: ' "$TMP/w0.txt"; } \
+  && ok "LT-25b S1-N1 a bundle with 0 warnings lists no warning line" \
+  || bad "LT-25b S1-N1 clean" "rc=$rc"
+
+mkwarnbundle() { # <dir> <n> — a bundle with <n> near-miss notes, n1.md ... n<n>.md
+  mkbundle "$1"; local i=1; while [ "$i" -le "$2" ]; do mkwarnnote "$1" "n$i.md" "Human:dana"; i=$((i+1)); done
+}
+W3="$TMP/w3"; mkwarnbundle "$W3" 3
+"$CHECK" "$W3" >"$TMP/w3.txt" 2>&1
+listed=$(grep -Ec '^ +n[0-9]+\.md: ' "$TMP/w3.txt")
+{ grep -q '3 warning(s)' "$TMP/w3.txt" && [ "$listed" -eq 3 ]; } \
+  && ok "LT-25c S2-H1 the count equals the number of listed warning lines (3 = 3)" \
+  || bad "LT-25c S2-H1 count" "listed=$listed $(grep -n 'warning(s)' "$TMP/w3.txt" | head -1)"
+
+W60="$TMP/w60"; mkwarnbundle "$W60" 60
+"$CHECK" "$W60" >"$TMP/w60.txt" 2>&1
+listed=$(grep -Ec '^ +n[0-9]+\.md: ' "$TMP/w60.txt")
+{ grep -q '60 warning(s)' "$TMP/w60.txt" && [ "$listed" -eq 50 ] && grep -q 'and 10 more' "$TMP/w60.txt"; } \
+  && ok "LT-25d S1-E1 60 warnings: the summary says 60, 50 lines print, then 'and 10 more'" \
+  || bad "LT-25d S1-E1 cap" "listed=$listed $(grep -n 'more\|warning(s)' "$TMP/w60.txt" | head -2 | tr '\n' ' ')"
+W51="$TMP/w51"; mkwarnbundle "$W51" 51
+"$CHECK" "$W51" >"$TMP/w51.txt" 2>&1
+listed=$(grep -Ec '^ +n[0-9]+\.md: ' "$TMP/w51.txt")
+{ grep -q '51 warning(s)' "$TMP/w51.txt" && [ "$listed" -eq 50 ] && grep -q 'and 1 more' "$TMP/w51.txt"; } \
+  && ok "LT-25e S2-E1 51 warnings: the summary says 51, 50 lines print, then 'and 1 more'" \
+  || bad "LT-25e S2-E1 cap+1" "listed=$listed"
+
+"$CHECK" --json "$W1" >"$TMP/w1j.txt" 2>/dev/null
+"$REALPY" - "$TMP/w1j.txt" <<'PY' 2>"$TMP/w1jerr.txt"
+import json, sys
+d = json.loads(open(sys.argv[1]).read().strip().splitlines()[-1])
+assert isinstance(d["warnings"], list) and len(d["warnings"]) == 1, d.get("warnings")
+assert d["warnings"][0].startswith("n.md: ") and "near-miss" in d["warnings"][0]
+assert d["l1_warnings"] == 1
+for k in ("bundle", "exit", "l1_errors", "l1_warnings", "concepts", "change_detection"):
+    assert k in d, k
+PY
+rc=$?
+[ "$rc" -eq 0 ] && ok "LT-25f S13-H1/E1 --json carries 'warnings' (list of '<note>: <message>') and keeps every 0.8.1 key" \
+  || bad "LT-25f S13-H1 json" "$(head -2 "$TMP/w1jerr.txt" | tr '\n' ' ')"
+"$CHECK" --json "$W0" >"$TMP/w0j.txt" 2>/dev/null
+grep -q '"warnings":\[\]' "$TMP/w0j.txt" \
+  && ok "LT-25g S13-N1 --json on a clean bundle has an empty 'warnings' list, not a missing key" \
+  || bad "LT-25g S13-N1 json empty" "$(tail -1 "$TMP/w0j.txt" | cut -c1-160)"
+
+# LT-25h (round-1 review, both axes): on a FAILING bundle the warning lines print under the error
+# lines. Without a count on the FAIL line, "1 error(s)" sits above two unlabelled lines and the
+# reader cannot tell which one is the warning — the count-is-not-the-lines defect LT-25c guards on PASS.
+WF="$TMP/wf"; mkbundle "$WF"; mkwarnnote "$WF" w.md "Human:dana"
+printf -- '---\ntitle: no type here\n---\n\nbody\n' > "$WF/e.md"
+"$CHECK" "$WF" >"$TMP/wf.txt" 2>&1; rc=$?
+nwarn=$("$CHECK" --json "$WF" 2>/dev/null | tail -1 | "$REALPY" -c 'import json,sys; print(json.load(sys.stdin)["l1_warnings"])')
+{ [ "$rc" -eq 1 ] && [ "${nwarn:-0}" -ge 1 ] && grep -Eq "L1 conformance +FAIL +[0-9]+ error\(s\), ${nwarn} warning\(s\)" "$TMP/wf.txt"; } \
+  && ok "LT-25h a failing bundle's FAIL line carries the warning count (${nwarn}) so the warning lines under it are accounted for" \
+  || bad "LT-25h FAIL-path warning count" "rc=$rc nwarn=$nwarn $(grep -n 'FAIL' "$TMP/wf.txt" | head -1)"
+
+# --- 0.9.0 T2 (#23): C4 "unauthenticated human verification" (cases S3-S6, S9-S12) ---
+# OKF v0.2 records `verified: by: human:<id>` and cannot authenticate it: an agent can write that
+# line itself. 0.8.1 gave exit 0 and no finding for a DRAFT note an agent generated and a "human"
+# verified. Executed baseline (spec #21): generated.by agent/1 + verified human:finance-owner + draft.
+mktrust() { # <bundle> <file> <status> <generated.by> <generated.at> <verified-yaml-block>
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: %s\ntags: [t]\ngenerated:\n  by: %s\n  at: "%s"\n%s\nstale_after: "2099-01-01"\n---\n\nbody\n' "$3" "$4" "$5" "$6" > "$1/$2"
+}
+VH='verified:\n  - by: human:finance-owner\n    at: "2026-02-01"'
+C1="$TMP/c4a"; mkbundle "$C1"; mktrust "$C1" n.md draft agent/1 2026-01-01 "$(printf "$VH")"
+"$CHECK" "$C1" >"$TMP/c4a.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 0 ] && grep -Eq '^ +n\.md: verified\[0\]\.by .*draft' "$TMP/c4a.txt" \
+  && [ "$(grep -c 'cannot prove who a person is' "$TMP/c4a.txt")" -eq 1 ]; } \
+  && ok "LT-26a S3-H1/S11-H1 a draft note with a human: verifier warns (names verified[0].by, exit 0) and the identity line prints once" \
+  || bad "LT-26a S3-H1 draft+human" "rc=$rc $(grep -n 'n.md\|prove\|Trust' "$TMP/c4a.txt" | head -3 | tr '\n' ' ')"
+
+# c4run <name> <status> <generated.by> <generated.at> <verified-yaml>  — one-note bundle, run, set C4RC/C4OUT
+c4run() {
+  local d="$TMP/c4_$1"; mkbundle "$d"; rm -f "$d/c.md"; mktrust "$d" n.md "$2" "$3" "$4" "$5"
+  C4OUT="$TMP/c4_$1.txt"; "$CHECK" "$d" >"$C4OUT" 2>&1; C4RC=$?; C4DIR="$d"
+}
+# vent <by> [<at>] — one verified list entry
+vent() { if [ -n "${2:-}" ]; then printf '  - by: %s\n    at: "%s"\n' "$1" "$2"; else printf '  - by: %s\n' "$1"; fi; }
+c4quiet() { # <label> — no Trust finding line and the identity line absent
+  { grep -q 'Trust (C4) *PASS' "$C4OUT" && ! grep -q 'cannot prove who a person is' "$C4OUT" && [ "$C4RC" -eq 0 ]; } \
+    && ok "$1" || bad "$1" "rc=$C4RC $(grep -n 'Trust\|n.md' "$C4OUT" | head -2 | tr '\n' ' ')"
+}
+
+c4run b stable human:t 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+c4quiet "LT-26b S3-N1/S9-H1 a stable note, human generator, review after the change: no C4 finding, exit 0"
+
+c4run c draft agent/1 2026-01-01 "verified:
+$(vent human:a 2026-02-01)
+$(vent human:b 2026-02-02)"
+{ grep -Eq '^ +n\.md: verified\[0\]\.by .*draft' "$C4OUT" && grep -Eq '^ +n\.md: verified\[1\]\.by .*draft' "$C4OUT" && grep -q '2 warning(s), 0 advisory' "$C4OUT"; } \
+  && ok "LT-26c S3-E1 a draft with two human entries gives two warnings, one per entry" \
+  || bad "LT-26c S3-E1 two entries" "$(grep -n 'Trust\|n.md' "$C4OUT" | head -3 | tr '\n' ' ')"
+
+c4run d stable human:t 2026-10-10 "verified:
+$(vent human:dana 2026-10-01)"
+{ grep -Eq '^ +n\.md: verified\[0\]\.by .*changed after the claimed review' "$C4OUT" && grep -q '1 warning(s), 0 advisory' "$C4OUT" && [ "$C4RC" -eq 0 ]; } \
+  && ok "LT-26d S4-H1 review dated before generated.at: warning 'changed after the claimed review'" \
+  || bad "LT-26d S4-H1 changed-after" "rc=$C4RC $(grep -n 'Trust\|n.md' "$C4OUT" | head -2 | tr '\n' ' ')"
+c4run e stable human:t 2026-10-10 "verified:
+$(vent human:dana 2026-10-12)"
+c4quiet "LT-26e S4-N1 review dated after generated.at: no finding"
+c4run e2 stable human:t 2026-10-10 "verified:
+$(vent human:dana 2026-10-10)"
+c4quiet "LT-26e2 S4-E1 review dated equal to generated.at: not earlier, no finding"
+
+c4run f stable agent/1 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+{ grep -Eq '^ +n\.md: verified\[0\]\.by .*cannot be authenticated' "$C4OUT" && grep -q '0 warning(s), 1 advisory' "$C4OUT" && [ "$C4RC" -eq 0 ] \
+  && grep -q '1 advisory(ies)' "$C4OUT"; } \
+  && ok "LT-26f S5-H1 an agent-generated note with a human verifier gives an advisory, not a warning (exit 0)" \
+  || bad "LT-26f S5-H1 advisory" "rc=$C4RC $(grep -n 'Trust\|n.md\|PASS' "$C4OUT" | head -3 | tr '\n' ' ')"
+c4run g stable agent:bot 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+grep -q '0 warning(s), 1 advisory' "$C4OUT" && ok "LT-26g S5-E1 the agent:<id> generator form is an agent too" || bad "LT-26g S5-E1 agent: form" "$(grep -n Trust "$C4OUT" | head -1)"
+c4run g2 stable agent/1 2026-01-01 "verified:
+$(vent human:dana)"
+{ grep -q '0 warning(s), 1 advisory' "$C4OUT" && ! grep -q 'changed after' "$C4OUT"; } \
+  && ok "LT-26g2 S5-E2 an agent note, human verifier with no 'at': advisory only, no changed-after warning" \
+  || bad "LT-26g2 S5-E2 no at" "$(grep -n 'Trust\|n.md' "$C4OUT" | head -2 | tr '\n' ' ')"
+c4run g3 stable human:t 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+grep -q 'Trust (C4) *PASS' "$C4OUT" && ok "LT-26g3 S5-N1 a human-generated note with a human verifier gives no advisory" || bad "LT-26g3 S5-N1" "$(grep -n Trust "$C4OUT" | head -1)"
+
+c4run h draft agent/1 2026-01-01 "verified:
+$(vent process:lint 2026-02-01)
+$(vent human:dana 2026-02-01)
+$(vent process:ci 2026-02-02)"
+{ grep -Eq '^ +n\.md: verified\[1\]\.by ' "$C4OUT" && ! grep -Eq 'verified\[(0|2)\]' "$C4OUT" && grep -q '1 warning(s), 0 advisory' "$C4OUT"; } \
+  && ok "LT-26h S6-E1/S10-E1 only the human: entry is reported, indexed by its position (verified[1])" \
+  || bad "LT-26h S6-E1 index" "$(grep -n 'Trust\|n.md' "$C4OUT" | head -3 | tr '\n' ' ')"
+c4run i draft agent/1 2026-01-01 "verified:
+$(vent process:ci-linter 2026-02-01)"
+c4quiet "LT-26i S10-H1 a process: verifier on a draft is never reported"
+c4run j draft process:nightly 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+grep -Eq '^ +n\.md: verified\[0\]\.by .*draft' "$C4OUT" && ok "LT-26j S10-N1 a process: generator does not hide a human verifier on a draft" || bad "LT-26j S10-N1" "$(grep -n 'Trust\|n.md' "$C4OUT" | head -2 | tr '\n' ' ')"
+c4run k stable human:t 2026-01-01 ""
+c4quiet "LT-26k S9-E1 a note with no verified field: no C4 finding"
+c4run l draft agent/1 2026-01-01 "verified: []"
+c4quiet "LT-26l S12-E1 an empty verified list on a draft: no finding"
+c4run m draft agent/1 2026-01-01 "verified: just-a-string"
+{ [ "$C4RC" -le 1 ] && ! grep -q 'Traceback' "$C4OUT" && grep -q 'Trust (C4) *PASS' "$C4OUT"; } \
+  && ok "LT-26m S12-N1 a verified field of the wrong shape: no crash and no C4 finding (L1 owns the shape)" \
+  || bad "LT-26m S12-N1" "rc=$C4RC $(grep -n 'Trace\|Trust' "$C4OUT" | head -2 | tr '\n' ' ')"
+c4run n draft agent/1 2026-01-01 "verified:
+  by: human:dana
+  at: \"2026-02-01\""
+grep -Eq '^ +n\.md: verified\[0\]\.by .*draft' "$C4OUT" && ok "LT-26n S12-H1 a verified MAPPING (one event) is read as a one-element list" || bad "LT-26n S12-H1 mapping" "$(grep -n 'Trust\|n.md' "$C4OUT" | head -2 | tr '\n' ' ')"
+
+# S11-E1: five findings, the identity line prints once
+D5="$TMP/c4_five"; mkbundle "$D5"; rm -f "$D5/c.md"; i=1
+while [ "$i" -le 5 ]; do mktrust "$D5" "n$i.md" draft agent/1 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"; i=$((i+1)); done
+"$CHECK" "$D5" >"$TMP/c4_five.txt" 2>&1
+{ [ "$(grep -c 'cannot prove who a person is' "$TMP/c4_five.txt")" -eq 1 ] && grep -q '5 warning(s), 0 advisory' "$TMP/c4_five.txt"; } \
+  && ok "LT-26o S11-E1 five findings: the identity line prints once" || bad "LT-26o S11-E1" "$(grep -c 'prove' "$TMP/c4_five.txt")"
+# S11-N1 is LT-26b (quiet case has no identity line). S6-N1: a clean bundle prints no C4 line.
+"$CHECK" "$W0" 2>&1 | grep -Eq '^ +[^ ]+\.md: verified\[' && bad "LT-26p S6-N1" "clean bundle printed a C4 line" || ok "LT-26p S6-N1 a bundle with no C4 case prints no C4 finding line"
+
+# S2-N1 (carried from T1): 0 L1 warnings and 2 advisories: each counter keeps its own meaning.
+D2="$TMP/c4_two"; mkbundle "$D2"; rm -f "$D2/c.md"
+mktrust "$D2" a.md stable agent/1 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+mktrust "$D2" b.md stable agent/1 2026-01-01 "verified:
+$(vent human:erin 2026-02-01)"
+"$CHECK" "$D2" >"$TMP/c4_two.txt" 2>&1
+{ grep -q 'L1 conformance *PASS.* 0 warning(s)' "$TMP/c4_two.txt" && grep -q '0 warning(s), 2 advisory(ies)' "$TMP/c4_two.txt" \
+  && grep -q 'but 2 advisory(ies)' "$TMP/c4_two.txt"; } \
+  && ok "LT-26s S2-N1 0 L1 warnings and 2 advisories: the L1 line says 0 warning(s), the final tally says 2 advisory(ies)" \
+  || bad "LT-26s S2-N1 counters" "$(grep -n 'warning(s)\|advisory' "$TMP/c4_two.txt" | head -3 | tr '\n' ' ')"
+
+# Review round 1 (#23). Row "generator missing or near-miss": the ADVISORY needs an agent generator, so none fires;
+# the draft and changed-after warnings do not depend on the generator and still fire.
+c4run u stable "" 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+c4quiet "LT-26u a stable note whose generated.by is empty, human verifier: no C4 finding (no agent to flag)"
+c4run v stable Human:dana 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+c4quiet "LT-26v a near-miss generator (Human:dana) on a stable note: no C4 finding (L1 already warns about the actor)"
+c4run w draft Human:dana 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+grep -Eq '^ +n\.md: verified\[0\]\.by .*draft' "$C4OUT" && ok "LT-26w a draft still warns when the generator is a near-miss (the draft row does not depend on the generator)" || bad "LT-26w" "$(grep -n 'Trust\|n.md' "$C4OUT" | head -2 | tr '\n' ' ')"
+# A UTF-8 BOM before the frontmatter fence: L1 counts the note, so this layer must read it too.
+D7="$TMP/c4_bom"; mkbundle "$D7"; rm -f "$D7/c.md"
+{ printf '\357\273\277'; printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: draft\ntags: [t]\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - by: human:dana\n    at: "2026-02-01"\nstale_after: "2099-01-01"\n---\n\nbody\n'; } > "$D7/n.md"
+"$CHECK" "$D7" >"$TMP/c4_bom.txt" 2>&1
+grep -Eq '^ +n\.md: verified\[0\]\.by .*draft' "$TMP/c4_bom.txt" && ok "LT-26x a note that starts with a UTF-8 BOM is checked too (L1 counts it)" || bad "LT-26x BOM" "$(grep -n 'concepts\|Trust' "$TMP/c4_bom.txt" | head -2 | tr '\n' ' ')"
+# A bare date against a timestamp: compare days, so a same-day review of a timed change is not 'changed after'.
+c4run y stable human:t "2026-10-16T10:00:00Z" "verified:
+$(vent human:dana 2026-10-16)"
+c4quiet "LT-26y a review dated the same DAY as a timed generated.at: no finding (a bare date cannot say which came first)"
+c4run y2 stable human:t "2026-10-16T10:00:00Z" "verified:
+$(vent human:dana 2026-10-15)"
+grep -q 'changed after the claimed review' "$C4OUT" && ok "LT-26y2 a review dated the day BEFORE a timed generated.at still warns" || bad "LT-26y2" "$(grep -n 'Trust' "$C4OUT" | head -1)"
+# Fail closed: a broken trust helper is COULD NOT RUN (exit 2), never a pass, and --json says "unknown", not "clean".
+BRK="$TMP/c4_brokenplugin"; mkdir -p "$BRK"; cp -R "$HERE/.." "$BRK/plugin" 2>/dev/null
+printf 'import sys\nsys.stderr.write("boom from test\\n")\nsys.exit(3)\n' > "$BRK/plugin/scripts/okf-trust.py"
+"$BRK/plugin/scripts/okf-check" "$C1" >"$TMP/c4_broken.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 2 ] && grep -Eq 'Trust \(C4\) +COULD NOT RUN.*boom from test' "$TMP/c4_broken.txt" && ! grep -q 'ALL GATES PASS' "$TMP/c4_broken.txt"; } \
+  && ok "LT-26z a broken trust helper is COULD NOT RUN (exit 2) with the helper's own error shown" \
+  || bad "LT-26z COULD NOT RUN" "rc=$rc $(grep -n 'Trust' "$TMP/c4_broken.txt" | head -1)"
+"$BRK/plugin/scripts/okf-check" --json "$C1" >"$TMP/c4_brokenj.txt" 2>/dev/null
+grep -q '"trust_findings":null' "$TMP/c4_brokenj.txt" \
+  && ok "LT-26z2 --json reports trust_findings as null (unknown) when the layer could not run, not an empty list" \
+  || bad "LT-26z2 json null" "$(tail -1 "$TMP/c4_brokenj.txt" | cut -c1-200)"
+
+# S13: trust_findings in --json (always present; empty list when clean)
+"$CHECK" --json "$C1" >"$TMP/c4json.txt" 2>/dev/null
+"$REALPY" - "$TMP/c4json.txt" <<'PY' 2>"$TMP/c4jsonerr.txt"
+import json, sys
+d = json.loads(open(sys.argv[1]).read().strip().splitlines()[-1])
+f = d["trust_findings"]
+assert len(f) == 1, f
+assert set(f[0]) == {"file", "entry", "severity", "reason"}, f[0]
+assert (f[0]["file"], f[0]["entry"], f[0]["severity"]) == ("n.md", "verified[0].by", "warning"), f[0]
+assert d["exit"] == 0 and "warnings" in d and "l1_warnings" in d
+PY
+[ $? -eq 0 ] && ok "LT-26q S13-H1 --json carries trust_findings objects {file, entry, severity, reason}" || bad "LT-26q S13-H1" "$(head -2 "$TMP/c4jsonerr.txt" | tr '\n' ' ')"
+"$CHECK" --json "$W0" 2>/dev/null | grep -q '"trust_findings":\[\]' && ok "LT-26r S13-N1 --json on a clean bundle has an empty trust_findings list" || bad "LT-26r S13-N1" "missing or non-empty"
+
+# --- 0.9.0 T3 (#24): --strict-trust (cases S7, S8, S9-H1) ---
+# Severity only: the findings are the same with or without the flag. A CI owner who wants a block
+# opts in; the default stays advisory so the honest "agent drafts, person reviews later" flow is quiet.
+c4run s1 draft agent/1 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+"$CHECK" --strict-trust "$C4DIR" >"$TMP/st1.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'trust policy failure (--strict-trust)' "$TMP/st1.txt" && grep -Eq '^ +n\.md: verified\[0\]\.by .*draft' "$TMP/st1.txt"; } \
+  && ok "LT-27a S7-H1 --strict-trust: a draft with a human verifier exits 1 and says 'trust policy failure (--strict-trust)'" \
+  || bad "LT-27a S7-H1" "rc=$rc $(grep -n 'FAILED\|Trust' "$TMP/st1.txt" | head -3 | tr '\n' ' ')"
+[ "$C4RC" -eq 0 ] && ok "LT-27b S7-N1/S8-N1 the same bundle without the flag still exits 0" || bad "LT-27b S7-N1" "rc=$C4RC"
+c4run s2 stable agent/1 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+"$CHECK" --strict-trust "$C4DIR" >"$TMP/st2.txt" 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "LT-27c S7-E1 --strict-trust also fails an advisory-only case (agent note, human verifier)" || bad "LT-27c S7-E1" "rc=$rc"
+# S7-E2: an L1 conformance error and a C4 case together: exit 1, 'not conformant' prints before the trust failure
+DE="$TMP/st_both"; mkbundle "$DE"; rm -f "$DE/c.md"; mktrust "$DE" n.md draft agent/1 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+printf -- '---\ntitle: no type here\n---\n\nbody\n' > "$DE/e.md"
+"$CHECK" --strict-trust "$DE" >"$TMP/st_both.txt" 2>&1; rc=$?
+a=$(grep -n 'not conformant OKF' "$TMP/st_both.txt" | head -1 | cut -d: -f1); b=$(grep -n 'Trust policy' "$TMP/st_both.txt" | head -1 | cut -d: -f1)
+{ [ "$rc" -eq 1 ] && [ -n "$a" ] && { [ -z "$b" ] || [ "$a" -lt "$b" ]; } && ! grep -q 'trust policy failure' "$TMP/st_both.txt"; } \
+  && ok "LT-27d S7-E2 an L1 conformance error plus a C4 case: exit 1, 'not conformant' comes first, the summary does not blame trust alone" \
+  || bad "LT-27d S7-E2" "rc=$rc a=$a b=$b $(grep -n 'FAILED' "$TMP/st_both.txt" | head -1)"
+# S8: near-miss actors
+c4run n1 stable Human:dana 2026-01-01 ""; C4DIR_N1="$C4DIR"
+"$CHECK" --strict-trust "$C4DIR" >"$TMP/st_n1.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'trust policy failure (--strict-trust)' "$TMP/st_n1.txt" && [ "$C4RC" -eq 0 ] && grep -q 'near-miss of' "$C4OUT"; } \
+  && ok "LT-27e S8-H1/S8-N1 a near-miss generator (Human:dana) fails under --strict-trust and only warns without it" \
+  || bad "LT-27e S8-H1" "strict rc=$rc plain rc=$C4RC"
+c4run n2 stable human:t 2026-01-01 "verified:
+$(vent Human:dana 2026-02-01)"
+"$CHECK" --strict-trust "$C4DIR" >"$TMP/st_n2.txt" 2>&1; rc=$?
+[ "$rc" -eq 1 ] && ok "LT-27f S8-E1 a near-miss VERIFIER (Human:dana) fails under --strict-trust" || bad "LT-27f S8-E1" "rc=$rc"
+c4run h1 stable human:t 2026-01-01 "verified:
+$(vent human:erin 2026-02-01)"
+"$CHECK" --strict-trust "$C4DIR" >"$TMP/st_h1.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 0 ] && ! grep -q 'trust policy' "$TMP/st_h1.txt"; } \
+  && ok "LT-27g S9-H1 an honest note passes under --strict-trust (exit 0, no trust line)" || bad "LT-27g S9-H1" "rc=$rc"
+"$CHECK" --strict-trust --json "$C1" >"$TMP/st_j.txt" 2>/dev/null; rc=$?
+{ [ "$rc" -eq 1 ] && grep -q '"exit":1' "$TMP/st_j.txt" && [ "$(wc -l < "$TMP/st_j.txt" | tr -d ' ')" -eq 1 ]; } \
+  && ok "LT-27h --strict-trust with --json: one JSON line, exit 1" || bad "LT-27h" "rc=$rc"
+
+# Review round 1 (#24). The near-miss count must match the validator's near-miss warning only, not any
+# warning whose quoted actor text happens to contain those words.
+c4run z1 stable "zz is a near-miss of" 2026-01-01 ""
+"$CHECK" --strict-trust "$C4DIR" >"$TMP/st_z1.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 0 ] && grep -q 'matches no actor shape' "$TMP/st_z1.txt" && ! grep -q 'trust policy' "$TMP/st_z1.txt"; } \
+  && ok "LT-27i an unrelated warning that quotes the words 'is a near-miss of' does not fail --strict-trust" \
+  || bad "LT-27i unrelated warning" "rc=$rc $(grep -n 'Trust policy\|FAILED' "$TMP/st_z1.txt" | head -2 | tr '\n' ' ')"
+# The summary blames trust alone ONLY when nothing else failed: here staleness (--fail-stale, exit 4) failed too.
+DS="$TMP/st_stale"; mkbundle "$DS"; rm -f "$DS/c.md"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: draft\ntags: [t]\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - by: human:dana\n    at: "2026-02-01"\nstale_after: "2020-01-01"\n---\n\nbody\n' > "$DS/n.md"
+"$CHECK" --strict-trust --fail-stale "$DS" >"$TMP/st_stale.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'Trust policy *FAIL' "$TMP/st_stale.txt" && ! grep -q 'trust policy failure' "$TMP/st_stale.txt" && grep -Eq 'FAILED \(exit 1\)' "$TMP/st_stale.txt"; } \
+  && ok "LT-27j trust failure plus a stale failure (--fail-stale): exit 1, the summary does not blame trust alone" \
+  || bad "LT-27j summary blame" "rc=$rc $(grep -n 'FAILED' "$TMP/st_stale.txt" | head -1)"
+# A trust layer that could not run plus a near-miss under --strict-trust: the summary must not say 'trust policy failure' alone.
+"$BRK/plugin/scripts/okf-check" --strict-trust "$C4DIR_N1" >"$TMP/st_brk.txt" 2>&1; rc=$?
+{ ! grep -q 'trust policy failure' "$TMP/st_brk.txt" && grep -q 'COULD NOT RUN' "$TMP/st_brk.txt"; } \
+  && ok "LT-27k strict mode with a trust layer that could not run: the summary does not read as a plain trust-policy failure" \
+  || bad "LT-27k could-not-run summary" "rc=$rc $(grep -n 'FAILED' "$TMP/st_brk.txt" | head -1)"
+
+# --- 0.9.0 T4 (#25): --init-house-rules (cases S14-S18) ---
+# L2 (house rules) was SKIPPED until the user hand-copied a template: an adoption cliff. The command
+# writes the file the L2 layer actually reads (<bundle>/okf-base.yaml) and nothing else ever writes it.
+H1="$TMP/ih1"; mkbundle "$H1"
+"$CHECK" --init-house-rules "$H1" >"$TMP/ih1.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 0 ] && [ -f "$H1/okf-base.yaml" ] && grep -q 'okf-base.yaml' "$TMP/ih1.txt" && ! grep -q 'CHANGE ME' "$H1/okf-base.yaml" && grep -q '^  name: ih1$' "$H1/okf-base.yaml"; } \
+  && ok "LT-28a S14-H1 --init-house-rules <bundle> writes <bundle>/okf-base.yaml (name set from the folder), exit 0" \
+  || bad "LT-28a S14-H1" "rc=$rc $(head -2 "$TMP/ih1.txt" | tr '\n' ' ')"
+"$CHECK" --init-house-rules >"$TMP/ih2.txt" 2>&1; rc=$?
+[ "$rc" -eq 64 ] && ok "LT-28b S14-N1 no bundle argument: usage, exit 64" || bad "LT-28b S14-N1" "rc=$rc"
+"$CHECK" --init-house-rules "$TMP/ih_nowhere" >"$TMP/ih3.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 64 ] && [ ! -e "$TMP/ih_nowhere" ] && grep -q 'is not a directory' "$TMP/ih3.txt"; } && ok "LT-28c S14-E1 a bundle path that does not exist: nothing created, exit 64, the message says it is not a directory" || bad "LT-28c S14-E1" "rc=$rc $(head -1 "$TMP/ih3.txt")"
+# S15: never overwrite
+H2="$TMP/ih_exist"; mkbundle "$H2"; printf 'my own rules\n' > "$H2/okf-base.yaml"; cp "$H2/okf-base.yaml" "$TMP/ih_exist.before"
+"$CHECK" --init-house-rules "$H2" >"$TMP/ih4.txt" 2>&1; rc=$?; "$CHECK" --init-house-rules "$H2" >/dev/null 2>&1; rc2=$?
+{ [ "$rc" -eq 1 ] && [ "$rc2" -eq 1 ] && cmp -s "$H2/okf-base.yaml" "$TMP/ih_exist.before" && grep -q 'okf-base.yaml' "$TMP/ih4.txt"; } \
+  && ok "LT-28d S15-H1/N1 an existing okf-base.yaml: exit 1, byte-identical after two runs, the message names the file" \
+  || bad "LT-28d S15" "rc=$rc"
+H3="$TMP/ih_empty"; mkbundle "$H3"; : > "$H3/okf-base.yaml"
+"$CHECK" --init-house-rules "$H3" >/dev/null 2>&1; rc=$?
+{ [ "$rc" -eq 1 ] && [ ! -s "$H3/okf-base.yaml" ]; } && ok "LT-28e S15-E1 an EMPTY okf-base.yaml is still refused and left empty" || bad "LT-28e S15-E1" "rc=$rc"
+# S16: L2 runs on the starter file (needs okflint)
+if command -v okflint >/dev/null 2>&1; then
+  "$CHECK" "$H1" >"$TMP/ih5.txt" 2>&1; rc=$?
+  { [ "$rc" -eq 0 ] && grep -Eq 'L2 profile +PASS' "$TMP/ih5.txt" && ! grep -q 'CHANGE ME' "$TMP/ih5.txt"; } \
+    && ok "LT-28f S16-H1 L2 runs (not SKIPPED) and passes on the starter file as written" \
+    || bad "LT-28f S16-H1" "rc=$rc $(grep -n 'L2' "$TMP/ih5.txt" | head -2 | tr '\n' ' ')"
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\n---\n\nbody\n' > "$H1/nostale.md"
+  "$CHECK" "$H1" >"$TMP/ih6.txt" 2>&1; rc=$?
+  { [ "$rc" -eq 3 ] && grep -q 'nostale.md' "$TMP/ih6.txt"; } && ok "LT-28g S16-N1 a Lesson without stale_after breaks a starter rule: L2 reports it, exit 3" || bad "LT-28g S16-N1" "rc=$rc"
+else
+  skip "LT-28f/g L2 on the starter file — okflint not installed"
+fi
+H4="$TMP/ih:odd\"name"; mkbundle "$H4"
+"$CHECK" --init-house-rules "$H4" >/dev/null 2>&1
+grep -q '^  name: bundle$' "$H4/okf-base.yaml" && ok "LT-28h S16-E1 a folder name with YAML-special characters falls back to 'bundle'" || bad "LT-28h S16-E1" "$(grep -n 'name:' "$H4/okf-base.yaml" | head -1)"
+# S17: only this command writes the file
+H5="$TMP/ih_never"; mkbundle "$H5"
+for flag in "" "--json" "--strict-trust" "--fail-stale"; do "$CHECK" $flag "$H5" >/dev/null 2>&1; done
+"$CHECK" "$H5" --preflight >/dev/null 2>&1; "$CHECK" --preflight "$H5" >/dev/null 2>&1
+[ ! -e "$H5/okf-base.yaml" ] && ok "LT-28i S17-H1/N1 no check run, flag or preflight ever creates okf-base.yaml" || bad "LT-28i S17" "file appeared"
+H6="$TMP/ih_ro"; mkbundle "$H6"; chmod 555 "$H6"
+"$CHECK" --init-house-rules "$H6" >"$TMP/ih7.txt" 2>&1; rc=$?; chmod 755 "$H6"
+{ [ "$rc" -ne 0 ] && [ ! -e "$H6/okf-base.yaml" ]; } && ok "LT-28j S17-E1 a read-only bundle folder: non-zero exit, nothing created (rc=$rc)" || bad "LT-28j S17-E1" "rc=$rc"
+# S18: the skip line names the command; --json says so as data
+"$CHECK" "$H5" >"$TMP/ih8.txt" 2>&1
+{ grep -q 'okf-check --init-house-rules' "$TMP/ih8.txt" && grep -q 'NOT enforced' "$TMP/ih8.txt"; } \
+  && ok "LT-28k S18-H1 the 'house rules not enforced' line names okf-check --init-house-rules" || bad "LT-28k S18-H1" "$(grep -n 'L2 profile' -A1 "$TMP/ih8.txt" | head -2 | tr '\n' ' ')"
+"$CHECK" "$H2" >"$TMP/ih9.txt" 2>&1
+! grep -q 'init-house-rules' "$TMP/ih9.txt" && ok "LT-28l S18-N1 with an okf-base.yaml present the line is absent" || bad "LT-28l S18-N1" "named the command"
+"$CHECK" --json "$H5" >"$TMP/ih10.txt" 2>/dev/null
+grep -q '"l2_profile":"skipped"' "$TMP/ih10.txt" && ok "LT-28m S18-E1 --json carries l2_profile:\"skipped\" as data" || bad "LT-28m S18-E1" "$(tail -1 "$TMP/ih10.txt" | cut -c1-200)"
+
+# Review round 1 (#25). l2_profile must not say "ran" when L2 could not reach a verdict: a CI job that
+# reads the field would think the house rules were checked.
+if command -v okflint >/dev/null 2>&1; then
+  HX="$TMP/ih_badmanifest"; mkbundle "$HX"; printf 'base: [not, a, map]\n' > "$HX/okf-base.yaml"
+  "$CHECK" --json "$HX" >"$TMP/ih_bm.txt" 2>/dev/null; rc=$?
+  { [ "$rc" -eq 2 ] && grep -q '"l2_profile":"could_not_run"' "$TMP/ih_bm.txt"; } \
+    && ok "LT-28n l2_profile is could_not_run (not ran) when okflint rejects the manifest (exit 2)" \
+    || bad "LT-28n l2_profile on a rejected manifest" "rc=$rc $(tail -1 "$TMP/ih_bm.txt" | cut -c1-200)"
+else
+  skip "LT-28n l2_profile on a rejected manifest — okflint not installed"
+fi
+
+# Found by running the suite on Debian (Linux, no okflint): LT-28k passed on macOS only because okflint was
+# installed there. Without okflint the skip comes from a different branch, and that branch did not name the
+# command that creates the starter file. A person without okflint is exactly who needs the hint.
+HN="$TMP/ih_noflint"; mkbundle "$HN"
+PATH="$SB10" "$SB10/bash" "$CHECK" "$HN" >"$TMP/ih_nf.txt" 2>&1
+{ grep -q 'L2 profile *SKIPPED' "$TMP/ih_nf.txt" && grep -q 'okf-check --init-house-rules' "$TMP/ih_nf.txt"; } \
+  && ok "LT-28o S18-H1 (no okflint, no okf-base.yaml) the skipped-L2 line names okf-check --init-house-rules as well as the okflint install" \
+  || bad "LT-28o S18-H1 without okflint" "$(grep -n 'L2 profile' -A2 "$TMP/ih_nf.txt" | head -3 | tr '\n' ' ')"
+PATH="$SB10" "$SB10/bash" "$CHECK" --json "$HN" >"$TMP/ih_nfj.txt" 2>/dev/null
+grep -q '"l2_profile":"skipped"' "$TMP/ih_nfj.txt" && ok "LT-28p --json says l2_profile:\"skipped\" when okflint is absent" || bad "LT-28p" "$(tail -1 "$TMP/ih_nfj.txt" | cut -c1-200)"
+
+# --- 0.9.0 release review (round 1): findings of the integration, spec and security reviewers ---
+# (a) A gate that cannot fail is the defect this tool exists to catch: --selftest had no probe for the trust layer,
+# so a disabled trust rule still printed SELFTEST PASS. Cripple a plugin copy's helper; selftest must now FAIL (exit 5).
+DEADT="$TMP/deadtrust"; mkdir -p "$DEADT"; cp -R "$HERE/.." "$DEADT/plugin" 2>/dev/null
+printf 'import sys, json\njson.dump([], open(sys.argv[2], "w"))\n' > "$DEADT/plugin/scripts/okf-trust.py"
+"$DEADT/plugin/scripts/okf-check" --selftest >"$TMP/deadtrust.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 5 ] && grep -q 'NOT FIRED' "$TMP/deadtrust.txt" && grep -q 'C4' "$TMP/deadtrust.txt"; } \
+  && ok "LT-32a --selftest FAILS (exit 5) when the trust layer stops firing: the Trust gate has a probe" \
+  || bad "LT-32a selftest trust probe" "rc=$rc $(grep -n 'C4\|SELFTEST' "$TMP/deadtrust.txt" | head -2 | tr '\n' ' ')"
+# (b) A YAML alias bomb in verified.by / generated.by made str() expand billions of items (2.5 GB, killed at 60 s).
+# The helper must not stringify a non-string actor. Bounded: the helper gets 3 s, then it is killed.
+BOMB="$TMP/bomb"; mkbundle "$BOMB"; rm -f "$BOMB/c.md"
+"$REALPY" - "$BOMB/n.md" <<'PY'
+import sys
+lines = ["---", "type: Lesson", "title: T", "description: D", "status: draft", "tags: [t]", 'stale_after: "2099-01-01"',
+         "x0: &a0 [x,x,x,x,x,x,x,x,x]"]
+for i in range(1, 8):
+    lines.append("x%d: &a%d [%s]" % (i, i, ",".join(["*a%d" % (i - 1)] * 9)))
+lines += ["generated: {by: *a7, at: \"2026-01-01\"}", "verified:", "  - by: *a7", "    at: \"2026-02-01\"", "---", "", "body"]
+open(sys.argv[1], "w").write("\n".join(lines) + "\n")
+PY
+"$REALPY" - "$HERE/okf-trust.py" "$BOMB" "$TMP/bomb.json" <<'PY' 2>"$TMP/bomb_err.txt"
+import subprocess, sys, os
+env = dict(os.environ, PYTHONPATH=os.path.join(os.path.dirname(sys.argv[1]), "..", "vendor", "pyyaml"))
+try:
+    r = subprocess.run([sys.executable, sys.argv[1], sys.argv[2], sys.argv[3]], timeout=3, env=env, capture_output=True)
+except subprocess.TimeoutExpired:
+    print("TIMEOUT: the helper expanded the alias bomb", file=sys.stderr); sys.exit(1)
+sys.exit(0 if r.returncode == 0 else 2)
+PY
+rc=$?
+[ "$rc" -eq 0 ] && ok "LT-32b a YAML alias bomb in verified.by / generated.by is ignored by the trust helper (done within 3 s, no expansion)" || bad "LT-32b alias bomb" "rc=$rc $(head -1 "$TMP/bomb_err.txt")"
+# (c) Spec-review gaps: S6-H1 a note in a SUBFOLDER is named with its path; S9-N1 a draft with a human generator still warns;
+# S17-N1 the other two hooks never create okf-base.yaml either.
+SUBB="$TMP/subf"; mkbundle "$SUBB"; rm -f "$SUBB/c.md"; mkdir -p "$SUBB/notes"; mktrust "$SUBB/notes" a.md draft human:t 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+"$CHECK" "$SUBB" >"$TMP/subf.txt" 2>&1
+grep -Eq '^ +notes/a\.md: verified\[0\]\.by' "$TMP/subf.txt" && ok "LT-32c S6-H1 a finding in a subfolder names the note with its path (notes/a.md)" || bad "LT-32c S6-H1" "$(grep -n 'a.md\|Trust' "$TMP/subf.txt" | head -2 | tr '\n' ' ')"
+c4run dh draft human:t 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+grep -Eq '^ +n\.md: verified\[0\]\.by .*draft' "$C4OUT" && ok "LT-32d S9-N1 a draft with a HUMAN generator and a human verifier still warns" || bad "LT-32d S9-N1" "$(grep -n 'Trust\|n.md' "$C4OUT" | head -2 | tr '\n' ' ')"
+HK="$TMP/hookbundle"; mkbundle "$HK"
+OKF_BUNDLE_DIR="$HK" bash "$HERE/lessons-staleness-check.sh" </dev/null >/dev/null 2>&1
+printf '{"tool_name":"Write","tool_input":{"file_path":"%s/new-note.md"}}' "$HK" | OKF_BUNDLE_DIR="$HK" bash "$HERE/doc-reuse-guard.sh" >/dev/null 2>&1
+[ ! -e "$HK/okf-base.yaml" ] && [ ! -e "$HK/.okfignore" ] && ok "LT-32e S17-N1 the other two hooks (lessons-staleness-check, doc-reuse-guard) never create okf-base.yaml or .okfignore" || bad "LT-32e S17-N1" "a hook wrote a file: $(ls -A "$HK" | tr '\n' ' ')"
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

@@ -1,0 +1,49 @@
+name: okf-check
+description: >-
+  Check an Open Knowledge Format (OKF) bundle: spec conformance, house rules, staleness, and
+  human-verification claims. Runs the same okf-check as the Claude Code plugin, so the verdict is the same.
+inputs:
+  bundle:
+    description: Path of the bundle folder to check.
+    required: true
+  strict-trust:
+    description: >-
+      'true' makes unauthenticated human verification and near-miss actors (Human:dana) fail the job.
+    required: false
+    default: 'false'
+  fail-stale:
+    description: "'true' makes stale concepts fail the job (exit 4)."
+    required: false
+    default: 'false'
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      # Inputs reach the script through env, never interpolated into it (GitHub secure-use guidance).
+      # GITHUB_ACTION_PATH is set from github.action_path, as the composite-action docs show.
+      env:
+        INPUT_BUNDLE: ${{ inputs.bundle }}
+        INPUT_STRICT_TRUST: ${{ inputs.strict-trust }}
+        INPUT_FAIL_STALE: ${{ inputs.fail-stale }}
+        GITHUB_ACTION_PATH: ${{ github.action_path }}
+      run: |
+        for pair in "strict-trust=$INPUT_STRICT_TRUST" "fail-stale=$INPUT_FAIL_STALE"; do
+          case "${pair#*=}" in
+            true|false) ;;
+            # The value is not echoed back: it is untrusted text, and a newline in it would start a second workflow command.
+            *) echo "::error::input ${pair%%=*} must be 'true' or 'false'"; exit 64 ;;
+          esac
+        done
+        if [ -z "$INPUT_BUNDLE" ]; then
+          echo "::error::input 'bundle' is required: the path of the bundle folder"; exit 64
+        fi
+        # A value that starts with "-" would reach okf-check as a flag (--doctor and --help exit 0: a green job
+        # that checked nothing). The value is not echoed back: it is untrusted text in a workflow command.
+        case "$INPUT_BUNDLE" in
+          -*) echo "::error::input 'bundle' must be a folder path, not a flag"; exit 64 ;;
+        esac
+        args=()
+        if [ "$INPUT_STRICT_TRUST" = true ]; then args+=(--strict-trust); fi
+        if [ "$INPUT_FAIL_STALE" = true ]; then args+=(--fail-stale); fi
+        # okf-check's own exit code is the job's exit code: 0 pass, 1 L1/trust, 2 could not run, 3 house rules, 4 stale.
+        exec "$GITHUB_ACTION_PATH/plugin/scripts/okf-check" "$INPUT_BUNDLE" ${args[@]+"${args[@]}"}

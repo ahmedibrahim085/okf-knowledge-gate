@@ -944,6 +944,170 @@ What matters is not the count but the shape: the UNRESOLVED set included
 rewrite. Reporting those as REFUTED would have been wrong — the fix they describe
 is still running in production.
 
+## 0.9.0 — warnings listed, trust check, init, CI doors (issue #21)
+
+Full user stories and cases: issue #21 and its tickets #22-#28. Rows are added by the ticket that ships them.
+
+### L1 warning listing (#22)
+Warning lines use the same capped listing as errors (`say_capped`, limit 50, "... and N more"): the cap and the wording are the existing helper's. They sit under the L1 line at the same indent as error lines (the spec text "+N more" and a two-space indent were replaced by that helper's form, so one cap style serves both).
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-25a | A note with `generated.by: Human:dana` | its warning prints as `<note>: <message>`, exit 0 | ✅ |
+| LT-25b | A bundle with 0 warnings | no warning line prints | ✅ |
+| LT-25c | A bundle with 3 warnings | the summary says 3 and exactly 3 lines print | ✅ |
+| LT-25d | 60 warnings | summary says 60, 50 lines print, then "and 10 more" | ✅ |
+| LT-25e | 51 warnings | summary says 51, 50 lines print, then "and 1 more" | ✅ |
+| LT-25f | `--json` on a bundle with a warning | `warnings` list holds the `<note>: <message>` string; every 0.8.1 key is still present | ✅ |
+| LT-25g | `--json` on a clean bundle | `warnings` is an empty list, not a missing key | ✅ |
+| LT-25h | A bundle with one error and warnings | the FAIL line carries the warning count, so the warning lines under the error lines are accounted for | ✅ |
+
+### Trust layer C4 — unauthenticated human verification (#23)
+OKF v0.2 records `verified: by: human:<id>` and cannot authenticate it. The layer (`okf-trust.py`, run by `okf-check`) reports, per `verified` entry whose actor starts with `human:` (the FIRST matching row wins): a draft note → warning; `verified.at` earlier than `generated.at` → warning; an agent-generated note (`<producer>/<version>` or `agent:<id>`) → advisory. `process:` and other actors are never reported. Warnings and advisories both count into the final advisory tally; the layer line shows the split. The exit code stays 0 (`--strict-trust` is #24). The vendored validator is not edited. The layer runs right after L1. The draft and changed-after warnings do not depend on the generator; only the advisory needs an agent generator, so a missing or near-miss `generated.by` gives no advisory (it still warns on a draft). A bare date compared with a timestamp is compared by day (a bare date cannot say which moment of the day). A note that starts with a UTF-8 BOM is read like any other. If the helper fails, the layer line says COULD NOT RUN with the helper's last error line, the exit code is 2, and `--json` reports `trust_findings` as `null` (unknown, not clean).
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-26a | Draft note, `agent/1` generator, `human:finance-owner` verifier (the 0.8.1 baseline: exit 0, no finding) | warning naming `verified[0].by` and the draft; identity line once; exit 0 | ✅ |
+| LT-26b | Stable note, human generator, review after the change | no C4 finding | ✅ |
+| LT-26c | Draft note with two `human:` entries | two warnings, one per entry | ✅ |
+| LT-26d | Review dated before `generated.at` | warning "changed after the claimed review" | ✅ |
+| LT-26e | Review dated after `generated.at` | no finding | ✅ |
+| LT-26e2 | Review dated equal to `generated.at` | no finding (equal is not earlier) | ✅ |
+| LT-26f | Agent-generated stable note, human verifier | advisory, not a warning; exit 0 | ✅ |
+| LT-26g | `generated.by: agent:bot` | advisory (second agent form) | ✅ |
+| LT-26g2 | Agent note, human verifier with no `at` | advisory only; no changed-after warning | ✅ |
+| LT-26g3 | Human-generated note, human verifier | no advisory | ✅ |
+| LT-26h | Three entries, only `verified[1]` is `human:` | only `verified[1].by` is reported | ✅ |
+| LT-26i | Draft note with a `process:` verifier | never reported | ✅ |
+| LT-26j | `process:` generator, `human:` verifier on a draft | warning (the generator type does not hide it) | ✅ |
+| LT-26k | No `verified` field | no finding | ✅ |
+| LT-26l | `verified: []` on a draft | no finding | ✅ |
+| LT-26m | `verified` of the wrong shape (a string) | no crash, no C4 finding | ✅ |
+| LT-26n | `verified` as a mapping on a draft | read as one event; warning | ✅ |
+| LT-26o | Five findings | the identity line prints once | ✅ |
+| LT-26p | A bundle with no C4 case | no C4 finding line | ✅ |
+| LT-26q | `--json` on a bundle with a finding | `trust_findings` holds `{file, entry, severity, reason}` | ✅ |
+| LT-26r | `--json` on a clean bundle | `trust_findings` is an empty list | ✅ |
+| LT-26s | 0 L1 warnings and 2 advisories | L1 line `0 warning(s)`; layer line `2 advisory(ies)`; final tally 2 | ✅ |
+| LT-26u | Stable note, empty `generated.by`, human verifier | no finding (no agent to flag) | ✅ |
+| LT-26v | Stable note, near-miss generator `Human:dana`, human verifier | no C4 finding (L1 already warns about the actor) | ✅ |
+| LT-26w | Draft note, near-miss generator, human verifier | warning (the draft row ignores the generator) | ✅ |
+| LT-26x | Note that starts with a UTF-8 BOM | checked like any other note | ✅ |
+| LT-26y | Review dated the same day as a timed `generated.at` | no finding (days compared when a side is a bare date) | ✅ |
+| LT-26y2 | Review dated the day before a timed `generated.at` | warning | ✅ |
+| LT-26z | The trust helper fails | COULD NOT RUN with the helper's error line, exit 2, not a pass | ✅ |
+| LT-26z2 | `--json` when the trust helper failed | `trust_findings` is `null` (unknown), not `[]` | ✅ |
+
+### `--strict-trust` (#24)
+Severity only: with `--strict-trust`, every C4 finding (warning or advisory) and every L1 near-miss actor warning (`Human:dana`) makes the run exit 1. The findings are the same with or without the flag. A `Trust policy FAIL` line follows the trust layer. When no layer failed except the trust policy, the final line reads "FAILED (exit 1) — trust policy failure (--strict-trust)"; with any other layer failing (an L1 or L2 error, staleness, a layer that could not run), that layer's line comes first and the summary does not blame trust alone. No new exit code.
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-27a | Draft note with a human verifier, `--strict-trust` | exit 1; "trust policy failure (--strict-trust)" | ✅ |
+| LT-27b | The same bundle without the flag | exit 0 | ✅ |
+| LT-27c | Advisory-only case (agent note, human verifier), `--strict-trust` | exit 1 | ✅ |
+| LT-27d | L1 conformance error plus a C4 case, `--strict-trust` | exit 1; "not conformant" first; summary does not blame trust alone | ✅ |
+| LT-27e | Near-miss generator `Human:dana` | exit 1 under the flag, exit 0 without | ✅ |
+| LT-27f | Near-miss verifier `Human:dana`, `--strict-trust` | exit 1 | ✅ |
+| LT-27g | Honest note, `--strict-trust` | exit 0, no trust line | ✅ |
+| LT-27h | `--strict-trust --json` | one JSON line, `"exit":1` | ✅ |
+| LT-27i | An unrelated warning whose quoted actor text contains "is a near-miss of" | not counted as a near-miss; exit 0 under the flag | ✅ |
+| LT-27j | Trust failure plus a stale failure (`--fail-stale`) | exit 1; the summary does not blame trust alone | ✅ |
+| LT-27k | Trust layer could not run, strict mode | the summary does not read as a plain trust-policy failure | ✅ |
+
+### `--init-house-rules` (#25)
+Without `<bundle>/okf-base.yaml` the L2 house-rules layer is SKIPPED. `okf-check --init-house-rules <bundle>` writes a starter `<bundle>/okf-base.yaml` (the path L2 reads), with the placeholder name set from the folder name (a name with anything but letters, digits, dot, dash, underscore or space falls back to `bundle`; no YAML escaping, by design). It is the ONLY writer of that file; it exits 1 and writes nothing when the file exists (also when it is empty), exits 64 without a usable bundle, and exits non-zero without creating anything when the folder is read-only. The skipped-L2 line names the command. `--json` carries `l2_profile` (`ran`, `skipped`, or `could_not_run` when L2 reached no verdict).
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-28a | `--init-house-rules <bundle>` | writes `<bundle>/okf-base.yaml`, name from the folder, exit 0 | ✅ |
+| LT-28b | No bundle argument | usage, exit 64 | ✅ |
+| LT-28c | Bundle path that does not exist | nothing created, exit 64, message "is not a directory" | ✅ |
+| LT-28d | `okf-base.yaml` already exists (run twice) | exit 1, file byte-identical, message names the file | ✅ |
+| LT-28e | An empty `okf-base.yaml` | still refused, left empty | ✅ |
+| LT-28f | L2 on a freshly initialised bundle | L2 runs and passes, no placeholder text | ✅ |
+| LT-28g | A Lesson without `stale_after` in that bundle | L2 reports it, exit 3 | ✅ |
+| LT-28h | Folder name with YAML-special characters | name falls back to `bundle` | ✅ |
+| LT-28i | Any check run, flag or preflight on a bundle without the file | the file is never created | ✅ |
+| LT-28j | Read-only bundle folder | non-zero exit, nothing created | ✅ |
+| LT-28k | Bundle without `okf-base.yaml` | the "not enforced" line names `okf-check --init-house-rules` | ✅ |
+| LT-28l | Bundle with `okf-base.yaml` | the line is absent | ✅ |
+| LT-28m | `--json` on a bundle without the file | `"l2_profile":"skipped"` | ✅ |
+| LT-28n | okflint rejects the manifest (exit 2) | `"l2_profile":"could_not_run"`, not `ran` | ✅ |
+| LT-28o | No okflint and no `okf-base.yaml` (found by the Debian run) | the skipped-L2 line names the okflint install AND `okf-check --init-house-rules` | ✅ |
+| LT-28p | `--json` with okflint absent | `"l2_profile":"skipped"` | ✅ |
+
+### GitHub Action and pre-commit entry (#26)
+Two thin doors onto `okf-check`; they add no logic, so the verdict is the one Claude Code gets. `action.yml` (repo root) is a composite action: inputs `bundle` (required), `strict-trust` and `fail-stale` (`'true'`/`'false'`, default `'false'`, anything else exits 64); inputs reach the script through `env`, never interpolated into it; the step runs with `shell: bash` (`-eo pipefail`) so `okf-check`'s exit code is the job's. `.pre-commit-hooks.yaml` (repo root) defines hook `okf-check`: `language: script`, entry `plugin/scripts/okf-check`, default `args: ['.']`, `files: '\.md$'`, `pass_filenames: false`. The public example may use GitHub-hosted runners (owner-confirmed exception to the self-hosted-only rule, which covers the private repo). Read from the sources: a root `action.yml` is the composite-action docs' own shape; pre-commit's source (`pre_commit/repository.py` `_hook`, a dict update) makes a user's `args` REPLACE the hook's default, resolves the first token of `entry` from the hook repo root and appends args after it. S22 is run two ways: through a REAL git commit with a hook script that does what pre-commit does for this hook (files selector, no filenames, entry plus args), and, when the tool is installed, end to end by the real pre-commit tool against a hook repo it clones (LT-29n, LT-29o2, LT-29o3; run on pre-commit 4.7.0 on macOS; not run on Linux: UNVERIFIED there). The `files: '\.md$'` selector runs the check whenever any Markdown file is staged (the hook cannot know which Markdown files belong to the bundle); a commit that stages no Markdown file does not run it. A `bundle` input that starts with `-` is refused (exit 64): it would reach `okf-check` as a flag.
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-29a | `action.yml` structure | composite; bundle required; strict-trust and fail-stale default false; `shell: bash`; inputs via env | ✅ |
+| LT-29b | The action's script on a conformant bundle | exit 0, the okf-check verdict in the log | ✅ |
+| LT-29c | No `bundle` input | the job fails; the message names the input | ✅ |
+| LT-29d | Bundle path with a space | okf-check receives the whole path | ✅ |
+| LT-29e | A bundle that exits 1 on the CLI | the job fails with exit 1 | ✅ |
+| LT-29f | A layer that could not run (exit 2) | the job fails; never a pass | ✅ |
+| LT-29g | `strict-trust: true` on a draft with a human verifier | the job fails | ✅ |
+| LT-29h | `strict-trust: false` on the same bundle | the job passes | ✅ |
+| LT-29i | `fail-stale: true` on an expired note | the job fails with exit 4 | ✅ |
+| LT-29j | An input other than `true` or `false` | exit 64; the input is named | ✅ |
+| LT-29k | `.pre-commit-hooks.yaml` structure | hook okf-check; script entry exists and is executable; no filenames; default arg `.`; `files` selects only `.md` | ✅ |
+| LT-29l | The hook's command with `--strict-trust` on a draft with a human verifier (emulated) | blocks the commit (exit 1) | ✅ |
+| LT-29m | The hook's command on a clean bundle (emulated) | lets the commit through | ✅ |
+| LT-29n | The REAL pre-commit tool, clean bundle (hook cloned from a git repo; args `., --strict-trust`) | the commit goes through; the hook reports Passed | ✅ |
+| LT-29o2 | The REAL pre-commit tool, draft note with a human verifier | the commit is blocked (`trust policy failure`); the user's args reached okf-check; HEAD unchanged | ✅ |
+| LT-29o3 | The REAL pre-commit tool, a commit that stages no `.md` file | the hook is Skipped | ✅ |
+| LT-29o | `bundle` is `--doctor`, `--selftest`, `--help` or `-h` | refused, exit 64; never passed to okf-check as a flag | ✅ |
+| LT-29p | Real `git commit` of a clean bundle with the hook script | commits | ✅ |
+| LT-29q | Real `git commit` of a draft note with a human verifier | blocked; HEAD unchanged | ✅ |
+| LT-29r | Real `git commit` that stages no `.md` file | the check does not run | ✅ |
+
+### README claims (#27)
+The README states only what was measured or what the pinned files say. `LT-30a`..`LT-30i` compare it with the files that hold the facts (pin file, `VENDOR.md`) and with the tool's own words (`--latest` "may lack"), and forbid a promise of native Windows, a hedge word in a platform claim, and the stale "requires pyyaml" line.
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-30a | README Platforms section | names macOS, Linux and Windows via WSL | ✅ |
+| LT-30b | Every README line that mentions Windows | says WSL, no native support, or unsupported (a bare "not" does not count) | ✅ |
+| LT-30c | The Windows row | labels WSL, the Action and the pre-commit hook on Windows UNVERIFIED | ✅ |
+| LT-30d | Both pinned commits | full ids in the README equal the pin file and VENDOR.md | ✅ |
+| LT-30e | Dependencies section | names okf-skills#68 and okflint#11 and says what happens if each is never merged | ✅ |
+| LT-30f | CI and usage | Action, pre-commit hook, `--strict-trust`, `--init-house-rules`, python3 prerequisite shown | ✅ |
+| LT-30g | `--latest` | the README uses the tool's own words ("may lack the fixes") | ✅ |
+| LT-30h | Install section | no longer says PyYAML must be installed (it is vendored) | ✅ |
+| LT-30i | Platform claims | no hedge words | ✅ |
+
+### Agent-ready plugin (#29)
+Source: the `plugin-dev` validator and skill-reviewer agents plus Anthropic's pages (plugins-reference: a plugin's `bin/` is on the Bash tool's PATH while the plugin is enabled; the Agent Skills best-practices page: third-person description of what and when, body under 500 lines, references one level deep). `plugin/bin/okf-check` and `plugin/bin/okf-verify` are pass-through wrappers (no logic; they follow a symlink to themselves). `skills/okf/SKILL.md` is the agent-facing document; maintainer detail lives in `references/`, moved verbatim. UNVERIFIED until the T7 reinstall and a new session: that Claude Code really puts `bin/` on PATH (`command -v okf-check`).
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-31a | Each wrapper vs the real tool | same `--version`, same exit code for a bad flag, from any directory | ✅ |
+| LT-31b | `bin/` first on PATH | a bare `okf-check` resolves to the wrapper | ✅ |
+| LT-31c | `plugin/LICENSE` | equals the repository LICENSE (a marketplace install copies only `plugin/`) | ✅ |
+| LT-31d | SKILL.md content | strict-trust, init-house-rules, Trust (C4), exit precedence, a never-list, the Action and hook, okf-verify | ✅ |
+| LT-31e | SKILL.md exit table | row 1 mentions strict-trust / Trust; row 64 exists | ✅ |
+| LT-31f | SKILL.md frontmatter | third-person description naming okf-verify, at most 1024 chars; argument-hint lists the 0.9.0 flags; at most 500 lines | ✅ |
+| LT-31g | References | every linked reference exists; none links another (one level deep) | ✅ |
+| LT-31h | A symlink to a wrapper on PATH | behaves like the real tool (was exit 126) | ✅ |
+| LT-31i | Text moved out of SKILL.md | every okf-verify, install and setup rule is still in SKILL.md or a reference | ✅ |
+| LT-31j | `--strict` wording | also fails on notes with no checkable claim (okf-verify D-9) | ✅ |
+| LT-31k | README | says the commands are on the Bash tool's PATH while the plugin is enabled | ✅ |
+
+### Release review fixes (0.9.0)
+Found by the three release reviewers (integration, spec coverage, claims and security) on `release/v0.9.0`. A YAML alias bomb is a small note whose `str()` expands to billions of items; the trust helper never stringifies a non-string (`as_text`). The same bomb hangs the vendored L1 validator in 0.8.1 too; that is reported to the owner, not changed here.
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-32a | The trust layer stops firing (helper crippled) | `--selftest` FAILS with exit 5 and names the C4 probe | ✅ |
+| LT-32b | A YAML alias bomb in `verified.by` / `generated.by` | the trust helper finishes within 3 s and ignores it | ✅ |
+| LT-32c | A finding in a subfolder | named with its path (`notes/a.md`) | ✅ |
+| LT-32d | A draft note with a human generator and a human verifier | still warns | ✅ |
+| LT-32e | The other two hooks (lessons-staleness-check, doc-reuse-guard) | never create `okf-base.yaml` or `.okfignore` | ✅ |
+| LT-33a | The Action given an invalid `strict-trust` containing a newline | exit 64; one `::error::` line; the value is not echoed | ✅ |
+| LT-33b | README | says `okflint` (L2) needs Python 3.12 or newer | ✅ |
+
 ## Non-goals
 
 - Installing or upgrading dependencies WITHOUT being asked (UC-3: *report* by default; *act* only on `--install-deps --yes` or the owner's `OKF_AUTO_INSTALL=1`)

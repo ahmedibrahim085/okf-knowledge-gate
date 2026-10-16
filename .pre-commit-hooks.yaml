@@ -1,0 +1,19 @@
+# pre-commit hook for okf-check. In your .pre-commit-config.yaml:
+#
+#   repos:
+#     - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
+#       rev: v0.9.0
+#       hooks:
+#         - id: okf-check
+#           args: [path/to/bundle, --strict-trust]
+#
+# The hook passes no filenames: okf-check checks the whole bundle named in args (default: the repo root).
+# `language: script` is the name older and current pre-commit releases accept (newer ones call it unsupported_script).
+- id: okf-check
+  name: okf-check (OKF bundle)
+  description: Check an OKF bundle for spec conformance, house rules, staleness and unauthenticated human verification.
+  entry: plugin/scripts/okf-check
+  language: script
+  args: ['.']
+  files: '\.md$'
+  pass_filenames: false

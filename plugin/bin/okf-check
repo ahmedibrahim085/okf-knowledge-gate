@@ -1,0 +1,12 @@
+#!/bin/sh
+# Pass-through wrapper. Claude Code puts a plugin's bin/ on the Bash tool's PATH while the plugin is enabled
+# (code.claude.com plugins-reference), so an agent runs `okf-check` without the long ${CLAUDE_PLUGIN_ROOT}/scripts path.
+# No logic lives here: arguments, output and exit code are the real tool's own. A PATH entry can be a symlink
+# to this file, so follow the link before locating ../scripts.
+self=$0
+while [ -L "$self" ]; do
+  link=$(readlink "$self")
+  case "$link" in /*) self=$link ;; *) self=$(dirname -- "$self")/$link ;; esac
+done
+here=$(CDPATH= cd -- "$(dirname -- "$self")" && pwd -P) || exit 2
+exec "$here/../scripts/okf-check" "$@"

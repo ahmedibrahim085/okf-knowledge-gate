@@ -1,4 +1,5 @@
-# okflint house profile — copy to <bundle>/okf-base.yaml and edit.
+# okflint house profile — the starter for <bundle>/okf-base.yaml.
+# `okf-check --init-house-rules <bundle>` writes it for you (and never overwrites). Edit it to taste.
 #
 # This is the HOUSE layer. It answers "is this valid OUR OKF?" — required fields
 # per type, controlled vocabularies, hygiene levels. The SPEC layer ("is this

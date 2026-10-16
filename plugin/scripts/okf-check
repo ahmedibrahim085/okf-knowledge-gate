@@ -42,18 +42,22 @@
 #   okf-check <bundle>            okf-check <bundle> --json
 #   okf-check --doctor            okf-check <bundle> --selftest
 #   okf-check <bundle> --fail-stale        make L3 staleness blocking (exit 4)
+#   okf-check --init-house-rules <bundle>  write a starter <bundle>/okf-base.yaml (never overwrites)
+#   okf-check <bundle> --strict-trust      make unauthenticated human verification (C4) and near-miss
+#                                          actors (Human:dana) blocking (exit 1). Severity only: the
+#                                          findings are the same with or without the flag.
 #   okf-check <bundle> --fail-on-change    make a mid-scan change blocking (exit 6)
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.8.1"
+VERSION="0.9.0"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
 # Initialised HERE, not in main(): --selftest calls the layer functions directly
 # and never enters main, so declaring these there left them unbound under `set -u`.
 # (Regression introduced by the summary-counter change; caught by okf-check.test.sh.)
-ADVISORIES=0; SKIPPED=0
+ADVISORIES=0; SKIPPED=0; TRUST_RAN=1; TRUST_FINDINGS=0; TRUST_POLICY_FAIL=0; L2_PROFILE=ran
 
 # ---------------------------------------------------------------- locate self
 # Symlink-safe without readlink -f (absent on macOS): walk the link chain.
@@ -104,17 +108,19 @@ py_with_vendor() {  # run $PY with the vendored PyYAML visible to IT ONLY
 PINS="${OKF_PINNED_VERSIONS:-$ROOT/config/pinned-versions.txt}"
 TEMPLATE="$ROOT/config/okf-base.yaml.template"
 
-BUNDLE=""; MODE="check"; JSON=0; FAIL_STALE=0; ASSUME_YES=0; USE_LATEST=0
+BUNDLE=""; MODE="check"; JSON=0; FAIL_STALE=0; STRICT_TRUST=0; ASSUME_YES=0; USE_LATEST=0
 for a in "$@"; do
   case "$a" in
     --doctor)      MODE="doctor" ;;
     --selftest)    MODE="selftest" ;;
     --json)        JSON=1 ;;
     --fail-stale)  FAIL_STALE=1 ;;
+    --strict-trust) STRICT_TRUST=1 ;;
     --fail-on-change) FAIL_ON_CHANGE=1 ;;
     --fingerprint) MODE="fingerprint" ;;
     --preflight)   MODE="preflight" ;;
     --init-ignore) MODE="init-ignore" ;;
+    --init-house-rules) MODE="init-house-rules" ;;
     --install-deps) MODE="install-deps" ;;
     --yes)         ASSUME_YES=1 ;;
     --latest)      USE_LATEST=1 ;;
@@ -552,6 +558,12 @@ doctor() {
 }
 
 # ------------------------------------------------------- L1 spec conformance
+# The count alone named nothing: a reader had to run the validator by hand to see what the warnings
+# were. List them, capped and honest about the cap (say_capped). 50 shows the pattern of a repeated
+# mistake without scrolling the verdict off the screen; the full list is in `--json`.
+l1_list_warnings() {
+  grep '^W|' "$TMP/l1.txt" | sed 's/^W|//' | say_capped 50 "                   "
+}
 # Delegates to the vendored checker and reads its --json report through python3
 # rather than jq, so a machine without jq still gets a real verdict.
 # One note the vendored validator crashes on (a `status` list, an impossible date: upstream
@@ -610,7 +622,7 @@ __l1_core() {
   # upgrade — into "0 errors" and a confident PASS. This is G-4 exactly, one
   # layer up: parsed is not understood, and a checker that cannot fail is
   # worthless. Silence about a missing key is the failure mode, so say so. (G-9)
-  "$PY" - "$TMP/l1.json" <<'PY' > "$TMP/l1.txt" 2>/dev/null
+  "$PY" - "$TMP/l1.json" "$TMP/l1warn.json" <<'PY' > "$TMP/l1.txt" 2>/dev/null
 import json,sys
 try:
     d = json.load(open(sys.argv[1]))
@@ -627,6 +639,11 @@ if not isinstance(d["errors"], list) or not isinstance(d["warnings"], list):
     print("SHAPE|'errors'/'warnings' is not a list — schema changed?"); raise SystemExit(0)
 print(len(d["errors"]), len(d["warnings"]), d.get("counts", {}).get("concepts", 0))
 for e in d["errors"]: print("E|" + e)
+# One line per warning (a newline inside a message would split it into two). The list is also
+# written as JSON for --json, where `l1_warnings` has only ever been a count.
+ws = [str(w).replace("\n", " ") for w in d["warnings"]]
+for w in ws: print("W|" + w)
+json.dump(ws, open(sys.argv[2], "w"))
 PY
   if grep -q '^SHAPE|' "$TMP/l1.txt" 2>/dev/null; then
     say "  L1 conformance   COULD NOT RUN — $(sed -n 's/^SHAPE|//p' "$TMP/l1.txt" | head -1)"
@@ -641,14 +658,44 @@ PY
   esac
   if [ "${L1_ERR:-1}" -eq 0 ]; then
     say "  L1 conformance   PASS   ${L1_CONCEPTS} concepts, 0 errors, ${L1_WARN} warning(s)"
+    l1_list_warnings
     return 0
   fi
-  say "  L1 conformance   FAIL   ${L1_ERR} error(s) — bundle is not conformant OKF"
+  # The warning count rides on the FAIL line: the warning lines print under the error lines at the
+  # same indent, and "1 error(s)" above five unlabelled lines hid which of them were warnings.
+  say "  L1 conformance   FAIL   ${L1_ERR} error(s), ${L1_WARN} warning(s) — bundle is not conformant OKF"
   # Through say(), not raw stdout: these detail lines used to bypass it and
   # corrupt --json on every non-clean bundle. E-4 only ever tested a CLEAN
   # bundle, so the suite was green over it. (R-3)
   grep '^E|' "$TMP/l1.txt" | sed 's/^E|//' | say_capped 12 "                   "
+  l1_list_warnings
   return $EXIT_CONFORM
+}
+
+# ------------------------------------------------------- Trust (C4): unauthenticated human verification
+# OKF v0.2 records `verified: by: human:<id>` and cannot authenticate it. okf-trust.py reports the
+# cases where that claim is visibly unsafe (a draft, or changed after the review) as warnings and the
+# honest-looking "agent drafts, person reviews later" case as an advisory. Both count into the final
+# advisory tally; neither fails the run (exit stays 0). The identity line prints once per run.
+run_trust() {
+  local bundle="$1" out nw na why
+  out=$(py_with_vendor "$HERE/okf-trust.py" "$bundle" "$TMP/trust.json" 2>"$TMP/trust.err")
+  if [ $? -ne 0 ]; then
+    # Unknown is not clean: --json gets null (not []), and the helper's own last error line is shown.
+    TRUST_RAN=0; why=$(tail -1 "$TMP/trust.err" 2>/dev/null)
+    say "  Trust (C4)       COULD NOT RUN (okf-trust.py failed${why:+: $why}; check python3 and PyYAML with: okf-check --doctor)"
+    return $EXIT_DEP
+  fi
+  nw=$(printf '%s\n' "$out" | grep -c '^W|'); na=$(printf '%s\n' "$out" | grep -c '^A|')
+  if [ "$nw" -eq 0 ] && [ "$na" -eq 0 ]; then
+    say "  Trust (C4)       PASS   no unauthenticated human verification"
+    return 0
+  fi
+  ADVISORIES=$((ADVISORIES + nw + na)); TRUST_FINDINGS=$((nw + na))
+  say "  Trust (C4)       WARN   ${nw} warning(s), ${na} advisory(ies)"
+  printf '%s\n' "$out" | sed -n 's/^[WA]|//p' | say_capped 50 "                   "
+  say "                   okf-check cannot prove who a person is. A human: entry is a claim in the file."
+  return 0
 }
 
 # ------------------------------------------------------- L2 house profile
@@ -709,7 +756,10 @@ run_profile() {
     for k in "${!L2_CRASHED[@]}"; do say "                   $(printf '%s' "${L2_CRASHED[$k]}" | tr '\n\r\t' '   ')"; done
     say "                   (a validator bug, not a verdict on the note; the other notes were checked above)"
     [ "$rc" -eq "$EXIT_PROFILE" ] || rc=$EXIT_DEP
+    L2_PROFILE=could_not_run
   fi
+  # A layer that returned "could not run" reached no verdict: --json must not say it ran.
+  [ "$rc" -eq "$EXIT_DEP" ] && [ "$L2_PROFILE" != skipped ] && L2_PROFILE=could_not_run
   return $rc
 }
 
@@ -720,15 +770,19 @@ __l2_core() {
   local bundle="$1"
   local manifest="$bundle/okf-base.yaml"
   if ! command -v okflint >/dev/null 2>&1; then
-    SKIPPED=$((${SKIPPED:-0} + 1))
+    SKIPPED=$((${SKIPPED:-0} + 1)); L2_PROFILE=skipped
     say "  L2 profile       SKIPPED — okflint not installed (install: uv tool install okflint)"
     say "                   house rules are NOT enforced — this is a skip, not a pass."
+    # Two things are missing here, and the person needs both: the tool and the rules file.
+    [ -f "$manifest" ] || say "                   there is no okf-base.yaml yet either: create a starter with: okf-check --init-house-rules '$bundle'"
     return 0
   fi
   if [ ! -f "$manifest" ]; then
     SKIPPED=$((${SKIPPED:-0} + 1))
+    L2_PROFILE=skipped
     say "  L2 profile       SKIPPED — no okf-base.yaml in $bundle"
-    say "                   house rules are NOT enforced. Start from: $TEMPLATE"
+    say "                   house rules are NOT enforced. Create a starter file with: okf-check --init-house-rules '$bundle'"
+    say "                   (or copy $TEMPLATE)"
     return 0
   fi
   # --json, not the human output. Counting '❌' meant that an okflint whose
@@ -1225,6 +1279,10 @@ selftest() {
     say "  L2 (house profile): SKIPPED — okflint absent, so its gates are UNVERIFIED here"
   fi
 
+  say "  Trust (C4):"
+  # A trust layer that stops firing must fail the selftest too: a gate that cannot fail is worthless.
+  probe "draft + human verifier -> C4" "draft with human verification" run_trust "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: draft\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - by: human:selftest\n    at: "2026-02-01"\nstale_after: "2099-01-01"\n---\nbody\n'
+
   say "  L3 (staleness):"
   # Marker is "need attention", NOT "expired": the PASS line reads "nothing
   # expired", so grepping for "expired" matches success and failure alike — a
@@ -1275,6 +1333,24 @@ print(json.dumps({"bundle": sys.argv[1],
                  bundle_fingerprint "$BUNDLE"
                fi
                exit 0;;
+  init-house-rules) # The ONLY writer of okf-base.yaml, and only on this explicit request. L2 reads
+                # <bundle>/okf-base.yaml, so that is where the starter goes. The placeholder name is set
+                # from the folder name so the file works as written; a name with anything but
+                # letters, digits, dot, dash, underscore or space falls back to "bundle".
+                # SHORTCUT: no YAML escaping and no quoting. The allowed characters cannot break the YAML
+                # structure; a folder named like a YAML scalar (yes, null, 123) is written as is and okflint
+                # accepts it today. Quote the value if okflint ever starts to care.
+                [ -n "$BUNDLE" ] || { echo "usage: okf-check --init-house-rules <bundle>" >&2; exit 64; }
+                [ -d "$BUNDLE" ] || { echo "okf-check: $BUNDLE is not a directory" >&2; exit 64; }
+                [ -f "$TEMPLATE" ] || { echo "okf-check: starter template missing: $TEMPLATE" >&2; exit $EXIT_DEP; }
+                if [ -e "$BUNDLE/okf-base.yaml" ] || [ -L "$BUNDLE/okf-base.yaml" ]; then
+                  echo "okf-check: $BUNDLE/okf-base.yaml already exists - not overwritten" >&2; exit 1
+                fi
+                _bn=$(basename "$(cd "$BUNDLE" && pwd -P)")
+                case "$_bn" in *[!A-Za-z0-9._\ -]*|"") _bn=bundle ;; esac
+                sed "s/^  name: CHANGE ME/  name: $_bn/" "$TEMPLATE" > "$BUNDLE/okf-base.yaml" 2>/dev/null \
+                  || { echo "okf-check: cannot write $BUNDLE/okf-base.yaml" >&2; rm -f "$BUNDLE/okf-base.yaml"; exit $EXIT_DEP; }
+                echo "wrote $BUNDLE/okf-base.yaml (starter; edit it, then re-run okf-check)"; exit 0;;
   init-ignore)  # The ONLY writer of .okfignore, and only on this explicit request.
                 [ -n "$BUNDLE" ] && [ -d "$BUNDLE" ] || { echo "usage: okf-check --init-ignore <bundle>" >&2; exit 64; }
                 if [ -e "$BUNDLE/.okfignore" ] || [ -L "$BUNDLE/.okfignore" ]; then
@@ -1296,7 +1372,7 @@ print(json.dumps({"bundle": sys.argv[1],
             selftest; exit $?;;
 esac
 
-[ -n "$BUNDLE" ] || { echo "usage: okf-check <bundle> [--doctor|--selftest|--json|--fail-stale]" >&2; exit 64; }
+[ -n "$BUNDLE" ] || { echo "usage: okf-check <bundle> [--doctor|--selftest|--json|--fail-stale|--strict-trust]" >&2; exit 64; }
 [ -d "$BUNDLE" ] || { echo "error: $BUNDLE is not a directory" >&2; exit 64; }
 # An UNREADABLE directory used to yield "L1 PASS 0 concepts" and exit 0 — a
 # permission problem, or a typo'd path, read as a clean bill of health. The
@@ -1365,12 +1441,28 @@ fi
 # was REACHED always outranks a gate that could not reach one. (R-4)
 rank() { case "$1" in 0) echo 0;; 4) echo 1;; 6) echo 2;; 2) echo 3;; 3) echo 4;; 1) echo 5;; 5) echo 6;; *) echo 7;; esac; }
 worse() { [ "$(rank "$1")" -gt "$(rank "$worst")" ] && worst="$1"; return 0; }
+# worse_other: like worse, and remembers that something OTHER than the trust policy failed, so the final
+# summary never blames trust alone for an exit that another layer also earned.
+OTHER_FAIL=0
+worse_other() { [ "$1" -ne 0 ] && OTHER_FAIL=1; worse "$1"; }
 
-run_conformance "$LAYER_BUNDLE"; worse $?
-run_profile     "$LAYER_BUNDLE"; worse $?
-run_index       "$LAYER_BUNDLE"; worse $?
-run_staleness   "$LAYER_BUNDLE"; worse $?
-run_derived_stale "$BUNDLE"; worse $?
+run_conformance "$LAYER_BUNDLE"; worse_other $?
+run_trust       "$LAYER_BUNDLE"; worse_other $?
+# --strict-trust: severity only. A C4 finding or an L1 near-miss actor warning becomes blocking (exit 1).
+# The near-miss count reads the validator's own warning text (anchored on its full wording, so a warning
+# that merely quotes those words in an actor does not count); LT-27e and LT-27i fail if that text changes.
+if [ "$STRICT_TRUST" -eq 1 ]; then
+  _nm=$(grep -c '^W|.*is a near-miss of `human:`/`process:`' "$TMP/l1.txt" 2>/dev/null); _nm=${_nm:-0}
+  _strict_n=$((TRUST_FINDINGS + _nm))
+  if [ "$_strict_n" -gt 0 ]; then
+    say "  Trust policy     FAIL   ${_strict_n} finding(s) under --strict-trust (human verification the tool cannot authenticate, or a near-miss actor)"
+    TRUST_POLICY_FAIL=1; worse $EXIT_CONFORM
+  fi
+fi
+run_profile     "$LAYER_BUNDLE"; worse_other $?
+run_index       "$LAYER_BUNDLE"; worse_other $?
+run_staleness   "$LAYER_BUNDLE"; worse_other $?
+run_derived_stale "$BUNDLE"; worse_other $?
 FP_AFTER=$(bundle_fingerprint "$BUNDLE")
 
 # The readability guard is check-then-act: it walks the tree once, and the layers
@@ -1438,14 +1530,24 @@ if [ "$JSON" -eq 1 ]; then
   elif [ "$CONCURRENT"  -eq 1 ]; then _cd=changed
   else _cd=ok; fi
   _ign=""; [ -n "$IGNORED" ] && _ign=",\"ignored\":$IGNORED"
-  printf '{"bundle":"%s","exit":%d,"l1_errors":%s,"l1_warnings":%s,"concepts":%s,"change_detection":"%s"%s}\n' \
-    "$BUNDLE" "$worst" "${L1_ERR:-null}" "${L1_WARN:-null}" "${L1_CONCEPTS:-null}" "$_cd" "$_ign"
+  # `warnings` is the list behind the `l1_warnings` count. Present on every run that reaches the layers
+  # (an empty list when L1 did not run or found none). The early exits for an unusable bundle (for example a
+  # .okfignore that excludes every note) print only the short key set they always printed.
+  _w="[]"; [ -s "$TMP/l1warn.json" ] && _w=$(cat "$TMP/l1warn.json")
+  _t="[]"; [ -s "$TMP/trust.json" ] && _t=$(cat "$TMP/trust.json"); [ "$TRUST_RAN" -eq 0 ] && _t=null
+  printf '{"bundle":"%s","exit":%d,"l1_errors":%s,"l1_warnings":%s,"concepts":%s,"change_detection":"%s"%s,"warnings":%s,"trust_findings":%s,"l2_profile":"%s"}\n' \
+    "$BUNDLE" "$worst" "${L1_ERR:-null}" "${L1_WARN:-null}" "${L1_CONCEPTS:-null}" "$_cd" "$_ign" "$_w" "$_t" "$L2_PROFILE"
 fi
 say ""
 # Never print a bare pass while the body reported something. A summary that
 # contradicts its own output is how a gate stops being read.
 if [ "$worst" -ne 0 ]; then
-  say "  FAILED (exit $worst)"
+  # Exit 1 means "L1 error". When no layer failed except the trust policy, that is the only way to get it, so say so.
+  if [ "$TRUST_POLICY_FAIL" -eq 1 ] && [ "$OTHER_FAIL" -eq 0 ] && [ "$worst" -eq "$EXIT_CONFORM" ]; then
+    say "  FAILED (exit $worst) — trust policy failure (--strict-trust)"
+  else
+    say "  FAILED (exit $worst)"
+  fi
 elif [ "$ADVISORIES" -gt 0 ] || [ "$SKIPPED" -gt 0 ]; then
   say "  PASS — no blocking errors, but ${ADVISORIES} advisory(ies) and ${SKIPPED} skipped layer(s) above"
 else

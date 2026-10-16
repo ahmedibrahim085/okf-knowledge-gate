@@ -9,6 +9,46 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-16
+
+### Added
+- **Trust layer (C4): unauthenticated human verification.** OKF v0.2 records `verified: by: human:<id>`
+  and cannot authenticate it; an agent can write that line itself. `okf-check` now reports, per
+  `human:` entry: a draft note, or a review dated before the note's change, as a warning; an
+  agent-generated note as an advisory. It prints that it cannot prove who a person is (#23).
+- **`--strict-trust`.** Makes those findings, and near-miss actors such as `Human:dana` (read as an
+  agent), fail the run with exit 1. It changes severity only (#24).
+- **`okf-check --init-house-rules <bundle>`.** Writes a starter `<bundle>/okf-base.yaml` so L2 runs. Never
+  automatic, never overwrites (#25).
+- **GitHub Action and pre-commit hook.** `action.yml` (inputs `bundle`, `strict-trust`, `fail-stale`) and
+  `.pre-commit-hooks.yaml` run the same `okf-check` without Claude Code (#26).
+- **`bin/` wrappers.** `okf-check` and `okf-verify` are on the Bash tool's PATH while the plugin is enabled
+  (a documented Claude Code feature), so an agent does not need the long path (#29).
+- `--json` gains `warnings`, `trust_findings` (`null` when the layer could not run) and `l2_profile`
+  (`ran`, `skipped` or `could_not_run`).
+- The plugin folder ships its own `LICENSE` (#29).
+
+### Changed
+- **L1 warnings are listed**, not only counted (capped at 50 with "and N more"). The FAIL line carries the
+  warning count (#22).
+- The skill (`SKILL.md`) is rewritten for agents: an action per exit code, the exit precedence, a never-list,
+  the Trust layer, the CI doors. Maintainer detail moved, unchanged, to `references/` (#29).
+- README says `okflint` (L2) needs Python 3.12 or newer (Debian 12 ships 3.11).
+- README: a Platforms table that states what was measured and labels the rest UNVERIFIED, the two upstream
+  pins with what happens if their pull requests are never merged, and CI and git usage (#27).
+- Exit 1 also covers `--init-ignore` and `--init-house-rules` refusing to overwrite a file.
+- `tools/install-dev-deps.sh` also plans `pre-commit` (opt-in `--yes`) so the hook can be tested end to end.
+
+### Fixed
+- **The trust layer ignores a YAML alias bomb.** A small note whose `verified.by` expanded to billions of items
+  used to hang the run (2.5 GB, killed at 60 s); an actor field that is not a string is never stringified.
+- `--selftest` now probes the trust layer: a disabled trust rule can no longer print `SELFTEST PASS`.
+- The Action no longer echoes an invalid `strict-trust` or `fail-stale` value (a newline in it could start a second
+  workflow command).
+- Without `okflint`, the skipped-L2 line now names `okf-check --init-house-rules` too (found by a run on
+  Debian 12).
+- `l2_profile` no longer says `ran` when L2 reached no verdict (#25).
+
 ## [0.8.1] - 2026-10-16
 ### Documentation
 - README states that the project is independent and unofficial, and not affiliated with Google,
