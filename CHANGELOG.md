@@ -9,6 +9,11 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-16
+### Documentation
+- README states that the project is independent and unofficial, and not affiliated with Google,
+  the OKF maintainers, or the authors of the tools it builds on.
+
 ## [0.8.0] - 2026-10-15
 
 ### Added

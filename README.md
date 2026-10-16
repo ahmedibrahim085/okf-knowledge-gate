@@ -7,6 +7,9 @@ It runs one command over the [Open Knowledge Format (OKF)](https://github.com/Go
 toolchain and gives one verdict from four layers: spec conformance, house rules, staleness,
 and whether the claims in the notes are still true.
 
+This is an independent, unofficial project. It is not affiliated with or endorsed by Google,
+the OKF maintainers, or the authors of the tools it builds on.
+
 ## Why this exists
 
 Knowledge stores rarely fail because of their format. They fail because
