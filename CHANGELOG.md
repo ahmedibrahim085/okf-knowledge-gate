@@ -9,6 +9,15 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.3] - 2026-10-17
+
+OKF Knowledge Gate 0.9.3 changes no plugin behaviour. It scripts the release checks that were run by hand, so a slip fails before it reaches a release. These tools live in the development repository and are not part of the published plugin.
+
+### Added
+- **A Linux release gate.** `tools/linux-gate.sh` streams the committed tree into a Debian 12 container, installs the pinned `okflint` and `pre-commit` in a Python 3.12 environment as a non-root user, and runs every suite and `--selftest`. The image, versions and suite list are in `tools/linux-gate.conf`; the Docker context comes from `OKF_DOCKER_CONTEXT` or docker's current context. Without docker, or with an unreachable context, it stops with exit 2 and names the setting.
+- **A pre-push gate.** `tools/install-git-hooks.sh` also installs a `pre-push` hook. It runs `tools/pre-push-gate.sh` on each pushed commit (not on the working tree): the test-file check, the public export and its scan, and the exported tree's `plugin.test.sh`. A tree that passed is recorded, so pushing it again does not re-run the suite.
+- **A test-file check.** `tools/check-tests.sh` fails when any `*.test.sh` does not parse or no longer ends with its final-status line, the line that makes a suite fail.
+
 ## [0.9.2] - 2026-10-17
 
 OKF Knowledge Gate 0.9.2 closes the false passes the final 0.9.1 review found, makes `--json` carry the findings, and stops two noisy results (the Action's silent green, and `[[sub/b]]` reported as broken).
@@ -368,7 +377,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.2...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.3...HEAD
+[0.9.3]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.8.1...v0.9.0

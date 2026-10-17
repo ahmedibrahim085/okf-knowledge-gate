@@ -175,7 +175,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.2
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.3
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -191,7 +191,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.2
+    rev: v0.9.3
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -301,9 +301,12 @@ fix. A change is reviewed on two axes (standards and spec) before it is released
 ## Release
 
 1. Raise the version in `plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` and `VERSION` in
-   `plugin/scripts/okf-check`. A test fails if they disagree.
+   `plugin/scripts/okf-check`. A test fails if they disagree. Then move the example pins (`okf-knowledge-gate@vx.y.z`
+   and `rev: vx.y.z`) in this README, `plugin/skills/okf/SKILL.md` and `.pre-commit-hooks.yaml` to the new version
+   (tests LT-37f and LT-41a).
 2. Add a `## [x.y.z] - YYYY-MM-DD` section to [`CHANGELOG.md`](CHANGELOG.md).
-3. Run the four suites and `--selftest`.
+3. Run the suites and `--selftest`, on macOS and on Linux: `tools/linux-gate.sh` streams the committed tree
+   into a Debian container (settings in `tools/linux-gate.conf`; Docker context from `OKF_DOCKER_CONTEXT`).
 4. Tag `vx.y.z` on the private release commit and push the tag there.
 5. Publish to the public repository (`ahmedibrahim085/okf-knowledge-gate`). It holds one squashed commit per release,
    so do not push the private history. The examples above pin `vx.y.z`, so the tag must exist there:
