@@ -5,7 +5,8 @@ description: >-
   spec conformance, house rules, staleness, and whether human "verified" claims can be trusted. A second
   command (okf-verify) checks that the commit SHAs and file paths a bundle cites still exist. Use when asked
   to validate, lint or check an OKF bundle, before committing changes to one, or when a knowledge store
-  needs a conformance, house-rule, staleness, trust or truth verdict. Read the exit code; do not eyeball.
+  needs a conformance, house-rule, staleness, trust or truth verdict. Also use when a folder of markdown notes
+  with YAML frontmatter (lessons, decisions, a knowledge base) must be checked.
 user-invocable: true
 argument-hint: "<bundle-dir> [--fail-stale | --strict-trust | --json | --fail-on-change] | --doctor | --selftest | --init-house-rules <bundle-dir>"
 allowed-tools: Bash
@@ -20,7 +21,7 @@ remember, so this is a single entry point.
 "${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" $ARGUMENTS     # a plain `okf-check` also works while the plugin is enabled
 ```
 
-The bundle path is **required**. With none the command exits 64 with a usage message.
+The bundle path is **required** for a check (`--doctor` and `--selftest` need none). With none the command exits 64 with a usage message.
 
 ## Read the exit code, then act
 
@@ -44,7 +45,8 @@ Precedence when several apply: 5 > 1 > 3 > 2 > 6 > 4. A reached verdict outranks
 - **ERROR** is a hard OKF conformance failure (unparseable frontmatter, a missing or empty `type`). Fix every one.
 - **warn** is soft guidance. Broken cross-links are tolerated by the spec (§6.1): they are knowledge not yet
   written. Never "fix" a bundle by deleting an outbound link.
-- **SKIPPED** means a layer did not run. The summary refuses to say `ALL GATES PASS` while anything was skipped.
+- **SKIPPED** means a layer did not run. A skipped layer is counted in the verdict line and never shown as PASS; the exit code stays 0 unless another gate fails.
+- **`--json`** carries the verdict only (exit, counts, `l2_profile`, and so on), not the list of failing notes. Read the text output when you must name a note.
 - **CONCURRENT** means the bundle changed during the scan; the report is a point-in-time reading.
 
 ## Trust (C4): can a "verified by a human" claim be trusted?
@@ -93,7 +95,7 @@ notes with no checkable claim (those are listed as unverifiable, not verified).
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.0`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.1`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

@@ -1,40 +1,57 @@
 # OKF Knowledge Gate
 
-A Claude Code plugin that answers one question about a folder of markdown knowledge:
-**can you still trust it?**
+A Claude Code plugin and command-line tool that checks a folder of OKF markdown notes and tells you whether you can still trust it.
 
-It runs one command over the [Open Knowledge Format (OKF)](https://github.com/GoogleCloudPlatform/open-knowledge-format)
-toolchain and gives one verdict from four layers: spec conformance, house rules, staleness,
-and whether the claims in the notes are still true.
+OKF is the [Open Knowledge Format](https://github.com/GoogleCloudPlatform/open-knowledge-format): a format for markdown
+notes that agents read. A bundle is one folder of OKF notes with an `index.md`. `okf-check` runs one command over a
+bundle and gives one verdict from several layers.
 
-This is an independent, unofficial project. It is not affiliated with or endorsed by Google,
-the OKF maintainers, or the authors of the tools it builds on.
+![okf-check on one note in four steps: it fails with no `type`, passes as a draft with a Trust warning, fails under --strict-trust, then passes once a person has reviewed it](docs/demo.gif)
 
-## Why this exists
+The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` captures the commands and
+`tools/demo/render.py` draws the GIF from that capture.
 
-Knowledge stores rarely fail because of their format. They fail because
-nothing runs without being chosen: notes went stale, claims stopped being true, and no check
-noticed. The format (OKF) is the easy part. The gate is the part that keeps a store honest.
+## Why use it
 
-Objectives:
+- **It checks that what a note cites still exists.** `okf-verify` looks up the commit SHAs and file paths a note cites
+  and answers CONFIRMED, REFUTED or UNRESOLVED. "Could not check" is never shown as "false". Of the 15 OKF tools whose
+  source we read in October 2026, none checks the commits a note cites ([how we checked](docs/comparison-2026-10-17.md)).
+- **It does not take "a human verified this" on faith.** The Trust layer (check C4 in the spec) flags a verification on a draft note, one
+  dated before the note's last change, and one on a note an agent wrote. It cannot prove who a person is, and it says so
+  on every finding.
+- **One verdict you can gate on.** `okf-check` runs every layer. Exit 1 means "not valid", exit 2 means "could not run",
+  and a skipped layer is printed as SKIPPED and never shown as PASS (the exit code stays 0, and the verdict line reports
+  a skipped layer). `--selftest` plants one defect in each of L1, L2 (profile), Trust and L3 (staleness) and fails if a
+  gate misses it.
+- **The same check in three places.** Claude Code (hooks, plus a skill an agent reads), a GitHub Action, and a pre-commit
+  hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)).
+- **Nothing is installed unasked.** The validator and PyYAML are vendored. `okflint` is optional, and
+  `okf-check --install-deps` only prints a plan until you add `--yes` (see [Tools it uses](#tools-it-uses)).
 
-1. **One entry point.** Three tools that must be remembered are remembered zero times, so
-   `okf-check` runs all of them.
-2. **Never a false pass.** A layer that cannot run says so (exit 2). A layer that is skipped
-   says why. A crash is named, not hidden.
-3. **A gate you can verify.** `--selftest` plants a defect per layer and requires each gate to
-   catch it, so a gate that silently stopped firing is the loudest signal, not the quietest.
-4. **Run on a brand-new machine.** The validator is vendored; `jq` and `okflint` are optional.
+## Contents
 
-## What it does
+- [Why use it](#why-use-it)
+- [What it checks](#what-it-checks)
+- [Install](#install)
+- [Use](#use)
+- [Use in CI and git](#use-in-ci-and-git)
+- [Tools it uses](#tools-it-uses)
+- [Platforms](#platforms)
+- [Support and contributing](#support-and-contributing)
+- [About this project](#about-this-project)
+- [Develop and test](#develop-and-test)
+- [Release](#release)
+- [License](#license)
+
+## What it checks
 
 | Layer | Question | Backed by |
 |---|---|---|
 | L0 doctor | Can the gate run here at all? | runtimes, dependencies, version pins, behaviour probes |
 | L1 conformance | Is this valid OKF? | the vendored OKF v0.2 validator |
-| L2 profile | Is this valid *our* OKF? | `okflint` and the bundle's `okf-base.yaml` |
+| L2 profile | Is this valid *our* OKF (house rules)? | `okflint` and the bundle's `okf-base.yaml` |
 | L2 index | Does `index.md` describe this bundle? | its bold count declaration against the files on disk |
-| Trust (C4) | Can a `human:` verified claim be trusted? | `okf-trust.py`: a draft note, or a review dated before the change, with a human verifier warns; an agent-generated note with one is an advisory. It cannot prove who a person is. |
+| Trust (C4) | Can you believe a `human:` verification? | `okf-trust.py`: a draft note, or a review dated before the change, with a human verifier is a warning; an agent-generated note with one is an advisory. It cannot prove who a person is. |
 | L3 staleness | Is it still true? | `stale_after` against today, and `status` |
 | L3 derived | Has what it describes moved since? | `sources[].last_modified` against the file's mtime |
 | L4 claims (`okf-verify`) | Do the cited commits and paths exist? | CONFIRMED, REFUTED or UNRESOLVED per claim |
@@ -50,19 +67,22 @@ Also shipped:
 
 ## Install
 
-Requires `python3` (L1; PyYAML is vendored, nothing to install). `okflint` is optional (L2) and needs Python 3.12 or newer: `pip` on Python 3.11 refuses it, and `uv` can supply a 3.12 (`okf-check --install-deps` uses `uv`). Without `okflint`, L2 is SKIPPED, never passed.
+You need `python3`. PyYAML is vendored, so there is nothing else to install for L1. `okflint` (L2) is optional.
+`okflint` needs Python 3.12 or newer: `pip` on Python 3.11 refuses it, and `uv` can supply a 3.12 (`okf-check --install-deps`
+uses `uv`). Without `okflint`, L2 is SKIPPED, never passed. [Tools it uses](#tools-it-uses) lists everything else.
 
 ```bash
 claude plugin marketplace add ahmedibrahim085/okf-knowledge-gate   # or a local path
 claude plugin install okf@ahmedmaged-okf
 ```
 
-While the plugin is enabled, Claude Code puts `okf-check` and `okf-verify` on the Bash tool's PATH (the plugin's `bin/` folder), so the bare commands below work in a session; the long path is `${CLAUDE_PLUGIN_ROOT}/scripts/`.
+While the plugin is enabled, Claude Code puts `okf-check` and `okf-verify` on the Bash tool's PATH (the plugin's `bin/`
+folder), so the bare commands below work in a session. Outside Claude Code, run `plugin/scripts/okf-check` from a clone.
 
 Restart Claude Code to load a new version. Update with `claude plugin update okf@ahmedmaged-okf`.
 
-**Prerequisites** are checked at every session start (no network, silent when fine). To see and
-install what is missing, at the supported versions from `plugin/config/pinned-versions.txt`:
+**Prerequisites** are checked at every session start (no network, silent when fine). To see and install what is
+missing, at the supported versions from `plugin/config/pinned-versions.txt`:
 
 ```bash
 okf-check --install-deps           # shows the plan, changes nothing
@@ -70,17 +90,8 @@ okf-check --install-deps --yes     # runs it (okflint, via uv)
 okf-check --install-deps --yes --latest   # newest okflint instead of the supported one
 ```
 
-Set `OKF_AUTO_INSTALL=1` if you want the session-start check to run the plan itself. It is off by
-default because a plugin should not install software unasked.
-
-## Platforms
-
-| Platform | Status |
-|---|---|
-| macOS | The 0.9.0 test suites ran here, on bash 3.2 and the BSD tools. The gate was built and measured on this platform. |
-| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.0 suites ran on Debian 12 (aarch64, GNU coreutils 9.1, gawk 5.2.1, bash 5.2.15, non-root, with `okflint` and pre-commit 4.7.0 in a Python 3.12 environment) with 0 failures; four tests are skipped there because they cannot apply (no `claude` CLI, no installed plugin to compare, a case-sensitive filesystem, no lesson file as a fixture). Debian 12 ships Python 3.11, which cannot install `okflint`. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). |
-| Windows | There is no native Windows support: the gate is a set of bash scripts. WSL (Windows Subsystem for Linux) is the only path, and nothing has been run under it: UNVERIFIED, as are the Action and the pre-commit hook on Windows. |
-| Claude Code | The plugin form (hooks and the skill) needs Claude Code. The command line, the GitHub Action and the pre-commit hook do not. |
+Set `OKF_AUTO_INSTALL=1` if you want the session-start check to run the install plan itself. It is off by default
+because a plugin should not install software unasked.
 
 ## Use
 
@@ -88,19 +99,44 @@ default because a plugin should not install software unasked.
 okf-check <bundle>                 # all layers
 okf-check <bundle> --fail-stale    # staleness blocks (exit 4)
 okf-check <bundle> --strict-trust  # unauthenticated human verification and near-miss actors block (exit 1)
+okf-check <bundle> --fail-on-change   # exit 6 if the bundle changes during the scan
 okf-check <bundle> --json          # machine-readable summary
 okf-check --doctor                 # what is installed, and does okflint behave
 okf-check --selftest               # re-prove every gate still fires
 okf-check --init-ignore <bundle>   # write a starter .okfignore (never automatic, never overwrites)
 okf-check --init-house-rules <bundle>   # write a starter okf-base.yaml so L2 runs (never automatic, never overwrites)
-okf-verify <bundle> --repo DIR     # L4: are the cited SHAs and paths real
+okf-verify <bundle> --repo DIR     # L4: are the cited commits real? DIR is where SHAs are looked up
 ```
+
+What a run looks like (real output; four more lines are left out: the version header, two lines of advice and the L2 index line). The note says a human
+verified it, but it is still a draft. `okf-check` cannot prove who a person is, so it flags the claim.
+`--strict-trust` turns the flag into exit 1.
+
+```text
+$ okf-check notes
+  L1 conformance   PASS   1 concepts, 0 errors, 0 warning(s)
+  Trust (C4)       WARN   1 warning(s), 0 advisory(ies)
+                   limits.md: verified[0].by `human:finance-owner` on a draft note: draft with human verification
+                   okf-check cannot prove who a person is. A human: entry is a claim in the file.
+  L2 profile       SKIPPED — no okf-base.yaml in notes
+  L3 staleness     PASS   nothing expired
+
+  PASS — no blocking errors, but 1 advisory(ies) and 1 skipped layer(s) above
+```
+
+A Trust warning counts as an advisory in the last line, so the run still passes (exit 0) unless you pass `--strict-trust`.
+
+`okf-verify` checks two kinds of claim. A cited commit SHA is looked up in each `--repo` folder. Absolute file paths
+in backticks or quotes (and paths that start with `~`) are checked on disk; relative paths are not read.
+
+A near-miss actor is a wrongly written actor such as `Human:dana`. OKF reads it as an agent, so a person's review is
+lost without any other symptom. `--strict-trust` fails on it.
 
 Read the exit code, do not just test for zero:
 
 | Exit | Meaning |
 |---|---|
-| 0 | All gates pass |
+| 0 | No gate failed. Skipped layers and warnings print above the verdict: read them |
 | 1 | L1: the bundle is not conformant OKF, or (with `--strict-trust`) a trust policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite an existing file |
 | 2 | A gate could not run. Never treat as a pass |
 | 3 | L2: house rules broken, or `index.md` miscounts |
@@ -109,15 +145,16 @@ Read the exit code, do not just test for zero:
 | 6 | The bundle changed during the scan (with `--fail-on-change`) |
 | 64 | Usage error: no bundle, an unknown flag, or a path that is not a folder |
 
-**Leave paths out:** put globs in `<bundle>/.okfignore` (`archive/`, `.trash/`; a leading `**/` matches at any depth, the root included). Every layer skips
-them and the run says how many files it excluded. The plugin never creates the file by itself.
+**Leave paths out:** put globs in `<bundle>/.okfignore` (`archive/`, `.trash/`; a leading `**/` matches at any depth,
+the root included). Every layer skips them and the run says how many files it excluded. The plugin never creates the
+file by itself.
 
 **Environment variables** (all optional):
 
 | Variable | Default | Effect |
 |---|---|---|
 | `OKF_L2_TIMEOUT` | 120 | Seconds before a hung `okflint` is cut off in L2 (exit 2, named). `0` or a non-number means the default. |
-| `OKF_L2_ISOLATE_MAX` | 200 | When okflint crashes on a bundle of at most this many notes, L2 finds the crashing notes (one run each, about 0.2 s), names them and checks the rest. Larger bundles keep the plain "crashed" report. |
+| `OKF_L2_ISOLATE_MAX` | 200 | When okflint crashes on a bundle of at most this many notes, L2 finds the crashing notes (one run each), names them and checks the rest. Larger bundles keep the plain "crashed" report. |
 | `OKF_INSTALL_TIMEOUT` | 200 | Seconds before `--install-deps` stops the installer. |
 | `OKF_AUTO_INSTALL` | off | `1` lets the session-start check run the install plan itself. |
 | `OKF_SEARCH_BIN` | `okf` on PATH | The `okf` search binary the doc-reuse reminder uses to name the closest notes. |
@@ -127,8 +164,8 @@ them and the run says how many files it excluded. The plugin never creates the f
 
 ## Use in CI and git
 
-The same `okf-check`, without Claude Code. Both doors need `python3` on the machine. `okflint` is optional:
-without it, L2 is reported as SKIPPED (house rules not enforced), never as a pass.
+The same `okf-check`, without Claude Code. Both doors need `python3` on the machine. `okflint` is optional: without it,
+L2 is reported as SKIPPED (house rules not enforced), never as a pass.
 
 **GitHub Actions** (the job takes `okf-check`'s exit code):
 
@@ -138,82 +175,100 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.0
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.1
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
           fail-stale: 'false'     # optional, default 'false'
 ```
 
-**pre-commit** (the hook passes no filenames; it checks the bundle named in `args`, and runs when a
-Markdown file is staged):
+**pre-commit** (the hook passes no filenames. It checks the bundle named in `args`, and runs when a Markdown file is
+staged):
 
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.0
+    rev: v0.9.1
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
 ```
 
-Your `args` replace the hook's default (`.`). The hook uses `language: script`, which pre-commit accepts today as an
-alias of `unsupported_script`; a future pre-commit release may remove the alias. The hook has been run end to end by
-pre-commit 4.7.0 on macOS: a clean bundle commits, a draft note with a human verifier is blocked, and a commit that stages
-no Markdown file skips the hook.
+Your `args` replace the hook's default (`.`). pre-commit 4.7.0 accepts the hook's `language: script`. Its source maps
+that name to `unsupported_script`; it prints no removal notice today. The hook has been run end to end by pre-commit 4.7.0
+on macOS: a clean bundle commits, a draft note with a human verifier is blocked, and a commit that stages no Markdown
+file skips the hook.
 
-## Dependencies and pins
+## Tools it uses
 
-The gate rests on two upstream tools. Each is pinned by commit. A drift from a pin is reported as UNVERIFIED, never as a
-pass (`okf-check --doctor`, `okf-check --selftest`).
+The plugin wraps other people's tools and adds the gate engineering around them. It does not re-implement them. Each
+tool below is one the code really calls, and a test checks that the table matches the repository.
+
+| Tool | What it does for us | Needs | Source and licence |
+|---|---|---|---|
+| python3 | runs the validator, the trust layer and `okf-verify` (run on 3.9 on macOS and 3.12 on Debian 12) | Required | python.org, PSF |
+| bash 3.2+ with awk, sed, find, stat, xargs | the gate itself (`okf-check`) | Required | your system |
+| git | `okf-verify` looks up cited commits; the pre-commit hook runs in a git repo | Required for `okf-verify` | git-scm.com, GPL-2.0 |
+| okf-skills validator | L1: the OKF v0.2 conformance check, with our local patch | Vendored in `plugin/vendor/` | [scaccogatto/okf-skills](https://github.com/scaccogatto/okf-skills), MIT |
+| PyYAML 6.0.3 | reads note frontmatter (pure Python) | Vendored in `plugin/vendor/` | [pyyaml.org](https://pyyaml.org), MIT |
+| okflint 0.5.0 | L2: house rules and index checks | Optional (needs Python 3.12+) | [mattdav/okflint](https://github.com/mattdav/okflint), MIT |
+| uv | installs `okflint` when you run `okf-check --install-deps --yes` | Optional | [astral-sh/uv](https://github.com/astral-sh/uv), MIT or Apache-2.0 |
+| pre-commit | runs the hook in your git workflow (tested with 4.7.0) | Optional | [pre-commit.com](https://pre-commit.com), MIT |
+| GitHub Actions | runs the Action in CI | Optional | [github.com](https://github.com/features/actions) |
+| jq | lets the doc-reuse hook read the tool call (the hook does nothing without it) | Optional | [jqlang.org](https://jqlang.org), MIT |
+| Claude Code | the plugin form: hooks and the skill (the command line, Action and hook work without it) | Optional | [Anthropic](https://claude.com/claude-code) |
+
+Used to build and release, not needed to run it: `gitleaks` (a secret scan before every public push), Pillow (renders
+the demo GIF), Docker on a second machine (the Linux test runs) and the GitHub CLI.
+
+### Pins and upstream pull requests
+
+Two upstream tools are pinned by commit. A drift from a pin is reported as UNVERIFIED, never as a pass
+(`okf-check --doctor`, `okf-check --selftest`).
 
 - **L1 validator, from scaccogatto/okf-skills.** Vendored in `plugin/vendor/okf_validate.py` at commit
-  `7ed3084267d050f198eea6cd9f67d5357e9ed047`: okf-skills 0.10.3 plus five fixes (MIT). The fixes are an open pull request,
+  `7ed3084267d050f198eea6cd9f67d5357e9ed047`: okf-skills 0.10.3 plus five fixes (MIT), and a patch of ours that bounds
+  the size of a YAML document (alias expansion and one very long scalar). The five fixes are an open pull request,
   [scaccogatto/okf-skills#68](https://github.com/scaccogatto/okf-skills/pull/68). If #68 is never merged, this vendored
-  copy stays as it is and keeps working; what differs from upstream is listed in `plugin/vendor/VENDOR.md`. When it merges,
-  the copy is replaced by upstream at the merge commit.
-- **L2 house rules, from mattdav/okflint.** Version 0.5.0 plus a fork commit with the BOM, non-UTF-8 and impossible-date
-  fixes, `c505b8405b9ef07396a81734c2bdfaa33c57aa25`, installed only when you ask (`okf-check --install-deps --yes`). The fixes
-  are an open pull request, [mattdav/okflint#11](https://github.com/mattdav/okflint/pull/11). If #11 is never merged, the
-  install keeps using that fork commit. `--latest` installs the stock release instead and warns that it may lack the fixes.
+  copy stays as it is and keeps working. `plugin/vendor/VENDOR.md` lists what differs from upstream. When #68 merges, we
+  replace the copy with upstream at the merge commit and re-apply our patch (or offer it upstream).
+- **L2 house rules, from mattdav/okflint.** Version 0.5.0 plus a commit on the maintainer's fork (ahmedibrahim085/okflint) with the BOM, non-UTF-8 and impossible-date
+  fixes, `c505b8405b9ef07396a81734c2bdfaa33c57aa25`, installed only when you ask (`okf-check --install-deps --yes`). The
+  fixes are an open pull request, [mattdav/okflint#11](https://github.com/mattdav/okflint/pull/11). If #11 is never
+  merged, the install keeps using that fork commit. `--latest` installs the newest PyPI okflint and prints a note that it
+  "may lack the okflint#11 fixes". `--doctor` reports UNPATCHED if the fixes are missing.
 
 The full behaviour contract, one row per scenario with its test, is
 [`docs/spec.md`](docs/spec.md).
 
-## How it is built
+## Platforms
 
-The plugin wraps other people's tools and adds the gate engineering around them. It does
-not re-implement them.
-
-| Dependency | Role | How we use it |
-|---|---|---|
-| [okf-skills](https://github.com/scaccogatto/okf-skills) validator | L1 spec check | vendored in `plugin/vendor/`; currently our patched copy, see [`VENDOR.md`](plugin/vendor/VENDOR.md) |
-| [okflint](https://github.com/mattdav/okflint) | L2 house rules | optional, installed separately; the doctor probes its behaviour |
-| PyYAML | parsing | vendored, pure Python |
-
-What is ours: layer precedence in the exit codes, the selftest, change detection, L4 claim
-verification, crash isolation (a note that crashes a checker is named and the rest are still
-checked), and the behaviour probes. Upstream bug fixes we depend on are submitted as pull
-requests: [okf-skills#68](https://github.com/scaccogatto/okf-skills/pull/68) and
-[okflint#11](https://github.com/mattdav/okflint/pull/11).
-
-## Repository layout
-
-| Path | Contents |
+| Platform | Status |
 |---|---|
-| `plugin/` | The installable plugin: scripts, hooks, skill, vendored validator, config |
-| `plugin/scripts/` | `okf-check`, `okf-verify`, the hooks, and their test suites (`*.test.sh`) |
-| `plugin/vendor/` | The vendored validator and PyYAML, with `VENDOR.md` (source, pin, licence) |
-| `.github/` | Issue forms and the pull-request template |
-| `CHANGELOG.md` | Dated history of every release |
+| macOS | The 0.9.1 test suites passed here, on bash 3.2 and the BSD tools. The gate was built and measured on this platform. |
+| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.1 suites passed on Debian 12 (aarch64, GNU coreutils 9.1, gawk 5.2.1, bash 5.2.15, non-root user) with `okflint` and pre-commit 4.7.0 installed in a Python 3.12 environment. 0 tests failed. 6 tests were skipped because they cannot apply there: no `claude` CLI, no installed plugin to compare, a case-sensitive filesystem, no lesson file as a fixture, and no Pillow to render the demo. Debian 12 ships Python 3.11, which cannot install `okflint`. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). |
+| Windows | There is no native Windows support: the gate is a set of bash scripts. WSL (Windows Subsystem for Linux) is the only path, and nothing has been run under it: UNVERIFIED, as are the Action and the pre-commit hook on Windows. |
+| Claude Code | The plugin form (hooks and the skill) needs Claude Code. The command line, the GitHub Action and the pre-commit hook do not. |
 
-## Status and roadmap
+## Support and contributing
 
-The dated history is in [`CHANGELOG.md`](CHANGELOG.md). Open work is tracked in this repository's
-issues. Two upstream pull requests carry fixes the plugin depends on:
-[okf-skills#68](https://github.com/scaccogatto/okf-skills/pull/68) and
-[okflint#11](https://github.com/mattdav/okflint/pull/11). When they merge, the vendored validator
-is replaced by upstream at the merge commit, and okflint comes from PyPI again.
+- **Questions and bug reports:** open an issue at
+  [github.com/ahmedibrahim085/okf-knowledge-gate/issues](https://github.com/ahmedibrahim085/okf-knowledge-gate/issues).
+  Do not put secrets or private paths in an issue. For a security problem, say so in the title and leave out exploit
+  details; the maintainer replies with a private way to send them.
+- **Pull requests are welcome.** A change starts with a failing test, and it is reviewed on two axes (standards and
+  spec) before release. See [Develop and test](#develop-and-test).
+- **What changed:** [`CHANGELOG.md`](CHANGELOG.md), a dated entry for every release.
+- **Maintainer:** one person, [ahmedibrahim085](https://github.com/ahmedibrahim085).
+
+## About this project
+
+This is an independent, unofficial project. It is not affiliated with or endorsed by Google, the OKF maintainers, or
+the authors of the tools it builds on.
+
+What is ours: layer precedence in the exit codes, the selftest, change detection, L4 claim verification, the trust
+layer, crash isolation (a note that crashes a checker is named and the rest are still checked), and the behaviour
+probes. Upstream bug fixes we depend on are submitted as pull requests (see [Pins](#pins-and-upstream-pull-requests)).
 
 ## Develop and test
 
@@ -221,27 +276,49 @@ is replaced by upstream at the merge commit, and okflint comes from PyPI again.
 bash plugin/scripts/okf-check.test.sh     # the gate
 bash plugin/scripts/okf-verify.test.sh    # L4
 bash plugin/scripts/plugin.test.sh        # packaging and install drift
+bash tools/demo/demo.test.sh              # the README demo is a recording of real runs
 plugin/scripts/okf-check --selftest
 ```
 
-Everything is bash 3.2 compatible and runs with BSD or GNU awk. Tests are written first and
-must go red before the fix; a change is reviewed on two axes (standards and spec) before it
-is released.
+Everything is bash 3.2 compatible and runs with BSD or GNU awk. Tests are written first and must go red before the
+fix. A change is reviewed on two axes (standards and spec) before it is released.
+
+### Repository layout
+
+| Path | Contents |
+|---|---|
+| `plugin/` | The installable plugin: scripts, hooks, skill, vendored validator, config |
+| `plugin/scripts/` | `okf-check`, `okf-verify`, the hooks, and their test suites (`*.test.sh`) |
+| `plugin/vendor/` | The vendored validator and PyYAML, with `VENDOR.md` (source, pin, licence) |
+| `docs/demo.gif`, `tools/demo/` | The README demo and the scripts that record and render it |
+| `docs/comparison-2026-10-17.md` | The evidence behind the comparison claim in "Why use it" |
+| `.github/` | Issue templates and the pull-request template |
+| `CHANGELOG.md` | Dated history of every release |
 
 ## Release
 
-1. Raise the version in `plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json`
-   and `VERSION` in `plugin/scripts/okf-check`. A test fails if they disagree.
+1. Raise the version in `plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` and `VERSION` in
+   `plugin/scripts/okf-check`. A test fails if they disagree.
 2. Add a `## [x.y.z] - YYYY-MM-DD` section to [`CHANGELOG.md`](CHANGELOG.md).
-3. Run the three suites and `--selftest`.
-4. Tag `vx.y.z` and push the tag.
-5. Publish the release notes from the changelog section:
+3. Run the four suites and `--selftest`.
+4. Tag `vx.y.z` on the private release commit and push the tag there.
+5. Publish to the public repository (`ahmedibrahim085/okf-knowledge-gate`). It holds one squashed commit per release,
+   so do not push the private history. The examples above pin `vx.y.z`, so the tag must exist there:
+   ```bash
+   bash tools/export-public.sh "$EXPORT"            # allow-list copy; the scan must pass
+   gitleaks detect --no-git --source "$EXPORT"
+   git clone https://github.com/ahmedibrahim085/okf-knowledge-gate.git "$PUB"
+   # replace the tree of "$PUB" with "$EXPORT" (keep .git), then, in "$PUB":
+   git add -A && git commit -m "okf x.y.z: <summary>"
+   git tag vx.y.z && git push origin HEAD:main vx.y.z
+   ```
+6. Publish the release notes from the changelog section, on the public repository:
    ```bash
    awk '/^## \[x.y.z\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md \
-     | gh release create vx.y.z --title "okf x.y.z" --notes-file -
+     | gh release create vx.y.z -R ahmedibrahim085/okf-knowledge-gate --title "okf x.y.z" --notes-file -
    ```
 
 ## License
 
-MIT, see [`LICENSE`](LICENSE). Third-party code keeps its own MIT licence: the vendored
-validator (`plugin/vendor/LICENSE.okf-skills`) and PyYAML (`plugin/vendor/LICENSE.pyyaml`).
+MIT, see [`LICENSE`](LICENSE). Third-party code keeps its own MIT licence: the vendored validator
+(`plugin/vendor/LICENSE.okf-skills`) and PyYAML (`plugin/vendor/LICENSE.pyyaml`).

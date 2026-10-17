@@ -50,7 +50,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.0"
+VERSION="0.9.1"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -459,7 +459,7 @@ doctor() {
   fi
 
   if [ -f "$VALIDATOR" ]; then
-    say "  okf_validate.py    vendored @ $(pin_of okf_validate | cut -c1-12)"
+    say "  okf_validate.py    vendored @ $(pin_of okf_validate | cut -c1-12) + local patch (bounded YAML loader)"
   else
     say "  okf_validate.py    MISSING from $VALIDATOR  <- reinstall okf-check"
     fatal=1
@@ -785,6 +785,17 @@ __l2_core() {
     say "                   (or copy $TEMPLATE)"
     return 0
   fi
+  # okflint is an external tool and expands a YAML alias bomb exactly as the validator used to (935 MB in 5 s,
+  # unbounded until OKF_L2_TIMEOUT). L1 has already refused such notes, so do not hand them to okflint: say so,
+  # now, instead of letting it eat memory. A reached L1 verdict (exit 1) still outranks this.
+  local _nbomb
+  # The validator's own message (an error for a note, a warning for the root index.md), not a note's PATH.
+  _nbomb=$(grep -Ec '^[EW]\|.*frontmatter is not valid YAML: the YAML document (expands to more than|holds a single scalar)' "$TMP/l1.txt" 2>/dev/null); _nbomb=${_nbomb:-0}
+  if [ "$_nbomb" -gt 0 ]; then
+    L2_PROFILE=could_not_run
+    say "  L2 profile       COULD NOT RUN — okflint was not run: L1 rejected ${_nbomb} note(s) as YAML alias bombs, which okflint would expand in memory"
+    return $EXIT_DEP
+  fi
   # --json, not the human output. Counting '❌' meant that an okflint whose
   # format differs — precisely the VERSION-SKEW the doctor warns about — had
   # every error rendered invisible and L2 reported PASS. Fails OPEN, in both
@@ -1063,10 +1074,13 @@ run_derived_stale() {
   # py_with_vendor, unlike the index reconciler: `sources` is nested structure,
   # and hand-rolling a YAML list-of-mappings parser with regexes is how a gate
   # starts quietly disagreeing with the validator standing above it.
-  out=$(py_with_vendor - "$bundle" <<'PYEOF'
+  out=$(OKF_VENDOR_DIR="$ROOT/vendor" py_with_vendor - "$bundle" <<'PYEOF'
 import datetime, pathlib, sys
 try:
     import yaml
+    # The bounded loader of the vendored validator: a YAML alias bomb in sources[].resource must not expand here either.
+    sys.path.insert(0, __import__("os").environ["OKF_VENDOR_DIR"])
+    from okf_validate import load_frontmatter
 except Exception:
     print("NOYAML")
     sys.exit(0)
@@ -1100,7 +1114,7 @@ for p in sorted(bundle.rglob("*.md")):
     if end < 0:
         continue
     try:
-        meta = yaml.safe_load(text[3:end]) or {}
+        meta = load_frontmatter(text[3:end]) or {}
     except Exception:
         continue
     if not isinstance(meta, dict):

@@ -9,45 +9,81 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
-## [0.9.0] - 2026-10-16
+## [0.9.1] - 2026-10-17
+
+OKF Knowledge Gate 0.9.1 fixes a memory problem: a small note can no longer make `okf-check` use gigabytes of memory.
+
+### Security
+- **A note with nested YAML aliases (an "alias bomb") no longer exhausts memory.** In 0.9.0 a small note could
+  make L1 (the OKF spec check) use gigabytes of memory and not finish: a 9-level bomb used 2.5 GB and did not finish
+  in 60 s. It is now an L1 error on that note, found in under 1 s at about 24 MB, and the run exits 1 and names the note.
+- The limits are 1,000,000 items, 10,000,000 scalar characters in all and 100,000 characters in any one scalar, counted
+  without expanding anything. Normal notes, including ones that reuse an anchored value, are unaffected. The
+  single-scalar limit closes a slow case: a 2,000,000-digit integer made `okf-check` run for 47 s on Python 3.9.
+- L2 (house rules, run by `okflint`) is not run after L1 rejects a note this way, because `okflint` would expand the
+  same bomb. L2 prints `COULD NOT RUN` with the reason. The trust layer and the L3 derived-staleness scan use the same
+  limit.
+- The vendored validator now carries a small local patch for this; `plugin/vendor/VENDOR.md` lists it.
 
 ### Added
-- **Trust layer (C4): unauthenticated human verification.** OKF v0.2 records `verified: by: human:<id>`
-  and cannot authenticate it; an agent can write that line itself. `okf-check` now reports, per
-  `human:` entry: a draft note, or a review dated before the note's change, as a warning; an
-  agent-generated note as an advisory. It prints that it cannot prove who a person is (#23).
-- **`--strict-trust`.** Makes those findings, and near-miss actors such as `Human:dana` (read as an
-  agent), fail the run with exit 1. It changes severity only (#24).
-- **`okf-check --init-house-rules <bundle>`.** Writes a starter `<bundle>/okf-base.yaml` so L2 runs. Never
-  automatic, never overwrites (#25).
-- **GitHub Action and pre-commit hook.** `action.yml` (inputs `bundle`, `strict-trust`, `fail-stale`) and
-  `.pre-commit-hooks.yaml` run the same `okf-check` without Claude Code (#26).
-- **`bin/` wrappers.** `okf-check` and `okf-verify` are on the Bash tool's PATH while the plugin is enabled
-  (a documented Claude Code feature), so an agent does not need the long path (#29).
-- `--json` gains `warnings`, `trust_findings` (`null` when the layer could not run) and `l2_profile`
-  (`ran`, `skipped` or `could_not_run`).
-- The plugin folder ships its own `LICENSE` (#29).
-
-### Changed
-- **L1 warnings are listed**, not only counted (capped at 50 with "and N more"). The FAIL line carries the
-  warning count (#22).
-- The skill (`SKILL.md`) is rewritten for agents: an action per exit code, the exit precedence, a never-list,
-  the Trust layer, the CI doors. Maintainer detail moved, unchanged, to `references/` (#29).
-- README says `okflint` (L2) needs Python 3.12 or newer (Debian 12 ships 3.11).
-- README: a Platforms table that states what was measured and labels the rest UNVERIFIED, the two upstream
-  pins with what happens if their pull requests are never merged, and CI and git usage (#27).
-- Exit 1 also covers `--init-ignore` and `--init-house-rules` refusing to overwrite a file.
-- `tools/install-dev-deps.sh` also plans `pre-commit` (opt-in `--yes`) so the hook can be tested end to end.
+- A demo GIF in the README, recorded from real `okf-check` runs (`tools/demo/` records and renders it, and a test
+  fails if the demo is out of date).
 
 ### Fixed
-- **The trust layer ignores a YAML alias bomb.** A small note whose `verified.by` expanded to billions of items
-  used to hang the run (2.5 GB, killed at 60 s); an actor field that is not a string is never stringified.
-- `--selftest` now probes the trust layer: a disabled trust rule can no longer print `SELFTEST PASS`.
-- The Action no longer echoes an invalid `strict-trust` or `fail-stale` value (a newline in it could start a second
-  workflow command).
-- Without `okflint`, the skipped-L2 line now names `okf-check --init-house-rules` too (found by a run on
-  Debian 12).
-- `l2_profile` no longer says `ran` when L2 reached no verdict (#25).
+- The pre-commit hook now also runs when only `okf-base.yaml` or `.okfignore` changes, not just `.md` files.
+- The skill says `--json` carries the verdict only (not the failing notes), and no longer claims `ALL GATES PASS` is refused
+  whenever a layer is skipped.
+
+### Known limits
+Found in the final pre-release review. They also exist in 0.9.0, are not regressions, and are scheduled for 0.9.2:
+- L3 (staleness) does not see an expired `stale_after` when the frontmatter fences have trailing spaces.
+- `--strict-trust` does not flag a look-alike of `human:` written with a non-ASCII letter, or `verified:` written as a
+  plain string instead of a list or mapping.
+- Duplicate YAML keys in a note are accepted without a warning (the last one wins).
+
+### Changed
+- The README opens with what OKF and a bundle are and a real sample run. Its sections follow the order a new user
+  needs (install, use, CI, platforms, dependencies), and every claim in it has a source or an UNVERIFIED label.
+
+## [0.9.0] - 2026-10-16
+
+OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes, and runs the same check in CI and in git hooks.
+
+### Changed
+- **Upgrade note.** Every run now prints a Trust line. A run that passed before can now show advisories, because a trust
+  warning counts in the final advisory tally. With `--strict-trust` it can fail with exit 1, and exit 1 now also means a
+  trust-policy failure.
+- **L1 warnings are listed**, not only counted (capped at 50 with "and N more"). L1 is the OKF spec check. The FAIL line
+  carries the warning count.
+- The skill (`SKILL.md`) is rewritten for agents: an action per exit code, the exit precedence, a never-list, the Trust
+  layer, the CI doors. Maintainer detail moved, unchanged, to `references/`.
+- README: a Platforms table that states what was measured and labels the rest UNVERIFIED, the two upstream pins with
+  what happens if their pull requests are never merged, and CI and git usage.
+- Exit 1 is documented to cover `--init-ignore` and `--init-house-rules` refusing to overwrite a file (they already did).
+- `tools/install-dev-deps.sh` also plans `pre-commit` (opt-in `--yes`) so the hook can be tested end to end.
+
+### Added
+- **Trust layer (C4): unauthenticated human verification.** OKF v0.2 records `verified: by: human:<id>` and cannot
+  authenticate it, so an agent can write that line itself. `okf-check` now reports, per `human:` entry, a draft note or
+  a review dated before the note's change as a warning, and an agent-generated note as an advisory. It prints that it
+  cannot prove who a person is.
+- **`--strict-trust`.** Makes those findings, and near-miss actors such as `Human:dana` (read as an agent), fail the run
+  with exit 1. It changes severity only.
+- **`okf-check --init-house-rules <bundle>`.** Writes a starter `<bundle>/okf-base.yaml` so L2 (house rules, run by
+  `okflint`) runs. Never automatic, never overwrites. Without `okflint`, the skipped-L2 line names this command too.
+- **GitHub Action and pre-commit hook.** `action.yml` (inputs `bundle`, `strict-trust`, `fail-stale`) and
+  `.pre-commit-hooks.yaml` run the same `okf-check` without Claude Code.
+- **`bin/` wrappers.** `okf-check` and `okf-verify` are on the Bash tool's PATH while the plugin is enabled (a documented
+  Claude Code feature), so an agent does not need the long path.
+- `--json` gains `warnings`, `trust_findings` (`null` when the layer could not run) and `l2_profile` (`ran`, `skipped`
+  or `could_not_run`).
+- `--selftest` probes the trust layer, so a disabled trust rule cannot print `SELFTEST PASS`.
+- The plugin folder ships its own `LICENSE`.
+
+### Security
+- **Known issue in 0.9.0, fixed in 0.9.1:** a note with nested YAML aliases (an "alias bomb") can make L1 use
+  gigabytes of memory and not finish. The trust layer of 0.9.0 already refuses such a note, but L1 and L2 did not. Upgrade
+  to 0.9.1.
 
 ## [0.8.1] - 2026-10-16
 ### Documentation
@@ -60,31 +96,31 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 - **Per-note isolation in L2.** When okflint crashes on a bundle of at most `OKF_L2_ISOLATE_MAX`
   notes (default 200), L2 runs it note by note (about 0.2 s each), names the notes it crashes on,
   and checks the rest. The run exits 2 (or 3 when the checked notes fail): a crashed note is never a pass. Larger bundles keep the
-  plain report. The whole rescue shares one `OKF_L2_TIMEOUT` budget (#17).
+  plain report. The whole rescue shares one `OKF_L2_TIMEOUT` budget.
 
 ## [0.7.2] - 2026-10-15
 
 ### Fixed
 - A `.okfignore` that excludes no file no longer changes the verdict. With every note behind a
-  symlinked directory it turned exit 4 into exit 2 and said "excludes every note" (#15).
-- A leading `**/` in `.okfignore` also matches at the bundle root, with or without a leading `/` (#16).
+  symlinked directory it turned exit 4 into exit 2 and said "excludes every note".
+- A leading `**/` in `.okfignore` also matches at the bundle root, with or without a leading `/`.
 - Excluding only non-note files (for example `*.json`) no longer reports "excludes every note".
 
 ### Added
-- A test that the status vocabulary in `okf-base.yaml.template` and in `l3-lib.sh` stay equal (#18).
-- README and SKILL.md document the user-facing environment variables (#19).
+- A test that the status vocabulary in `okf-base.yaml.template` and in `l3-lib.sh` stay equal.
+- README and SKILL.md document the user-facing environment variables.
 
 ## [0.7.1] - 2026-10-15
 
 ### Fixed
 - A hung `okflint` no longer stalls L2 for as long as it hangs. The call is cut off after
-  `OKF_L2_TIMEOUT` seconds (default 120) and the report says it timed out (#10).
-- The doc-reuse guard leaves no orphan child process when it kills a hung search binary (#9).
+  `OKF_L2_TIMEOUT` seconds (default 120) and the report says it timed out.
+- The doc-reuse guard leaves no orphan child process when it kills a hung search binary.
 - The spec-traceability test (D-1) runs in the public tree too: it finds the spec at
-  `docs/spec.md` (#11).
+  `docs/spec.md`.
 
 ### Added
-- Test fixtures captured from the real `okf search` output, including a two-digit score (#12).
+- Test fixtures captured from the real `okf search` output, including a two-digit score.
 - `OKF_L2_TIMEOUT=0` means the default, and an okflint that ignores TERM is still reported as timed out.
 
 ## [0.7.0] - 2026-10-15

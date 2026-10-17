@@ -25,7 +25,7 @@ from pathlib import Path
 import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
-from okf_validate import split_frontmatter  # noqa: E402  (the validator's own splitter, so both agree)
+from okf_validate import load_frontmatter, split_frontmatter  # noqa: E402  (the validator's own splitter, so both agree)
 
 # `<producer>/<version>` or an `agent:<id>` actor; `human:` and `process:` are never agents.
 AGENT_FORM = re.compile(r"^(?:agent:\S+|[^\s:/]+/\S+)$")
@@ -99,7 +99,7 @@ def main():
         try:
             # utf-8-sig: a BOM would hide the opening fence, and L1 counts such a note.
             raw, _ = split_frontmatter(path.read_text(encoding="utf-8-sig"))
-            meta = yaml.safe_load(raw) if raw is not None else None
+            meta = load_frontmatter(raw) if raw is not None else None
         except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError):
             continue  # L1 reports an unreadable or malformed note; this layer has nothing to add
         if not isinstance(meta, dict):

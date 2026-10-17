@@ -53,7 +53,9 @@ lessons hook, from one shared `scripts/l3-lib.sh`):
 
 **When one note crashes a checker.**
 - **The validator (L1):** the vendored copy is our patched build (PR okf-skills#68), so a `status`
-  list or an impossible date no longer blank L1. If it still crashes on a note, `okf-check` names
+  list or an impossible date no longer blank L1. A note whose YAML aliases would expand beyond a fixed limit (an
+  "alias bomb") is an L1 error on that note, never a hang; our local patch does that (see `plugin/vendor/VENDOR.md`), and
+  `okflint` is not run on such a bundle. If it still crashes on a note, `okf-check` names
   that note with the validator's last error line, validates the other notes from a copy (nothing
   in your bundle is touched), and exits 2 (or 1 if a real §11 error is also present).
 - **okflint (L2):** a crash is NOT isolated per note. L2 prints `COULD NOT RUN` with a `reason:`

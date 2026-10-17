@@ -1108,6 +1108,22 @@ Found by the three release reviewers (integration, spec coverage, claims and sec
 | LT-33a | The Action given an invalid `strict-trust` containing a newline | exit 64; one `::error::` line; the value is not echoed | ✅ |
 | LT-33b | README | says `okflint` (L2) needs Python 3.12 or newer | ✅ |
 
+### YAML alias bomb in L1 and L2 (#31, 0.9.1)
+A small note whose YAML aliases nest describes billions of items; `str()` on such a value took 4 s and 1094 MB on a 7-level bomb and 2.5 GB on a 9-level one in the vendored validator (identical in 0.8.1). One bounded loader (`load_frontmatter` in the vendored validator, reused by `okf-trust.py`) composes the node graph, counts the alias-expanded size with a memo (no expansion) as two separate numbers, items and scalar characters (one 1 MB scalar repeated by 300 aliases is only 302 items but 300 MB), and refuses a document above 1,000,000 items or 10,000,000 characters as an ordinary invalid-YAML error, which L1 reports as a §11.1 error on that note (a warning for the root `index.md`). The trust helper and the derived-staleness scan use the same loader. `okflint` is an external tool that expands the same bomb, so when L1 rejected any note that way, L2 is not run: `COULD NOT RUN`, with the reason. The guard matches the validator's own message, not a note's path. The vendored file therefore carries a LOCAL patch on top of the pinned upstream commit; `VENDOR.md` lists it.
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-34a | An alias bomb in `verified.by`, `generated.by` or `title` | L1 ERROR §11.1 naming the note, exit 1, peak memory under 400 MB (measured 19 MB), within 5 s | ✅ |
+| LT-34b | A modest alias (one anchored list reused twice) | parses; exit 0; L1 PASS | ✅ |
+| LT-34c | A bomb with `okflint` installed and a manifest | `okflint` is not run; `L2 profile COULD NOT RUN` names alias bombs; exit 1 from L1; peak memory under 400 MB | ✅ |
+| LT-34d | One 100 KB scalar repeated by 300 aliases (30 MB expanded from 302 items) | refused by the character limit: exit 1, peak under 400 MB | ✅ |
+| LT-34h | A 5-level mapping bomb (12^5 leaves) | refused by the item limit: exit 1, peak under 400 MB (the single merged limit once let it through) | ✅ |
+| LT-34e | A bomb in `sources[].resource` | refused in L3 derived staleness too: exit 1, peak under 400 MB | ✅ |
+| LT-34f | A bomb in the root `index.md` (a warning in L1) with `okflint` installed | `okflint` is not run: `COULD NOT RUN` naming alias bombs | ✅ |
+| LT-34g | A note whose PATH contains the words "alias bomb", with an ordinary L1 error | `okflint` still runs | ✅ |
+| LT-35a | The vendored validator, the trust helper and `okf-check` | all parse frontmatter with `load_frontmatter`; no bare `yaml.safe_load` remains | ✅ |
+| LT-35b | `VENDOR.md` | lists the local patch and still names the pinned upstream commit (the literal id is held in the test) | ✅ |
+
 ## Non-goals
 
 - Installing or upgrading dependencies WITHOUT being asked (UC-3: *report* by default; *act* only on `--install-deps --yes` or the owner's `OKF_AUTO_INSTALL=1`)

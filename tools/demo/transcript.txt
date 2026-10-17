@@ -1,0 +1,59 @@
+#scene
+$ okf-check --init-house-rules notes
+wrote notes/okf-base.yaml (starter; edit it, then re-run okf-check)
+[exit 0]
+$ okf-check notes
+  L1 conformance   FAIL   1 error(s), 2 warning(s) — bundle is not conformant OKF
+                   limits.md: §11.2 missing or empty required `type` field
+                   limits.md: recommended field `tags` is absent (§4.1)
+                   limits.md: recommended field `generated` is absent (§5.2)
+  Trust (C4)       PASS   no unauthenticated human verification
+  L2 profile       FAIL   1 house-rule error(s)
+                   F002 limits.md — `type` field absent or empty
+  L2 index         SKIPPED — index.md declares no counts
+  L3 staleness     PASS   nothing expired
+
+  FAILED (exit 1)
+[exit 1]
+#scene
+$ cp fixes/draft.md notes/limits.md
+[exit 0]
+$ okf-check notes
+  L1 conformance   PASS   1 concepts, 0 errors, 0 warning(s)
+  Trust (C4)       WARN   1 warning(s), 0 advisory(ies)
+                   limits.md: verified[0].by `human:finance-owner` on a draft note: draft with human verification
+                   okf-check cannot prove who a person is. A human: entry is a claim in the file.
+  L2 profile       PASS   0 errors, 2 warning(s) (advisory)
+                   by rule: S205 x2
+  L2 index         SKIPPED — index.md declares no counts
+  L3 staleness     PASS   nothing expired
+
+  PASS — no blocking errors, but 1 advisory(ies) and 0 skipped layer(s) above
+[exit 0]
+#scene
+$ okf-check notes --strict-trust
+  L1 conformance   PASS   1 concepts, 0 errors, 0 warning(s)
+  Trust (C4)       WARN   1 warning(s), 0 advisory(ies)
+                   limits.md: verified[0].by `human:finance-owner` on a draft note: draft with human verification
+                   okf-check cannot prove who a person is. A human: entry is a claim in the file.
+  Trust policy     FAIL   1 finding(s) under --strict-trust (human verification the tool cannot authenticate, or a near-miss actor)
+  L2 profile       PASS   0 errors, 2 warning(s) (advisory)
+                   by rule: S205 x2
+  L2 index         SKIPPED — index.md declares no counts
+  L3 staleness     PASS   nothing expired
+
+  FAILED (exit 1) — trust policy failure (--strict-trust)
+[exit 1]
+#scene
+$ cp fixes/reviewed.md notes/limits.md
+[exit 0]
+$ okf-check notes --strict-trust
+  L1 conformance   PASS   1 concepts, 0 errors, 0 warning(s)
+  Trust (C4)       PASS   no unauthenticated human verification
+  L2 profile       PASS   0 errors, 2 warning(s) (advisory)
+                   by rule: S205 x2
+  L2 index         SKIPPED — index.md declares no counts
+  L3 staleness     PASS   nothing expired
+
+  ALL GATES PASS
+[exit 0]

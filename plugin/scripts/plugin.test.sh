@@ -513,10 +513,10 @@ VEND_PIN=$(grep -o 'Pinned commit:\*\* `[0-9a-f]\{40\}`' "$PLUGIN/vendor/VENDOR.
 { [ -n "$OKFS_PIN" ] && [ "$OKFS_PIN" = "$VEND_PIN" ] && [ -n "$OKFL_PIN" ] && grep -q "$OKFS_PIN" "$README" && grep -q "$OKFL_PIN" "$README"; } \
   && ok "LT-30d S24-H1/E1 the README names both pinned commits in full, and they equal the pin file and VENDOR.md ($(printf '%.7s' "$OKFS_PIN"), $(printf '%.7s' "$OKFL_PIN"))" \
   || bad "LT-30d S24-H1/E1" "okf_validate pin=$OKFS_PIN vendor=$VEND_PIN okflint pin=$OKFL_PIN; README has them: $(grep -c "$OKFS_PIN" "$README") / $(grep -c "$OKFL_PIN" "$README")"
-section '^## Dependencies' > "$TMP_W/readme_deps.txt"
-n_never=$(grep -c 'never merged' "$TMP_W/readme_deps.txt")
+section '^## Tools it uses' > "$TMP_W/readme_deps.txt"
+n_never=$(tr -s '[:space:]' ' ' < "$TMP_W/readme_deps.txt" | grep -o 'never merged' | wc -l | tr -d ' ')  # joined: the sentence wraps across lines
 { grep -q 'okf-skills#68\|okf-skills/pull/68' "$TMP_W/readme_deps.txt" && grep -q 'okflint#11\|okflint/pull/11' "$TMP_W/readme_deps.txt" && [ "$n_never" -ge 2 ]; } \
-  && ok "LT-30e S24-N1 the Dependencies section names both pull requests (okf-skills#68, okflint#11) and says what happens if each is never merged" \
+  && ok "LT-30e S24-N1 the Tools section (Pins) names both pull requests (okf-skills#68, okflint#11) and says what happens if each is never merged" \
   || bad "LT-30e S24-N1" "never-merged lines: $n_never; section: $(head -c 100 "$TMP_W/readme_deps.txt" | tr '\n' ' ')"
 { grep -q 'ahmedibrahim085/okf-knowledge-gate@' "$README" && grep -q 'id: okf-check' "$README" && grep -q -- '--strict-trust' "$README" && grep -q -- '--init-house-rules' "$README" && grep -q 'python3' "$README"; } \
   && ok "LT-30f the README shows the Action and the pre-commit hook, --strict-trust, --init-house-rules and the python3 prerequisite" \
@@ -590,6 +590,167 @@ nerr=$(grep -c '^::error::' "$TMP_W/act_out.txt")
   && ok "LT-33a an invalid strict-trust value is refused (exit 64) without echoing the value: exactly one ::error:: line, no injection" \
   || bad "LT-33a echo of the input value" "rc=$rc error lines=$nerr $(grep -n 'injected' "$TMP_W/act_out.txt" | head -1)"
 grep -q 'Python 3.12' "$README" && ok "LT-33b the README says okflint (L2) needs Python 3.12 or newer" || bad "LT-33b README Python" "no mention of Python 3.12"
+
+# --- 0.9.1 B1 (#31): the vendored validator carries a LOCAL patch; it must be documented and must not be lost ---
+VENDF="$PLUGIN/vendor/okf_validate.py"; VMD="$PLUGIN/vendor/VENDOR.md"
+{ grep -q 'def load_frontmatter' "$VENDF" && ! grep -q 'yaml\.safe_load(raw)' "$VENDF" && grep -q 'load_frontmatter' "$PLUGIN/scripts/okf-trust.py" && ! grep -q 'yaml\.safe_load(raw)' "$PLUGIN/scripts/okf-trust.py" && grep -q 'load_frontmatter' "$PLUGIN/scripts/okf-check" && ! grep -q 'yaml\.safe_load' "$PLUGIN/scripts/okf-check"; } \
+  && ok "LT-35a the bounded loader is in the vendored validator and the trust helper, and no frontmatter is parsed with a bare yaml.safe_load" \
+  || bad "LT-35a bounded loader" "a yaml.safe_load(raw) call or the loader is missing"
+{ grep -q 'Local patch' "$VMD" && grep -q 'load_frontmatter' "$VMD" && grep -q "$OKFS_PIN" "$VMD" && grep -q '7ed3084267d050f198eea6cd9f67d5357e9ed047' "$VMD"; } \
+  && ok "LT-35b VENDOR.md lists the local patch and still names the pinned upstream commit" \
+  || bad "LT-35b VENDOR.md" "the local patch is not documented, or the pinned commit is gone"
+
+# --- 0.9.1 B2 (#32): README and release notes, reviewed by a stranger-reader and a facts-reader ---
+# A claim is only as good as what backs it: the sample on the README's first screen is REAL output (compared line
+# by line with a fresh run), the exit table says what exit 0 really covers, and the release notes do not claim
+# a fix that was not in the release.
+head20=$(head -20 "$README")
+{ printf '%s' "$head20" | grep -q 'OKF is' && printf '%s' "$head20" | grep -q 'A bundle is'; } \
+  && ok "LT-36a the first screen defines OKF and bundle for a stranger" || bad "LT-36a first screen" "OKF / bundle are not defined in the first 20 lines"
+SAMPLE_BUNDLE="$TMP_W/readme_sample"; mkdir -p "$SAMPLE_BUNDLE/notes"
+printf -- '---\nokf_version: "0.2"\n---\n# Notes\n' > "$SAMPLE_BUNDLE/notes/index.md"; printf -- '# Log\n\n## 2026-01-01\n* created\n' > "$SAMPLE_BUNDLE/notes/log.md"
+printf -- '---\ntype: Lesson\ntitle: Payment limits\ndescription: Limits for payouts.\nstatus: draft\ntags: [payments]\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - by: human:finance-owner\n    at: "2026-02-01"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$SAMPLE_BUNDLE/notes/limits.md"
+( cd "$SAMPLE_BUNDLE" && HOME="$TMP_W" "$PLUGIN/scripts/okf-check" notes ) > "$TMP_W/readme_sample_real.txt" 2>&1
+"$REALPY" - "$README" "$TMP_W/readme_sample_real.txt" <<'PY' 2>"$TMP_W/sample_err.txt"
+import sys
+readme, real = open(sys.argv[1]).read().split("\n"), set(open(sys.argv[2]).read().split("\n"))
+start = next((i for i, l in enumerate(readme) if l.strip() == "$ okf-check notes"), None)
+assert start is not None, "no '$ okf-check notes' sample block in the README"
+lines = []
+for l in readme[start + 1:]:
+    if l.startswith("```"): break
+    lines.append(l)
+body = [l for l in lines if l.strip()]
+assert len(body) >= 5, "sample too short: %d lines" % len(body)
+missing = [l for l in body if l not in real]
+assert not missing, "README sample lines that real output does not contain: %r" % missing
+PY
+[ $? -eq 0 ] && ok "LT-36b the README's sample output is REAL: every line appears in a fresh run on the documented fixture" || bad "LT-36b sample is real" "$(head -2 "$TMP_W/sample_err.txt" | tr '\n' ' ' | cut -c1-300)"
+! grep -Eq '^\| 0 \| *All gates pass' "$README" && ok "LT-36c the README does not say exit 0 means 'all gates pass' (it also covers skipped layers and warnings)" || bad "LT-36c exit 0 wording" "row 0 still says All gates pass"
+awk '/^## Use$/{u=1} u&&/^```bash/{b=1; next} b&&/^```/{exit} b' "$README" > "$TMP_W/readme_usecmds.txt"
+grep -q -- '--fail-on-change' "$TMP_W/readme_usecmds.txt" && ok "LT-36d the Use command block shows --fail-on-change (exit 6 needs it)" || bad "LT-36d --fail-on-change" "not in the command block (the exit table alone does not show how to ask for it)"
+! grep -q 'CLAUDE_PLUGIN_ROOT' "$README" && ok "LT-36e the README does not rely on \${CLAUDE_PLUGIN_ROOT} (a user's shell does not have it)" || bad "LT-36e CLAUDE_PLUGIN_ROOT" "still mentioned"
+li=$(grep -n '^## Install' "$README" | head -1 | cut -d: -f1); lu=$(grep -n '^## Use$' "$README" | head -1 | cut -d: -f1); lp=$(grep -n '^## Platforms' "$README" | head -1 | cut -d: -f1)
+{ [ -n "$li" ] && [ -n "$lu" ] && [ -n "$lp" ] && [ "$li" -lt "$lu" ] && [ "$lu" -lt "$lp" ]; } && ok "LT-36f section order: Install, Use, then Platforms" || bad "LT-36f section order" "Install=$li Use=$lu Platforms=$lp"
+{ ! grep -q 'remembered zero times' "$README" && ! grep -q 'loudest signal' "$README" && ! grep -q 'Issue forms' "$README"; } && ok "LT-36g no rhetoric and no wrong term (the claims are plain statements)" || bad "LT-36g wording" "rhetorical lines or 'Issue forms' remain"
+grep -q 'Absolute file paths' "$README" && ok "LT-36h the README says what --repo and path checks really do (SHAs via --repo; absolute file paths on disk)" || bad "LT-36h okf-verify wording" "no 'Absolute file paths' sentence"
+if [ -f "$MKT_ROOT/docs/backlog-2026-10-14.md" ]; then
+  grep -q 'Debian 12, 0.9.1' "$MKT_ROOT/docs/backlog-2026-10-14.md" && grep -q 'pre-commit 4.7.0' "$MKT_ROOT/docs/backlog-2026-10-14.md" \
+    && ok "LT-36i the Debian run the README cites (with okflint and pre-commit) is recorded in the backlog doc" || bad "LT-36i Debian run record" "the backlog doc does not record the run with okflint and pre-commit 4.7.0"
+else
+  skip "LT-36i Debian run record — docs/backlog is not part of this tree (the public export)"
+fi
+# Release notes
+CL="$MKT_ROOT/CHANGELOG.md"
+sec() { awk -v h="$1" 'index($0, "## [" h "]") == 1 {f=1; next} /^## \[/ {f=0} f' "$CL"; }
+sec 0.9.0 > "$TMP_W/cl_090.txt"; sec Unreleased > "$TMP_W/cl_unrel.txt"
+first=$(awk 'NF{print; exit}' "$TMP_W/cl_090.txt")
+case "$first" in '#'*|'-'*|'') bad "LT-37a [0.9.0] opens with a plain summary sentence" "first line: '$first'";; *) ok "LT-37a [0.9.0] opens with a plain summary sentence";; esac
+{ grep -q 'Upgrade note' "$TMP_W/cl_090.txt" && grep -q '^### Security' "$TMP_W/cl_090.txt" && grep -q 'fixed in 0.9.1' "$TMP_W/cl_090.txt"; } \
+  && ok "LT-37b [0.9.0] carries an upgrade note and says the alias-bomb problem was fixed only in 0.9.1" || bad "LT-37b [0.9.0] honesty" "missing the upgrade note, the Security heading, or 'fixed in 0.9.1'"
+! grep -q 'ignores a YAML alias bomb' "$TMP_W/cl_090.txt" && ok "LT-37c [0.9.0] no longer claims it ignores a YAML alias bomb (L1 still expanded one)" || bad "LT-37c overclaim" "the overclaiming bullet is still there"
+latest_rel=$(grep -o '^## \[[0-9][0-9.]*\]' "$CL" | head -1 | tr -d '#[] '); prev_rel=$(grep -o '^## \[[0-9][0-9.]*\]' "$CL" | sed -n 2p | tr -d '#[] ')
+{ grep -q "^\[Unreleased\]: .*compare/v${latest_rel}\.\.\.HEAD" "$CL" && grep -q "^\[${latest_rel}\]: .*compare/v${prev_rel}\.\.\.v${latest_rel}" "$CL" && grep -q '^\[0.9.0\]: .*compare/v0.8.1\.\.\.v0.9.0' "$CL"; } \
+  && ok "LT-37d the CHANGELOG compare links follow the releases: Unreleased from v${latest_rel}, v${prev_rel}...v${latest_rel}, and 0.9.0" || bad "LT-37d compare links" "a definition is missing or stale (latest=${latest_rel}, previous=${prev_rel})"
+first_latest=$(sec "$latest_rel" | awk 'NF{print; exit}')
+case "$first_latest" in '#'*|'-'*|'') bad "LT-37e the latest release opens with a plain summary sentence" "first line: '$first_latest'";; *) ok "LT-37e the latest release ($latest_rel) opens with a plain summary sentence";; esac
+
+# --- 0.9.1 B3 (#33): the demo GIF is embedded with alt text that says what it shows, and the file ships ---
+alt=$(grep -o '!\[[^]]*\](docs/demo\.gif)' "$README" | head -1 | sed 's/^!\[//; s/\](docs\/demo\.gif)$//')
+{ [ "${#alt}" -ge 60 ] && [ -f "$MKT_ROOT/docs/demo.gif" ]; } && ok "LT-38 the README embeds docs/demo.gif with alt text that describes it (${#alt} chars) and the file exists" || bad "LT-38 demo embed" "alt='${alt}' file=$([ -f "$MKT_ROOT/docs/demo.gif" ] && echo yes || echo no)"
+
+# --- 0.9.1 release: the README's example tags follow the latest RELEASED version in the CHANGELOG ---
+# The README showed @v0.9.0 while describing a patch that only 0.9.1 contains. The tag is read from the CHANGELOG
+# (the first dated heading), not from the code, so a release that forgets the README fails here.
+latest_rel=$(grep -o '^## \[[0-9][0-9.]*\]' "$MKT_ROOT/CHANGELOG.md" | head -1 | tr -d '#[] ')
+tags=$(grep -oE '(okf-knowledge-gate@v|rev: v)[0-9.]+' "$README" | grep -oE 'v[0-9.]+$' | sort -u | tr '\n' ' ')
+{ [ -n "$latest_rel" ] && [ "$tags" = "v$latest_rel " ]; } && ok "LT-37f the README's @v / rev: v example tags equal the latest released version in the CHANGELOG (v$latest_rel)" || bad "LT-37f README example tags" "CHANGELOG latest=$latest_rel, README tags='$tags'"
+
+# --- final review (#36): version pins outside the README, wording that a clean run falsifies, hook scope ---
+SKILL_MD="$PLUGIN/skills/okf/SKILL.md"
+other=$(grep -hoE '(okf-knowledge-gate@v|rev: v)[0-9.]+' "$SKILL_MD" "$MKT_ROOT/.pre-commit-hooks.yaml" | grep -oE 'v[0-9.]+$' | sort -u | tr '\n' ' ')
+{ [ -n "$latest_rel" ] && [ "$other" = "v$latest_rel " ]; } && ok "LT-41a the skill's @v pin and the pre-commit hook's rev: comment equal the latest released version (v$latest_rel)" || bad "LT-41a version pins outside the README" "CHANGELOG latest=$latest_rel, found='$other'"
+! tr -s '[:space:]' ' ' < "$README" | grep -q 'says so on every run' \
+  && ok "LT-41b the README does not claim the Trust layer speaks 'on every run' (a clean run prints no such note)" || bad "LT-41b README on every run" "claim present"
+tr -s '[:space:]' ' ' < "$SKILL_MD" | grep -Eq -- '--json.{1,4} carries the verdict only' \
+  && ok "LT-41c the skill says --json carries the verdict only, not the failing notes" || bad "LT-41c skill --json scope" "sentence missing"
+! grep -q 'refuses to say .ALL GATES PASS' "$SKILL_MD" \
+  && ok "LT-41d the skill does not claim ALL GATES PASS is refused while a layer is skipped (an opted-out L2 index still passes)" || bad "LT-41d skill ALL GATES PASS claim" "claim present"
+hf=$(grep -E "^  files:" "$MKT_ROOT/.pre-commit-hooks.yaml")
+{ echo kb/okf-base.yaml | grep -Eq "$(printf '%s' "$hf" | sed "s/^  files: '//; s/'\$//")" && echo kb/.okfignore | grep -Eq "$(printf '%s' "$hf" | sed "s/^  files: '//; s/'\$//")"; } \
+  && ok "LT-41e the pre-commit hook also runs when only okf-base.yaml or .okfignore changes" || bad "LT-41e hook files regex" "$hf"
+cl_ver=$(grep -o '^## \[[0-9][0-9.]*\] - [0-9-]*' "$MKT_ROOT/CHANGELOG.md" | head -1)
+case "$cl_ver" in *' - 20'*) ok "LT-37g the latest CHANGELOG section is dated ($cl_ver)";; *) bad "LT-37g dated release section" "latest section: '$cl_ver'";; esac
+
+# --- 0.9.1 B5 (#35): the README is a funnel (what, demo, WHY use it, contents, install, use, tools, ... licence last) ---
+# Structure from primary sources read 2026-10-17 (GitHub Docs "About READMEs", makeareadme.com, the standard-readme spec,
+# opensource.guide; ruff, shellcheck and gitleaks as examples): what the project does and why it is useful come first,
+# a Contents list is required past 100 lines, Install carries the dependencies, the licence is last.
+"$REALPY" - "$README" "$MKT_ROOT" <<'PY' 2>"$TMP_W/funnel_err.txt"
+import os, re, sys
+text = open(sys.argv[1]).read(); root = sys.argv[2]
+lines = text.split("\n")
+# (a) one-line description right under the title, under 160 characters
+title = next(i for i, l in enumerate(lines) if l.startswith("# "))
+desc = next(l for l in lines[title + 1:] if l.strip())
+assert len(desc) < 160 and not desc.startswith("#"), "description %d chars: %r" % (len(desc), desc[:60])
+# (b) the first section after the demo GIF is "Why use it"
+img = next(i for i, l in enumerate(lines) if l.startswith("![") and "docs/demo.gif" in l)
+heads = [(i, l) for i, l in enumerate(lines) if l.startswith("## ") and i > img]
+assert heads and heads[0][1].strip() == "## Why use it", "first section after the demo is %r" % (heads[0][1] if heads else None)
+# (c) the Why section: at least three bullets, each with evidence (a link into docs/ or a number)
+why = []
+for l in lines[heads[0][0] + 1:]:
+    if l.startswith("## "): break
+    why.append(l)
+bullets, cur = [], None
+for l in why:                      # a bullet wraps across lines: join its continuation lines
+    if l.startswith("- "):
+        cur = l; bullets.append(cur)
+    elif cur is not None and l.startswith("  "):
+        bullets[-1] += " " + l.strip()
+    elif not l.strip():
+        cur = None
+assert len(bullets) >= 3, "only %d Why bullets" % len(bullets)
+for b in bullets:
+    assert re.search(r"\]\((docs/|#)|\d", b), "a Why bullet has no evidence (a link into docs/ or the page, or a number): %r" % b[:70]
+# (d) Contents lists every other ## heading, with the anchor GitHub makes
+def slug(h):
+    h = h.lower().strip()
+    h = re.sub(r"[^\w\- ]", "", h)
+    return h.replace(" ", "-")
+sections = [l[3:].strip() for l in lines if l.startswith("## ")]
+assert "Contents" in sections, "no Contents section"
+for h in sections:
+    if h != "Contents":
+        assert "](#%s)" % slug(h) in text, "Contents has no link for %r (#%s)" % (h, slug(h))
+# (e) the licence is the last section
+assert sections[-1] == "License", "last section is %r, not License" % sections[-1]
+# (f) the Tools table names what the plugin uses, with required / optional, and the comparison evidence exists
+body = text[text.index("## Tools it uses"):]
+body = body[:body.index("\n## ", 5)] if "\n## " in body[5:] else body
+for tool, needs in [("python3", "Required"), ("bash", "Required"), ("git", "Required"), ("okf-skills", "Vendored"),
+                    ("PyYAML", "Vendored"), ("okflint", "Optional"), ("uv", "Optional"), ("pre-commit", "Optional"),
+                    ("jq", "Optional"), ("GitHub Actions", "Optional")]:
+    row = next((l for l in body.split("\n") if l.startswith("|") and l.strip("|").split("|")[0].strip().startswith(tool)), None)  # match the FIRST cell
+    assert row, "the Tools table has no row for %s" % tool
+    assert needs in row, "the %s row does not say %s: %r" % (tool, needs, row[:90])
+assert os.path.exists(os.path.join(root, "docs", "comparison-2026-10-17.md")), "docs/comparison-2026-10-17.md is missing"
+assert "](docs/comparison-2026-10-17.md)" in text, "the README does not link the comparison evidence"
+PY
+[ $? -eq 0 ] && ok "LT-39 the README is a funnel: one-line description, demo, 'Why use it' first (evidence in every bullet), a Contents list for every section, a Tools table checked by name, the licence last" || bad "LT-39 README funnel" "$(head -2 "$TMP_W/funnel_err.txt" | tr '\n' ' ' | cut -c1-300)"
+# every tool the Tools table names is really used by the repo (not a wish list)
+tools_ok=1; miss=""
+chk() { grep -qE "$2" "$3" 2>/dev/null || { tools_ok=0; miss="$miss $1"; }; }
+chk okflint 'okflint' "$PLUGIN/config/pinned-versions.txt"
+chk uv 'uv tool install' "$PLUGIN/scripts/okf-check"
+chk git 'git' "$PLUGIN/scripts/okf-verify"
+chk pre-commit 'language: script' "$MKT_ROOT/.pre-commit-hooks.yaml"
+chk jq 'jq ' "$PLUGIN/scripts/doc-reuse-guard.sh"
+chk "GitHub Actions" 'composite' "$MKT_ROOT/action.yml"
+[ -d "$PLUGIN/vendor/pyyaml" ] || { tools_ok=0; miss="$miss PyYAML"; }
+[ -f "$PLUGIN/vendor/okf_validate.py" ] || { tools_ok=0; miss="$miss okf-skills"; }
+[ "$tools_ok" -eq 1 ] && ok "LT-40 every tool the README's Tools table names is used by the repo (okflint, uv, git, pre-commit, jq, the Action, the vendored PyYAML and validator)" || bad "LT-40 Tools table vs the repo" "not found in the repo:$miss"
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

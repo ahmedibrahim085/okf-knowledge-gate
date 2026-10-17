@@ -2541,6 +2541,138 @@ OKF_BUNDLE_DIR="$HK" bash "$HERE/lessons-staleness-check.sh" </dev/null >/dev/nu
 printf '{"tool_name":"Write","tool_input":{"file_path":"%s/new-note.md"}}' "$HK" | OKF_BUNDLE_DIR="$HK" bash "$HERE/doc-reuse-guard.sh" >/dev/null 2>&1
 [ ! -e "$HK/okf-base.yaml" ] && [ ! -e "$HK/.okfignore" ] && ok "LT-32e S17-N1 the other two hooks (lessons-staleness-check, doc-reuse-guard) never create okf-base.yaml or .okfignore" || bad "LT-32e S17-N1" "a hook wrote a file: $(ls -A "$HK" | tr '\n' ' ')"
 
+# --- 0.9.1 B1 (#31): a YAML alias bomb must not expand in the vendored L1 validator ---
+# 0.9.0 guarded the trust helper only. The validator stringified verified[].by through str(): on a 7-level bomb
+# it took 4 s and 1094 MB; the 9-level bomb of the security review reached 2.5 GB. One bounded loader now sits
+# behind every frontmatter parse; a bomb is an L1 ERROR on that note. The test is deterministic: it asserts the
+# verdict (exit 1, the note named) and a memory ceiling, not just speed.
+mkbomb() { # <file> <field: verified|generated|title>
+  "$REALPY" - "$1" "$2" <<'PY'
+import sys
+f = sys.argv[2]
+ref = "*a7"
+lines = ["---", "type: Lesson", "x0: &a0 [x,x,x,x,x,x,x,x,x]"]
+for i in range(1, 8):
+    lines.append("x%d: &a%d [%s]" % (i, i, ",".join(["*a%d" % (i - 1)] * 9)))
+lines += ["title: %s" % (ref if f == "title" else "T"), "description: D", "status: stable", "tags: [t]", 'stale_after: "2099-01-01"']
+if f == "sources":
+    lines += ["sources:", "  - resource: *a7", '    last_modified: "2026-01-01"']
+lines.append("generated: {by: %s, at: \"2026-01-01\"}" % (ref if f == "generated" else "human:t"))
+lines += ["verified:", "  - by: %s" % (ref if f == "verified" else "human:dana"), "    at: \"2026-02-01\"", "---", "", "body"]
+open(sys.argv[1], "w").write("\n".join(lines) + "\n")
+PY
+}
+runbounded() { # <bundle> — run okf-check with an 8 s limit; prints "rc peakMB" or TIMEOUT
+  "$REALPY" - "$CHECK" "$1" <<'PY'
+import subprocess, sys, resource
+try:
+    r = subprocess.run([sys.argv[1], sys.argv[2]], timeout=5, capture_output=True, text=True)
+except subprocess.TimeoutExpired:
+    print("TIMEOUT"); sys.exit(0)
+div = 1048576 if sys.platform == "darwin" else 1024
+open(sys.argv[2] + ".out", "w").write(r.stdout + r.stderr)
+print(r.returncode, int(resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss / div))
+PY
+}
+for fld in verified generated title; do
+  BB="$TMP/bomb34_$fld"; mkbundle "$BB"; rm -f "$BB/c.md"; mkbomb "$BB/n.md" "$fld"
+  res=$(runbounded "$BB"); rc=${res%% *}; mb=${res##* }
+  { [ "$rc" = 1 ] && [ "$mb" -lt 400 ] && grep -q 'n.md' "$BB.out" && grep -qi 'alias' "$BB.out"; } \
+    && ok "LT-34a an alias bomb in '$fld' is an L1 ERROR on that note (exit 1, named, peak ${mb} MB, no expansion)" \
+    || bad "LT-34a alias bomb in $fld" "result='$res' $(grep -n -i 'alias\|n.md\|PASS\|FAIL' "$BB.out" 2>/dev/null | head -2 | tr '\n' ' ')"
+done
+MA="$TMP/modest_alias"; mkbundle "$MA"; rm -f "$MA/c.md"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: &t [a, b]\nrelated: *t\nalso: *t\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$MA/n.md"
+"$CHECK" "$MA" >"$TMP/modest.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 0 ] && grep -q 'L1 conformance *PASS' "$TMP/modest.txt"; } && ok "LT-34b a modest alias (one anchored list reused twice) still parses: exit 0, L1 PASS" || bad "LT-34b modest alias" "rc=$rc $(grep -n 'L1' "$TMP/modest.txt" | head -1)"
+
+# L2: okflint is an external tool and expands the same bomb (935 MB in 5 s on the 7-level one; unbounded until
+# OKF_L2_TIMEOUT, 120 s by default). L1 has already refused the note, so okf-check does not hand such a bundle
+# to okflint: L2 says COULD NOT RUN and why, immediately.
+if command -v okflint >/dev/null 2>&1; then
+  BL="$TMP/bomb34_l2"; mkbundle "$BL"; rm -f "$BL/c.md"; mkbomb "$BL/n.md" verified
+  sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$BL/okf-base.yaml"
+  res=$(OKF_L2_TIMEOUT=60 runbounded "$BL"); rc=${res%% *}; mb=${res##* }
+  { [ "$rc" = 1 ] && [ "$mb" -lt 400 ] && grep -Eq 'L2 profile +COULD NOT RUN.*alias bomb' "$BL.out"; } \
+    && ok "LT-34c L2: okflint is NOT run on a bundle with an alias bomb: COULD NOT RUN, naming the reason (exit 1 from L1, peak ${mb} MB, within 8 s)" \
+    || bad "LT-34c L2 alias bomb" "result='$res' $(grep -n 'L2 profile' "$BL.out" 2>/dev/null | head -1)"
+else
+  skip "LT-34c L2 alias bomb — okflint not installed"
+fi
+
+# Review round 1 (#31). Four ways the first fix still let a bomb through (found by running them):
+# (d) a long scalar repeated by aliases: 302 items but 300 MB; (e) L3 derived staleness parsed frontmatter itself;
+# (f) a bomb in the root index.md is only a WARNING in L1 and reached okflint; (g) the L2 guard must match the
+# validator's message, not a note whose PATH contains the words.
+BS="$TMP/bomb34_scalar"; mkbundle "$BS"; rm -f "$BS/c.md"
+"$REALPY" - "$BS/n.md" <<'PY'
+import sys
+big = "x" * 100000
+open(sys.argv[1], "w").write('---\ntype: Lesson\nbig: &b "%s"\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\nstale_after: "2099-01-01"\ngenerated: {by: human:t, at: "2026-01-01"}\nverified:\n  - by: [%s]\n    at: "2026-02-01"\n---\n\nbody\n' % (big, ",".join(["*b"] * 300)))
+PY
+res=$(runbounded "$BS"); rc=${res%% *}; mb=${res##* }
+{ [ "$rc" = 1 ] && [ "$mb" -lt 400 ] && grep -qi 'alias' "$BS.out"; } \
+  && ok "LT-34d one 100 KB scalar repeated by 300 aliases is refused (30 MB expanded from 302 items): exit 1, peak ${mb} MB" \
+  || bad "LT-34d scalar amplification" "result='$res' $(grep -n -i 'alias\|n.md' "$BS.out" 2>/dev/null | head -1)"
+BL3="$TMP/bomb34_l3"; mkbundle "$BL3"; rm -f "$BL3/c.md"; mkbomb "$BL3/n.md" sources
+res=$(runbounded "$BL3"); rc=${res%% *}; mb=${res##* }
+{ [ "$rc" = 1 ] && [ "$mb" -lt 400 ] && grep -q 'n.md' "$BL3.out"; } \
+  && ok "LT-34e a bomb in sources[].resource does not expand in L3 derived staleness either (exit 1, peak ${mb} MB)" \
+  || bad "LT-34e L3 derived staleness" "result='$res'"
+if command -v okflint >/dev/null 2>&1; then
+  BI="$TMP/bomb34_index"; mkbundle "$BI"
+  "$REALPY" - "$BI/index.md" <<'PY'
+import sys
+lines = ["---", 'okf_version: "0.2"', "x0: &a0 [x,x,x,x,x,x,x,x,x]"]
+for i in range(1, 8):
+    lines.append("x%d: &a%d [%s]" % (i, i, ",".join(["*a%d" % (i - 1)] * 9)))
+lines += ["owner: *a7", "---", "# B"]
+open(sys.argv[1], "w").write("\n".join(lines) + "\n")
+PY
+  sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$BI/okf-base.yaml"
+  res=$(OKF_L2_TIMEOUT=60 runbounded "$BI"); mb=${res##* }
+  { [ "$res" != TIMEOUT ] && [ "$mb" -lt 400 ] && grep -Eq 'L2 profile +COULD NOT RUN.*alias bomb' "$BI.out"; } \
+    && ok "LT-34f a bomb in the root index.md (a WARNING in L1) keeps okflint from running (peak ${mb} MB)" \
+    || bad "LT-34f root index.md bomb" "result='$res' $(grep -n 'L2 profile' "$BI.out" 2>/dev/null | head -1)"
+  BP="$TMP/bomb34_path"; mkbundle "$BP"; mkdir -p "$BP/alias bomb notes"; printf -- '---\ntitle: no type here\n---\n\nbody\n' > "$BP/alias bomb notes/x.md"
+  sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$BP/okf-base.yaml"
+  "$CHECK" "$BP" >"$TMP/bomb34_path.txt" 2>&1
+  ! grep -q 'rejected .* as YAML alias bombs' "$TMP/bomb34_path.txt" \
+    && ok "LT-34g a note whose PATH contains 'alias bomb' (with an ordinary L1 error) does not stop okflint from running" \
+    || bad "LT-34g path text forged the guard" "$(grep -n 'L2 profile' "$TMP/bomb34_path.txt" | head -1)"
+else
+  skip "LT-34f/g okflint guard cases — okflint not installed"
+fi
+
+# (h) Item count and character count are SEPARATE limits (1,000,000 items; 10,000,000 characters). Merging them into
+# one number loosened the item limit tenfold and let a 5-level mapping bomb (12^5 leaves) through (exit 0, 5.5 s, 97 MB).
+BM="$TMP/bomb34_map"; mkbundle "$BM"; rm -f "$BM/c.md"
+"$REALPY" - "$BM/n.md" <<'PY'
+import sys
+lines = ["---", "type: Lesson", "m0: &m0 {a: 1, b: 2, c: 3}"]
+for i in range(1, 6):
+    lines.append("m%d: &m%d {%s}" % (i, i, ", ".join("k%d_%d: *m%d" % (i, j, i - 1) for j in range(12))))
+lines += ["title: T", "description: D", "status: stable", "tags: [t]", 'stale_after: "2099-01-01"', 'generated: {by: human:t, at: "2026-01-01"}', "verified:", "  - by: *m5", '    at: "2026-02-01"', "---", "", "body"]
+open(sys.argv[1], "w").write("\n".join(lines) + "\n")
+PY
+res=$(runbounded "$BM"); rc=${res%% *}; mb=${res##* }
+{ [ "$rc" = 1 ] && [ "$mb" -lt 400 ] && grep -qi 'alias' "$BM.out"; } \
+  && ok "LT-34h a 5-level mapping bomb (12^5 leaves) is refused by the ITEM limit: exit 1, peak ${mb} MB" \
+  || bad "LT-34h mapping bomb" "result='$res' $(grep -n 'n.md' "$BM.out" 2>/dev/null | head -1 | cut -c1-120)"
+
+# (i) One huge scalar. A 2,000,000-digit integer is a single scalar well under the character limit, but int() on it is
+# quadratic on CPython < 3.11 (2M digits: 47 s, exit 0, found by the attacker review). A scalar above 100,000 characters
+# is refused up front, as the other bounded cases are.
+BS="$TMP/bomb34_scalar"; mkbundle "$BS"; rm -f "$BS/c.md"
+"$REALPY" - "$BS/n.md" <<'PY'
+import sys
+open(sys.argv[1], "w").write("---\ntype: Lesson\nn: " + "9" * 150000 + "\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\nstale_after: \"2099-01-01\"\n---\n\nbody\n")
+PY
+res=$(runbounded "$BS"); rc=${res%% *}
+{ [ "$rc" = 1 ] && grep -qi 'single scalar' "$BS.out"; } \
+  && ok "LT-34i a single 150,000-character scalar is refused up front: exit 1" \
+  || bad "LT-34i huge scalar" "result='$res' $(grep -n 'n.md' "$BS.out" 2>/dev/null | head -1 | cut -c1-120)"
+
 echo
 if [ "$SKIPPED" -gt 0 ]; then
   echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"
