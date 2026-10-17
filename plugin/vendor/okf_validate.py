@@ -27,8 +27,10 @@ Run:  uv run scripts/okf_validate.py <bundle-dir>
 from __future__ import annotations
 
 import argparse
+import datetime
 import json
 import re
+import unicodedata
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -153,17 +155,45 @@ def _expanded_size(root) -> tuple[int, int]:
     return memo[id(root)]
 
 
-def load_frontmatter(text):
-    """yaml.safe_load, except a document whose aliases expand beyond the limit is refused."""
+def _duplicate_keys(root) -> list[str]:
+    """LOCAL PATCH (0.9.2). Keys that appear twice in one mapping. YAML keeps the LAST value, so the first one
+    (`type: Lesson` then `type: Banana`) would vanish without a word. Merge keys (`<<`) may repeat and are skipped."""
+    seen_nodes: set[int] = set()
+    dups: list[str] = []
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        if id(node) in seen_nodes:
+            continue
+        seen_nodes.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            keys = [k.value for k, _ in node.value
+                    if isinstance(k, yaml.ScalarNode) and k.tag != "tag:yaml.org,2002:merge"]
+            dups.extend(k for k in dict.fromkeys(keys) if keys.count(k) > 1)
+        stack.extend(_children(node))
+    return dups
+
+
+def load_frontmatter_ex(text):
+    """-> (data, duplicate_keys). yaml.safe_load, except a document whose aliases expand beyond the limit, or that
+    nests so deeply the parser would overflow its stack, is refused as an ordinary invalid-YAML error."""
     loader = yaml.SafeLoader(text)
     try:
         node = loader.get_single_node()
         if node is None:
-            return None
+            return None, []
         _expanded_size(node)
-        return loader.construct_document(node)
+        dups = _duplicate_keys(node)
+        return loader.construct_document(node), dups
+    except RecursionError:
+        raise AliasBombError("the YAML document is nested too deeply to check (the parser ran out of stack)") from None
     finally:
         loader.dispose()
+
+
+def load_frontmatter(text):
+    """yaml.safe_load with the same limits as load_frontmatter_ex; the data only."""
+    return load_frontmatter_ex(text)[0]
 
 
 @dataclass
@@ -252,13 +282,15 @@ def check_concept(path: Path, rel: str, bundle: Path, report: Report) -> None:
                         "the bundle)")
         return
     try:
-        meta = load_frontmatter(raw)
+        meta, dup_keys = load_frontmatter_ex(raw)
     except (yaml.YAMLError, ValueError) as exc:
         report.err(rel, f"§11.1 frontmatter is not valid YAML: {exc}".replace("\n", " "))
         return
     if not isinstance(meta, dict):
         report.err(rel, "§11.1 frontmatter must be a YAML mapping")
         return
+    for key in dup_keys:
+        report.warn(rel, f"§11.1 duplicate key `{key}` in the frontmatter: YAML keeps the last value and drops the earlier one")
     type_val = meta.get("type")
     if not (isinstance(type_val, str) and type_val.strip()):
         report.err(rel, "§11.2 missing or empty required `type` field")
@@ -272,13 +304,30 @@ def check_concept(path: Path, rel: str, bundle: Path, report: Report) -> None:
         check_computation(meta, path, bundle, rel, report)
 
 
+def _near_miss(actor: str) -> bool:
+    """LOCAL PATCH (okf-knowledge-gate 0.9.2, see VENDOR.md). True when `actor` reads like `human:`/`process:` to a
+    person but is not exactly that prefix: a different case or spelling (`Human:`), a spelling that folds to it under
+    NFKC (fullwidth `ｈｕｍａｎ:`), or a prefix that mixes ASCII and non-ASCII letters (`humаn:` with a Cyrillic а).
+    A prefix wholly in another script (`团队:`) is not a look-alike of anything."""
+    if actor.startswith(("human:", "process:")):
+        return False
+    if ACTOR_HUMANISH.match(actor):
+        return True
+    folded = unicodedata.normalize("NFKC", actor)
+    if folded != actor and ACTOR_HUMANISH.match(folded):
+        return True
+    prefix = actor.split(":", 1)[0] if ":" in actor else ""
+    letters = [c for c in prefix if c.isalpha()]
+    return any(c.isascii() for c in letters) and any(not c.isascii() for c in letters)
+
+
 def check_actor(value, where: str, rel: str, report: Report) -> None:
     """§7 — the actor convention shared by `generated.by`, `verified[].by` and
     `sources[].author`."""
     actor = str(value).strip()
     if not actor:
         return
-    if ACTOR_HUMANISH.match(actor) and not actor.startswith(("human:", "process:")):
+    if _near_miss(actor):
         report.warn(rel, f"§7 `{where}` `{actor}` is a near-miss of "
                          f"`human:`/`process:` — §5.3 keys trust tiers off that exact "
                          f"lowercase prefix, so this silently reads as an agent")
@@ -291,6 +340,22 @@ def check_instant(value, where: str, rel: str, report: Report) -> None:
     """§5.2 — `at` values are RFC 3339; a date-only value is tolerated."""
     if value is not None and not RFC3339.match(str(value).strip()):
         report.warn(rel, f"§5.2 `{where}` `{value}` is not an RFC 3339 timestamp")
+
+
+def check_not_future(value, where: str, rel: str, report: Report) -> None:
+    """LOCAL PATCH (0.9.2). A `generated.at` later than tomorrow is a typo or a forged date, and it makes every later
+    `verified.at` look older than the change. A day of slack covers time zones."""
+    text = str(value).strip() if value is not None else ""
+    if not RFC3339.match(text):
+        return
+    try:
+        dt = datetime.datetime.fromisoformat(text.replace("Z", "+00:00").replace("z", "+00:00"))
+    except ValueError:
+        return
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(datetime.timezone.utc).replace(tzinfo=None)
+    if dt > datetime.datetime.utcnow() + datetime.timedelta(days=1):
+        report.warn(rel, f"§5.2 `{where}` `{text}` is in the future")
 
 
 def check_trust(meta: dict, rel: str, report: Report) -> None:
@@ -309,6 +374,7 @@ def check_trust(meta: dict, rel: str, report: Report) -> None:
     else:
         check_actor(gen["by"], "generated.by", rel, report)
         check_instant(gen.get("at"), "generated.at", rel, report)
+        check_not_future(gen.get("at"), "generated.at", rel, report)
 
     ver = meta.get("verified")
     if ver is None:

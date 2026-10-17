@@ -21,7 +21,7 @@ HERE = pathlib.Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
 BIN = ROOT / "plugin" / "bin"
 
-INDEX = '---\nokf_version: "0.2"\n---\n# Notes\n'
+INDEX = '---\nokf_version: "0.2"\n---\n# Notes\n\n**1 concept**\n'
 LOG = "# Log\n\n## 2026-01-01\n* created\n"
 # The first version of the note has no `type`: an L1 (OKF spec) error.
 NO_TYPE = "---\ntitle: Payment limits\ndescription: Limits for payouts.\n---\n\nbody\n"

@@ -294,6 +294,20 @@ expect_match "README.md (stale_after" "LT-01 L3 flags an expired README.md" "$CH
 T02="$TMP/t02"; mkbundle "$T02"
 printf -- '---\r\ntype: Lesson\r\ntitle: T\r\ndescription: D\r\nstatus: stable\r\nstale_after: "2000-01-01"\r\n---\r\nbody\r\n' > "$T02/crlf.md"
 expect_match "crlf.md (stale_after" "LT-02 L3 flags an expired CRLF note" "$CHECK" "$T02"
+# LT-42 (found by the 0.9.1 final review): L1 accepts fences with trailing spaces ("--- "); L3 compared them with
+# == "---" and saw no frontmatter, so an expired note passed. And l3_line kept reading after the closing fence, so a
+# "---" block in the BODY was read as frontmatter (a false FAIL, and an expired note listed twice).
+T42="$TMP/t42"; mkbundle "$T42"
+printf -- '--- \ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n--- \nbody\n' > "$T42/spaced.md"
+expect_match "spaced.md (stale_after" "LT-42a L3 flags an expired note whose fences carry trailing spaces" "$CHECK" "$T42"
+expect_exit 4 "LT-42b ... and --fail-stale makes it blocking" -- "$CHECK" "$T42" --fail-stale
+T42B="$TMP/t42b"; mkbundle "$T42B"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\nbody\n---\nstale_after: "2000-01-01"\n---\nmore\n' > "$T42B/bodyblock.md"
+expect_exit 0 "LT-42c a '---' block in the note BODY is not read as frontmatter (no false stale)" -- "$CHECK" "$T42B" --fail-stale
+T42C="$TMP/t42c"; mkbundle "$T42C"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n---\nbody\n---\nmore\n---\n' > "$T42C/twice.md"
+n42=$("$CHECK" "$T42C" 2>&1 | grep -c 'twice.md (stale_after')
+[ "$n42" = 1 ] && ok "LT-42d an expired note with body '---' lines is listed once" || bad "LT-42d listed once" "listed $n42 times"
 # LT-03 (.scratch/okf-local-bugs/03): value parsing in L3.
 T03="$TMP/t03"; mkbundle "$T03"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable  # ok\n---\nbody\n' > "$T03/cmt.md"
@@ -350,7 +364,7 @@ expect_match "bad-b.md: RuntimeError" "LT-09c the second crashing note is named 
 expect_match "L1 conformance   PASS   [1-9][0-9]* concepts, 0 errors" "LT-09d the remaining notes are still validated and counted" "$S09" "$T09"
 T09B="$TMP/t09b"; cp -R "$T09" "$T09B"; printf 'no frontmatter at all\n' > "$T09B/nofm.md"
 expect_exit 1 "LT-09e a real conformance error elsewhere outranks the crash (exit 1)" -- "$S09" "$T09B"
-# LT-18 (GitHub issue #6): the doc-reuse guard's personal locations live in a config file.
+# LT-18: the doc-reuse guard's personal locations live in a config file.
 if [ -f "$HERE/doc-reuse-guard.sh" ] && command -v jq >/dev/null 2>&1; then
   G18="$HERE/doc-reuse-guard.sh"; T18="$TMP/t18"; mkdir -p "$T18/proj/docs" "$T18/vault/Notes/sub" "$T18/cfg"
   guard18() {  # guard18 <file_path> [env...]  -> stdout
@@ -380,7 +394,7 @@ else
   skip "LT-18 doc-reuse guard config — guard or jq absent" "install jq"
 fi
 
-# LT-19 (GitHub issue #8): the guard names the closest existing notes when a search binary exists.
+# LT-19: the guard names the closest existing notes when a search binary exists.
 if [ -f "$HERE/doc-reuse-guard.sh" ] && command -v jq >/dev/null 2>&1; then
   G19="$HERE/doc-reuse-guard.sh"; T19="$TMP/t19"; mkdir -p "$T19/docs" "$T19/real/docs" "$T19/bin"
   mkdir -p "$T19/lnk"; ln -s "$T19/real/docs" "$T19/lnk/docs"
@@ -406,8 +420,10 @@ STUB
   { printf '%s' "$out0" | grep -q "Doc-reuse check" && ! printf '%s' "$out0" | grep -q "Closest"; } \
     && ok "LT-19b no search binary: the reminder is exactly today's text" || bad "LT-19b no binary" "out=$(printf '%s' "$out0" | head -c 160)"
   t0=$(date +%s); out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf" STUB_SLEEP=15); t1=$(date +%s)
-  { [ $((t1-t0)) -le 3 ] && printf '%s' "$out" | grep -q "Doc-reuse check" && ! printf '%s' "$out" | grep -q "Closest"; } \
-    && ok "LT-19c a hung search binary is cut off (returned in $((t1-t0))s, within 3) and the reminder is today's text" || bad "LT-19c timeout" "took $((t1-t0))s out=$(printf '%s' "$out" | head -c 120)"
+  # The stub hangs for 15 s. The bound is "well under the hang", not a fixed 3 s: at load 24 an honest cut-off took 5 s
+  # and a fixed limit failed a correct guard (final review, CI-owner POV). A guard that does not cut off takes >= 15 s.
+  { [ $((t1-t0)) -lt 12 ] && printf '%s' "$out" | grep -q "Doc-reuse check" && ! printf '%s' "$out" | grep -q "Closest"; } \
+    && ok "LT-19c a hung search binary is cut off (returned in $((t1-t0))s, well under its 15 s hang) and the reminder is today's text" || bad "LT-19c timeout" "took $((t1-t0))s out=$(printf '%s' "$out" | head -c 120)"
   out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf" STUB_FAIL=1); rc=$?
   { printf '%s' "$out" | grep -q "Doc-reuse check" && ! printf '%s' "$out" | grep -q "Closest" && [ "$rc" -eq 0 ]; } \
     && ok "LT-19d a failing search binary leaves today's reminder (exit 0)" || bad "LT-19d failing binary" "rc=$rc out=$(printf '%s' "$out" | head -c 120)"
@@ -417,7 +433,7 @@ STUB
   grep -q "$phys\$" "$T19/argv.log" && ok "LT-19e a symlinked directory is resolved to its real path before the search" \
     || bad "LT-19e symlink resolved" "argv=$(cat "$T19/argv.log")"
   grep -q "other note" "$T19/argv.log" && ok "LT-19f the query is the words of the new file's name" || bad "LT-19f query words" "argv=$(cat "$T19/argv.log")"
-  # LT-19g (issue #12): output captured from the real okf v0.6.1 binary, 4 hits, 1-2 digit scores.
+  # LT-19g: output captured from the real okf v0.6.1 binary, 4 hits, 1-2 digit scores.
   cat > "$T19/bin/okf-real" <<'REAL'
 #!/bin/sh
 cat <<'OUT'
@@ -468,7 +484,7 @@ REAL
   out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf-real")
   printf '%s' "$out" | grep -q "alpha-note, alpha-note-two, alpha-three" \
     && ok "LT-19g real okf output (captured) parses to the three closest ids" || bad "LT-19g real output" "out=$(printf '%s' "$out" | head -c 240)"
-  # LT-19h (issue #9): a hung binary's child process is not left behind.
+  # LT-19h: a hung binary's child process is not left behind.
   cat > "$T19/bin/okf-fork" <<'FORK'
 #!/bin/sh
 sleep 37 &
@@ -494,7 +510,7 @@ else
   skip "LT-19 guard closest notes — guard or jq absent" "install jq"
 fi
 
-# LT-20 (GitHub issue #7): .okfignore is read by every layer, written only by --init-ignore.
+# LT-20: .okfignore is read by every layer, written only by --init-ignore.
 T20="$TMP/t20"; mkbundle "$T20/b"
 mkdir -p "$T20/b/.trash" "$T20/b/archive" "$T20/b/live"
 printf -- 'no frontmatter at all\n' > "$T20/b/.trash/old.md"
@@ -564,7 +580,7 @@ rm -f "$R20/b/.okfignore"; ln -s "$R20/elsewhere.txt" "$R20/b/.okfignore"
 { [ "$rc" -ne 0 ] && [ ! -e "$R20/elsewhere.txt" ]; } && ok "LT-20k --init-ignore refuses to write through a symlink" || bad "LT-20k init through symlink" "rc=$rc"
 rm -f "$R20/b/.okfignore"
 
-# LT-17 (GitHub issue #4): preflight and opt-in installer for the supported prerequisites.
+# LT-17: preflight and opt-in installer for the supported prerequisites.
 # A stub `uv` records every call; PATH is the stub dir plus system basics, so the machine's real
 # okflint and uv are never touched.
 T17="$TMP/t17"; mkdir -p "$T17/bin"
@@ -1997,7 +2013,7 @@ printf '# c\n' > "$PX/.okfignore"
 "$CHECK" "$PX" >/dev/null 2>&1; rc1=$?
 [ "$rc0" = "$rc1" ] && ok "LT-20o a dangling symlink gives the same verdict with a no-op .okfignore (exit $rc1)" || bad "LT-20o dangling symlink" "without=$rc0 with=$rc1"
 
-# LT-21 (issue #10): a hung okflint is cut off and named; it never stalls the run.
+# LT-21: a hung okflint is cut off and named; it never stalls the run.
 H21="$TMP/h21"; mkbundle "$H21/b"; mkdir -p "$H21/bin"
 cp "$HERE/../config/okf-base.yaml.template" "$H21/b/okf-base.yaml" 2>/dev/null
 cat > "$H21/bin/okflint" <<'STUB'
@@ -2034,7 +2050,7 @@ env PATH="$H21/bin:$PATH" OKF_L2_TIMEOUT=2 "$CHECK" "$H21/b" >"$TMP/h21t.txt" 2>
 grep -q "timed out after 2 s" "$TMP/h21t.txt" && ok "LT-21d an okflint that ignores TERM is reported as timed out" || bad "LT-21d ignores TERM" "$(grep -n L2 "$TMP/h21t.txt" | head -2)"
 pkill -f '^sleep 8$' 2>/dev/null
 
-# LT-20p (issue #15): an ignore file that excludes nothing changes nothing, even when every note is
+# LT-20p: an ignore file that excludes nothing changes nothing, even when every note is
 # behind a symlinked directory.
 SL="$TMP/sl15"; mkdir -p "$SL/b" "$SL/out"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$SL/b/index.md"
 printf -- '---\ntype: Lesson\ntitle: S\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2000-01-01"\n---\nx\n' > "$SL/out/stale.md"
@@ -2045,7 +2061,7 @@ printf '# nothing\n' > "$SL/b/.okfignore"
 { [ "$rc0" = "4" ] && [ "$rc1" = "4" ] && ! grep -q "excludes every note" "$TMP/sl15.txt"; } \
   && ok "LT-20p a no-op .okfignore keeps the verdict (exit $rc0 -> $rc1) and prints no false message" \
   || bad "LT-20p no-op ignore file" "without=$rc0 with=$rc1 $(grep -n IGNORE "$TMP/sl15.txt" | head -1)"
-# LT-20q (issue #16): a leading **/ also matches at the bundle root.
+# LT-20q: a leading **/ also matches at the bundle root.
 GQ="$TMP/gq16"; mkdir -p "$GQ/a"; for n in x.md a/x.md keep.md; do printf '# n\n' > "$GQ/$n"; done; printf '**/x.md\n' > "$GQ/.okfignore"
 got=$(bash "$HERE/ignore-lib.sh" --list "$GQ" 2>/dev/null | tr '\0' '\n' | sort | tr '\n' ' ')
 [ "$got" = "keep.md " ] && ok "LT-20q **/x.md excludes x.md at the root and a/x.md" || bad "LT-20q leading **/" "kept=[$got]"
@@ -2056,11 +2072,11 @@ got=$(bash "$HERE/ignore-lib.sh" --list "$GQ" 2>/dev/null | tr '\0' '\n' | sort 
 JN="$TMP/jn"; mkdir -p "$JN/b"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$JN/b/index.md"; printf '{}\n' > "$JN/b/x.json"; printf '*.json\n' > "$JN/b/.okfignore"
 "$CHECK" "$JN/b" >"$TMP/jn.txt" 2>&1; rc=$?
 { [ "$rc" = "0" ] && ! grep -q "excludes every note" "$TMP/jn.txt"; } && ok "LT-20r excluding only a non-note file is not 'every note' (exit $rc)" || bad "LT-20r non-note exclusion" "rc=$rc $(grep -n IGNORE "$TMP/jn.txt" | head -1)"
-# LT-22 (issue #18): the status vocabulary exists twice; the copies must stay equal.
+# LT-22: the status vocabulary exists twice; the copies must stay equal.
 tpl=$(sed -n 's/.*status_values: \[\(.*\)\].*/\1/p' "$HERE/../config/okf-base.yaml.template" | head -1 | tr -d ' ' | tr ',' '\n' | sort | tr '\n' ' ')
 lib=$(sed -n 's/^function okfstatusok.*{ return \(.*\) }$/\1/p' "$HERE/l3-lib.sh" | grep -o '"[a-z]*"' | tr -d '"' | sort | tr '\n' ' ')
 { [ -n "$tpl" ] && [ "$tpl" = "$lib" ]; } && ok "LT-22 status values in okf-base.yaml.template equal l3-lib.sh ($lib)" || bad "LT-22 status parity" "template=[$tpl] l3-lib=[$lib]"
-# LT-23 (issue #19): every user-facing environment variable is documented in README and in the skill.
+# LT-23: every user-facing environment variable is documented in README and in the skill.
 # "The skill" is SKILL.md plus the reference files it links (0.9.0 moved the maintainer detail into
 # skills/okf/references/, one level deep, as Anthropic's skill guidance asks); the variables did not go away.
 miss=""; for v in OKF_L2_TIMEOUT OKF_L2_ISOLATE_MAX OKF_INSTALL_TIMEOUT OKF_DOC_DIRS_FILE OKF_SEARCH_BIN OKF_AUTO_INSTALL; do
@@ -2069,7 +2085,7 @@ miss=""; for v in OKF_L2_TIMEOUT OKF_L2_ISOLATE_MAX OKF_INSTALL_TIMEOUT OKF_DOC_
 done
 [ -z "$miss" ] && ok "LT-23 user-facing environment variables are documented" || bad "LT-23 env docs" "missing:$miss"
 
-# LT-24 (issue #17): a note that crashes okflint is named and the others are still checked;
+# LT-24: a note that crashes okflint is named and the others are still checked;
 # above OKF_L2_ISOLATE_MAX notes the rescue is skipped (today's report).
 I24="$TMP/i24"; mkbundle "$I24/b"; mkdir -p "$I24/bin"
 cp "$HERE/../config/okf-base.yaml.template" "$I24/b/okf-base.yaml"
@@ -2122,7 +2138,7 @@ env PATH="$J24/bin:$PATH" "$CHECK" "$J24/b" >"$TMP/j24d.txt" 2>&1; rc=$?
   && ok "LT-24e when every note crashes there is no PASS line and no 'others were checked'" \
   || bad "LT-24e all crash" "rc=$rc $(grep -n 'L2' "$TMP/j24d.txt" | head -3 | tr '\n' ' ')"
 
-# --- 0.9.0 T1 (#22): L1 warnings are LISTED, not only counted (cases S1, S2, S13) ---
+# --- 0.9.0 T1: L1 warnings are LISTED, not only counted (cases S1, S2, S13) ---
 # 0.8.1 printed "1 warning(s)" and named nothing; the text was visible only by running
 # the vendored validator by hand. A count a reader cannot act on is a count they stop reading.
 mkwarnnote() { # <bundle> <file> <actor> — a note whose generated.by is <actor>
@@ -2192,7 +2208,7 @@ nwarn=$("$CHECK" --json "$WF" 2>/dev/null | tail -1 | "$REALPY" -c 'import json,
   && ok "LT-25h a failing bundle's FAIL line carries the warning count (${nwarn}) so the warning lines under it are accounted for" \
   || bad "LT-25h FAIL-path warning count" "rc=$rc nwarn=$nwarn $(grep -n 'FAIL' "$TMP/wf.txt" | head -1)"
 
-# --- 0.9.0 T2 (#23): C4 "unauthenticated human verification" (cases S3-S6, S9-S12) ---
+# --- 0.9.0 T2: C4 "unauthenticated human verification" (cases S3-S6, S9-S12) ---
 # OKF v0.2 records `verified: by: human:<id>` and cannot authenticate it: an agent can write that
 # line itself. 0.8.1 gave exit 0 and no finding for a DRAFT note an agent generated and a "human"
 # verified. Executed baseline (spec #21): generated.by agent/1 + verified human:finance-owner + draft.
@@ -2308,7 +2324,7 @@ $(vent human:erin 2026-02-01)"
   && ok "LT-26s S2-N1 0 L1 warnings and 2 advisories: the L1 line says 0 warning(s), the final tally says 2 advisory(ies)" \
   || bad "LT-26s S2-N1 counters" "$(grep -n 'warning(s)\|advisory' "$TMP/c4_two.txt" | head -3 | tr '\n' ' ')"
 
-# Review round 1 (#23). Row "generator missing or near-miss": the ADVISORY needs an agent generator, so none fires;
+# Review round 1. Row "generator missing or near-miss": the ADVISORY needs an agent generator, so none fires;
 # the draft and changed-after warnings do not depend on the generator and still fire.
 c4run u stable "" 2026-01-01 "verified:
 $(vent human:dana 2026-02-01)"
@@ -2357,7 +2373,7 @@ PY
 [ $? -eq 0 ] && ok "LT-26q S13-H1 --json carries trust_findings objects {file, entry, severity, reason}" || bad "LT-26q S13-H1" "$(head -2 "$TMP/c4jsonerr.txt" | tr '\n' ' ')"
 "$CHECK" --json "$W0" 2>/dev/null | grep -q '"trust_findings":\[\]' && ok "LT-26r S13-N1 --json on a clean bundle has an empty trust_findings list" || bad "LT-26r S13-N1" "missing or non-empty"
 
-# --- 0.9.0 T3 (#24): --strict-trust (cases S7, S8, S9-H1) ---
+# --- 0.9.0 T3: --strict-trust (cases S7, S8, S9-H1) ---
 # Severity only: the findings are the same with or without the flag. A CI owner who wants a block
 # opts in; the default stays advisory so the honest "agent drafts, person reviews later" flow is quiet.
 c4run s1 draft agent/1 2026-01-01 "verified:
@@ -2399,7 +2415,7 @@ $(vent human:erin 2026-02-01)"
 { [ "$rc" -eq 1 ] && grep -q '"exit":1' "$TMP/st_j.txt" && [ "$(wc -l < "$TMP/st_j.txt" | tr -d ' ')" -eq 1 ]; } \
   && ok "LT-27h --strict-trust with --json: one JSON line, exit 1" || bad "LT-27h" "rc=$rc"
 
-# Review round 1 (#24). The near-miss count must match the validator's near-miss warning only, not any
+# Review round 1. The near-miss count must match the validator's near-miss warning only, not any
 # warning whose quoted actor text happens to contain those words.
 c4run z1 stable "zz is a near-miss of" 2026-01-01 ""
 "$CHECK" --strict-trust "$C4DIR" >"$TMP/st_z1.txt" 2>&1; rc=$?
@@ -2419,7 +2435,7 @@ printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: draft\ntags: [t]
   && ok "LT-27k strict mode with a trust layer that could not run: the summary does not read as a plain trust-policy failure" \
   || bad "LT-27k could-not-run summary" "rc=$rc $(grep -n 'FAILED' "$TMP/st_brk.txt" | head -1)"
 
-# --- 0.9.0 T4 (#25): --init-house-rules (cases S14-S18) ---
+# --- 0.9.0 T4: --init-house-rules (cases S14-S18) ---
 # L2 (house rules) was SKIPPED until the user hand-copied a template: an adoption cliff. The command
 # writes the file the L2 layer actually reads (<bundle>/okf-base.yaml) and nothing else ever writes it.
 H1="$TMP/ih1"; mkbundle "$H1"
@@ -2472,7 +2488,7 @@ H6="$TMP/ih_ro"; mkbundle "$H6"; chmod 555 "$H6"
 "$CHECK" --json "$H5" >"$TMP/ih10.txt" 2>/dev/null
 grep -q '"l2_profile":"skipped"' "$TMP/ih10.txt" && ok "LT-28m S18-E1 --json carries l2_profile:\"skipped\" as data" || bad "LT-28m S18-E1" "$(tail -1 "$TMP/ih10.txt" | cut -c1-200)"
 
-# Review round 1 (#25). l2_profile must not say "ran" when L2 could not reach a verdict: a CI job that
+# Review round 1. l2_profile must not say "ran" when L2 could not reach a verdict: a CI job that
 # reads the field would think the house rules were checked.
 if command -v okflint >/dev/null 2>&1; then
   HX="$TMP/ih_badmanifest"; mkbundle "$HX"; printf 'base: [not, a, map]\n' > "$HX/okf-base.yaml"
@@ -2541,7 +2557,7 @@ OKF_BUNDLE_DIR="$HK" bash "$HERE/lessons-staleness-check.sh" </dev/null >/dev/nu
 printf '{"tool_name":"Write","tool_input":{"file_path":"%s/new-note.md"}}' "$HK" | OKF_BUNDLE_DIR="$HK" bash "$HERE/doc-reuse-guard.sh" >/dev/null 2>&1
 [ ! -e "$HK/okf-base.yaml" ] && [ ! -e "$HK/.okfignore" ] && ok "LT-32e S17-N1 the other two hooks (lessons-staleness-check, doc-reuse-guard) never create okf-base.yaml or .okfignore" || bad "LT-32e S17-N1" "a hook wrote a file: $(ls -A "$HK" | tr '\n' ' ')"
 
-# --- 0.9.1 B1 (#31): a YAML alias bomb must not expand in the vendored L1 validator ---
+# --- 0.9.1 B1: a YAML alias bomb must not expand in the vendored L1 validator ---
 # 0.9.0 guarded the trust helper only. The validator stringified verified[].by through str(): on a 7-level bomb
 # it took 4 s and 1094 MB; the 9-level bomb of the security review reached 2.5 GB. One bounded loader now sits
 # behind every frontmatter parse; a bomb is an L1 ERROR on that note. The test is deterministic: it asserts the
@@ -2600,7 +2616,7 @@ else
   skip "LT-34c L2 alias bomb — okflint not installed"
 fi
 
-# Review round 1 (#31). Four ways the first fix still let a bomb through (found by running them):
+# Review round 1. Four ways the first fix still let a bomb through (found by running them):
 # (d) a long scalar repeated by aliases: 302 items but 300 MB; (e) L3 derived staleness parsed frontmatter itself;
 # (f) a bomb in the root index.md is only a WARNING in L1 and reached okflint; (g) the L2 guard must match the
 # validator's message, not a note whose PATH contains the words.
@@ -2672,6 +2688,199 @@ res=$(runbounded "$BS"); rc=${res%% *}
 { [ "$rc" = 1 ] && grep -qi 'single scalar' "$BS.out"; } \
   && ok "LT-34i a single 150,000-character scalar is refused up front: exit 1" \
   || bad "LT-34i huge scalar" "result='$res' $(grep -n 'n.md' "$BS.out" 2>/dev/null | head -1 | cut -c1-120)"
+
+# --- LT-43 (0.9.2 F2, #39): the Trust layer reads look-alike actors and string-valued verified -------------------------
+# Found by the 0.9.1 final review (each exited 0 under --strict-trust): a Cyrillic "а" in `humаn:`, `verified:` written
+# as a plain string, and a bare unknown generated.by token. c4run/vent/mktrust are defined with LT-26.
+CYR=$(printf 'hum\xd0\xb0n')     # "humаn": the third letter is CYRILLIC SMALL LETTER A
+c4run lk stable human:t 2026-01-01 "verified:
+$(vent "${CYR}:dana" 2026-02-01)"
+"$CHECK" "$C4DIR" --strict-trust >"$C4OUT.s" 2>&1; src=$?
+{ [ "$C4RC" -eq 0 ] && grep -q 'near-miss of `human:`' "$C4OUT" && [ "$src" -eq 1 ]; } \
+  && ok "LT-43a a mixed-script look-alike of human: (Cyrillic a) is a near-miss: warning, and exit 1 under --strict-trust" \
+  || bad "LT-43a look-alike" "rc=$C4RC strict=$src $(grep -n 'near-miss\|Trust' "$C4OUT" | head -2 | tr '\n' ' ')"
+FW=$(printf '\xef\xbd\x88\xef\xbd\x95\xef\xbd\x8d\xef\xbd\x81\xef\xbd\x8e')   # fullwidth "human"
+c4run fw stable human:t 2026-01-01 "verified:
+$(vent "${FW}:dana" 2026-02-01)"
+grep -q 'near-miss of `human:`' "$C4OUT" && ok "LT-43b a fullwidth spelling of human: is a near-miss" || bad "LT-43b fullwidth" "$(grep -n 'near-miss\|Trust' "$C4OUT" | head -2 | tr '\n' ' ')"
+ZH=$(printf '\xe5\x9b\xa2\xe9\x98\x9f')   # a non-Latin prefix is not a look-alike of anything
+c4run zh stable human:t 2026-01-01 "verified:
+$(vent "${ZH}:ga4" 2026-02-01)"
+! grep -q 'near-miss' "$C4OUT" && ok "LT-43c a wholly non-Latin actor prefix is NOT a near-miss (no false warning for CJK bundles)" || bad "LT-43c CJK prefix" "$(grep -n 'near-miss' "$C4OUT" | head -1)"
+c4run vs draft agent/1 2026-01-01 "verified: human:dana"
+"$CHECK" "$C4DIR" --strict-trust >"$C4OUT.s" 2>&1; src=$?
+{ grep -Eq '^ +n\.md: verified\[0\]\.by .*draft' "$C4OUT" && [ "$src" -eq 1 ]; } \
+  && ok "LT-43d verified written as a plain string is still read: a draft note gets the C4 warning, exit 1 under --strict-trust" \
+  || bad "LT-43d string verified" "strict=$src $(grep -n 'Trust\|n.md' "$C4OUT" | head -2 | tr '\n' ' ')"
+c4run bt stable claudebot 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+grep -q '0 warning(s), 1 advisory' "$C4OUT" && ok "LT-43e a bare generated.by token (no slash, no colon) counts as an agent: advisory" || bad "LT-43e bare token" "$(grep -n 'Trust' "$C4OUT" | head -1)"
+c4run tm stable team:ga4 2026-01-01 "verified:
+$(vent human:dana 2026-02-01)"
+c4quiet "LT-43f a team:<id> generator stays a non-agent (no advisory): the open prefix family is unchanged"
+
+# --- LT-44 (0.9.2 F3, #40): L1/L3 robustness found by the 0.9.1 final review --------------------------------------------
+# note44 <bundle> <extra-frontmatter-lines...>: one-note bundle whose note has a full, valid header plus the extra lines
+note44() {
+  local d="$TMP/n44_$1"; mkbundle "$d"; rm -f "$d/c.md"; shift
+  { printf -- '---\ntype: Lesson\ndescription: D\nstatus: stable\ntags: [t]\n'; printf '%s\n' "$@"; printf -- '---\n\nbody\n'; } > "$d/n.md"
+  N44DIR="$d"; N44OUT="$d.txt"; "$CHECK" "$d" >"$N44OUT" 2>&1; N44RC=$?
+}
+# (a) deep nesting is an ordinary L1 error on that note, not a crash that blanks L1 and Trust for the whole bundle
+note44 deep "title: T" "stale_after: \"2099-01-01\"" "d: $("$REALPY" -c 'print("["*3000 + "]"*3000)')"
+{ [ "$N44RC" -eq 1 ] && grep -q 'n.md: .*nested too deeply' "$N44OUT" && ! grep -q 'COULD NOT RUN' "$N44OUT"; } \
+  && ok "LT-44a a 3000-deep nested list is an L1 error on that note (exit 1), and no layer says COULD NOT RUN" \
+  || bad "LT-44a deep nesting" "rc=$N44RC $(grep -n 'n.md\|COULD NOT' "$N44OUT" | head -2 | cut -c1-140 | tr '\n' ' ')"
+# (b) a duplicate key is a warning (YAML last-wins would hide the first value)
+note44 dup "title: A" "title: B" "stale_after: \"2099-01-01\""
+{ [ "$N44RC" -eq 0 ] && grep -q 'n.md: .*duplicate key `title`' "$N44OUT"; } \
+  && ok "LT-44b a duplicate frontmatter key is a warning that names the key (exit 0)" \
+  || bad "LT-44b duplicate key" "rc=$N44RC $(grep -n 'n.md\|warning' "$N44OUT" | head -2 | cut -c1-140 | tr '\n' ' ')"
+note44 nodup "title: A" "stale_after: \"2099-01-01\""
+! grep -q 'duplicate key' "$N44OUT" && ok "LT-44c no duplicate key, no duplicate-key warning" || bad "LT-44c clean" "$(grep -n 'duplicate' "$N44OUT" | head -1)"
+# (c) an empty stale_after is reported by L3, not skipped as if the note had no horizon at all
+note44 nullsa "title: T" "stale_after:"
+"$CHECK" "$N44DIR" --fail-stale >"$N44OUT" 2>&1; src=$?
+{ [ "$src" -eq 4 ] && grep -q 'malformed n.md (stale_after' "$N44OUT"; } \
+  && ok "LT-44d an empty stale_after is reported by L3 as malformed (exit 4 under --fail-stale)" \
+  || bad "LT-44d empty stale_after" "rc=$src $(grep -n 'L3\|n.md' "$N44OUT" | head -2 | cut -c1-140 | tr '\n' ' ')"
+# (d) generated.at in the future is a warning
+note44 fut "title: T" "stale_after: \"2099-01-01\"" "generated:" "  by: human:t" "  at: \"2099-06-01\""
+"$CHECK" "$N44DIR" >"$N44OUT" 2>&1; src=$?
+grep -q 'n.md: .*generated.at.*in the future' "$N44OUT" && ok "LT-44e generated.at in the future is a warning" || bad "LT-44e future generated.at" "rc=$src $(grep -n 'n.md\|generated' "$N44OUT" | head -3 | cut -c1-140 | tr '\n' ' ')"
+
+# --- LT-45 (0.9.2 F4, #41): --json carries the findings, is valid for any path, and the verdict counts every skipped layer ---
+# jq44 <json-file> <python-expr over d>: print the expression's value (d is the parsed document)
+jq44() { "$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2" 2>&1; }
+J44="$TMP/j44"; mkbundle "$J44"
+"$CHECK" "$J44" --json >"$J44.json" 2>&1
+[ "$(jq44 "$J44.json" 'all(isinstance(d.get(k), list) for k in ("errors","stale","l2_findings","skipped"))')" = True ] \
+  && ok "LT-45a --json on a clean bundle carries errors, stale, l2_findings and skipped as lists" \
+  || bad "LT-45a arrays present" "$(jq44 "$J44.json" 'sorted(d)' | cut -c1-200)"
+[ "$(jq44 "$J44.json" 'len(d["skipped"])')" = 1 ] || [ "$(jq44 "$J44.json" 'len(d["skipped"])')" = 2 ] \
+  && ok "LT-45b skipped[] lists the skipped layers (no okf-base.yaml in the fixture)" \
+  || bad "LT-45b skipped" "$(jq44 "$J44.json" 'd["skipped"]')"
+nsk=$(grep -c 'SKIPPED' <("$CHECK" "$J44" 2>&1)); verd=$("$CHECK" "$J44" 2>&1 | sed -n 's/.* \([0-9][0-9]*\) skipped layer.*/\1/p')
+[ "$nsk" = "$verd" ] && ok "LT-45c the verdict line counts every SKIPPED layer ($nsk = $verd)" || bad "LT-45c verdict count" "SKIPPED lines=$nsk verdict says '$verd'"
+J44E="$TMP/j44e"; mkbundle "$J44E"; printf -- '---\ntitle: no type\n---\nbody\n' > "$J44E/bad.md"
+"$CHECK" "$J44E" --json >"$J44E.json" 2>&1
+[ "$(jq44 "$J44E.json" 'any("bad.md" in e for e in d["errors"])')" = True ] \
+  && ok "LT-45d errors[] names the failing note" || bad "LT-45d errors" "$(jq44 "$J44E.json" 'd.get("errors")' | cut -c1-200)"
+J44S="$TMP/j44s"; mkbundle "$J44S"; printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n---\nbody\n' > "$J44S/old.md"
+"$CHECK" "$J44S" --json >"$J44S.json" 2>&1
+[ "$(jq44 "$J44S.json" 'any("old.md" in e for e in d["stale"])')" = True ] \
+  && ok "LT-45e stale[] names the expired note" || bad "LT-45e stale" "$(jq44 "$J44S.json" 'd.get("stale")' | cut -c1-200)"
+J44Q="$TMP/j44 \"q\" dir"; mkbundle "$J44Q"
+"$CHECK" "$J44Q" --json >"$TMP/j44q.json" 2>&1
+[ "$(jq44 "$TMP/j44q.json" 'd["bundle"].endswith("dir")')" = True ] \
+  && ok "LT-45f --json is valid JSON when the bundle path contains double quotes" || bad "LT-45f quoted path" "$(head -c 200 "$TMP/j44q.json")"
+J44I="$TMP/j44i"; mkbundle "$J44I"; rm -f "$J44I/c.md"; printf 'c.md\n' > "$J44I/.okfignore"; printf -- '---\ntype: Lesson\n---\n' > "$J44I/x.md"; printf 'x.md\n' >> "$J44I/.okfignore"
+"$CHECK" "$J44I" --json >"$J44I.json" 2>&1
+[ "$(jq44 "$J44I.json" 'all(k in d for k in ("errors","stale","l2_findings","skipped","warnings","trust_findings","l2_profile"))')" = True ] \
+  && ok "LT-45g the ignore-everything exit (2) emits the same key set as a normal run" || bad "LT-45g key set" "$(jq44 "$J44I.json" 'sorted(d)' | cut -c1-200)"
+if command -v okflint >/dev/null 2>&1; then
+  J44L="$TMP/j44l"; mkbundle "$J44L"; sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$J44L/okf-base.yaml"
+  printf -- '---\ntype: NotAType\n---\nbody\n' > "$J44L/odd.md"
+  "$CHECK" "$J44L" --json >"$J44L.json" 2>&1; l2rc=$?
+  { [ "$l2rc" -ne 0 ] && [ "$(jq44 "$J44L.json" 'len(d["l2_findings"]) > 0')" = True ]; } \
+    && ok "LT-45h l2_findings[] carries the house-rule errors (exit $l2rc)" || bad "LT-45h l2_findings" "rc=$l2rc $(jq44 "$J44L.json" 'd.get("l2_findings")' | cut -c1-200)"
+else
+  skip "LT-45h l2_findings — okflint not installed"
+fi
+
+# --- LT-46 (0.9.2 F9, #46, public issue #1): okflint reports L001 for a path-qualified wikilink whose target exists ------
+# okflint 0.5.0 resolves [[x]] by file name only, so [[sub/b]] is "broken" even with sub/b.md present. okf-check drops an
+# L001 whose target exists in the bundle (bundle-root-relative or relative to the note), and says how many it dropped.
+if command -v okflint >/dev/null 2>&1; then
+  wl9() { # <name> <hygiene level> — bundle with a.md linking [[sub/b]] [[b]] [[sub/nope]] and sub/b.md present
+    W9="$TMP/wl9_$1"; mkbundle "$W9"; rm -f "$W9/c.md"; mkdir -p "$W9/sub"
+    sed -e 's/^  name: CHANGE ME/  name: Probe/' -e "s/^  broken_links: .*/  broken_links: $2/" "$HERE/../config/okf-base.yaml.template" > "$W9/okf-base.yaml"
+    printf -- '---\ntype: Lesson\ntitle: A\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nsee [[sub/b]] and [[b]]%s\n' "$3" > "$W9/a.md"
+    printf -- '---\ntype: Lesson\ntitle: B\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$W9/sub/b.md"
+    "$CHECK" "$W9" >"$W9.txt" 2>&1; W9RC=$?
+  }
+  wl9 warn warn " and [[sub/nope]]"
+  { [ "$W9RC" -eq 0 ] && grep -Eq 'by rule:.*L001 x1([^0-9]|$)' "$W9.txt" && grep -q '1 path wikilink(s) resolved by okf-check' "$W9.txt"; } \
+    && ok "LT-46a [[sub/b]] (target exists) is not reported; [[sub/nope]] still is; the dropped count is printed" \
+    || bad "LT-46a path wikilink" "rc=$W9RC $(grep -n 'L2 profile\|wikilink' "$W9.txt" | head -3 | cut -c1-140 | tr '\n' ' ')"
+  wl9 err error ""
+  { [ "$W9RC" -eq 0 ] && grep -Eq 'L2 profile +PASS' "$W9.txt"; } \
+    && ok "LT-46b with broken_links: error, a bundle whose only L001 is a resolvable path wikilink passes (exit 0)" \
+    || bad "LT-46b error level" "rc=$W9RC $(grep -n 'L2 profile' "$W9.txt" | head -2 | cut -c1-160 | tr '\n' ' ')"
+  wl9 err2 error " and [[sub/nope]]"
+  { [ "$W9RC" -eq 3 ] && grep -q 'sub/nope' "$W9.txt"; } \
+    && ok "LT-46c ... and a truly broken wikilink still fails L2 (exit 3)" \
+    || bad "LT-46c genuine broken link" "rc=$W9RC $(grep -n 'L2 profile\|nope' "$W9.txt" | head -2 | cut -c1-160 | tr '\n' ' ')"
+else
+  skip "LT-46a-c path wikilinks — okflint not installed"
+fi
+
+# --- LT-48 (0.9.2, cross-vendor review): the staleness hook and .okfignore must not lose notes silently ------------
+# (a) A directory whose NAME contains a newline made the session hook print nothing for the WHOLE bundle: the file list was
+# joined with `tr '\n' '\0'`, so the newline inside a path split it in two and awk aborted before it reported anything.
+HK48="$HERE/lessons-staleness-check.sh"
+N48="$TMP/lt48a"; mkdir -p "$N48" "$N48/odd
+name"
+printf -- '---\ntype: Lesson\nstatus: stable\nstale_after: "2000-01-01"\n---\nb\n' > "$N48/old.md"
+printf -- '---\ntype: Lesson\nstatus: stable\nstale_after: "2099-01-01"\n---\nb\n' > "$N48/odd
+name/fine.md"
+out=$(OKF_TODAY=2026-10-14 OKF_BUNDLE_DIR="$N48" bash "$HK48" 2>&1)
+printf '%s' "$out" | grep -q 'old.md (stale_after' \
+  && ok "LT-48a the staleness hook still reports an expired lesson when a directory name contains a newline" \
+  || bad "LT-48a newline-named directory" "hook printed: $(printf '%s' "$out" | head -c 120)"
+# (b) With an active .okfignore, a note reachable only through a SYMLINKED DIRECTORY was checked by no layer: the ignore
+# mirror and keep-list walked with find without -L, so the run said "0 checked" about a bundle whose note it reports
+# without the ignore file (cross-vendor review, finding 3).
+S48="$TMP/lt48b"; mkbundle "$S48"; rm -f "$S48/c.md"; mkdir -p "$S48/archive" "$TMP/lt48b_outside/sub"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n---\nb\n' > "$TMP/lt48b_outside/sub/old.md"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n---\nb\n' > "$S48/archive/a.md"
+ln -s ../lt48b_outside "$S48/link"
+"$CHECK" "$S48" >"$S48.base.txt" 2>&1
+printf 'archive/\n' > "$S48/.okfignore"
+"$CHECK" "$S48" >"$S48.ign.txt" 2>&1
+{ grep -q 'link/sub/old.md' "$S48.base.txt" && grep -q 'link/sub/old.md' "$S48.ign.txt" && ! grep -q 'nothing was checked' "$S48.ign.txt"; } \
+  && ok "LT-48b an active .okfignore does not drop a note that is reachable only through a symlinked directory" \
+  || bad "LT-48b ignore + symlinked directory" "$(grep -n 'ignore \|IGNORE\|old.md' "$S48.ign.txt" | head -3 | cut -c1-120 | tr '\n' ' ')"
+
+# --- LT-49 (0.9.2, public issues #2 and #3): --json carries the L2 counts; L3 keeps "unknown status" apart from "expired" --
+# (a) the text says "138 warning(s), by rule: S202 x136, L002 x2"; --json had only l2_profile "ran".
+if command -v okflint >/dev/null 2>&1; then
+  wl9 cnt warn " and [[sub/nope]]"
+  "$CHECK" "$W9" --json >"$W9.json" 2>&1
+  txtn=$(sed -n 's/.*L2 profile .*PASS .*0 errors, \([0-9][0-9]*\) warning.*/\1/p' "$W9.txt")
+  { [ -n "$txtn" ] && [ "$(jq44 "$W9.json" 'd.get("l2_warnings")')" = "$txtn" ] && [ "$(jq44 "$W9.json" 'sum(d.get("l2_by_rule",{}).values())')" = "$txtn" ]; } \
+    && ok "LT-49a --json carries l2_warnings and l2_by_rule, equal to the text's count ($txtn) and its per-rule breakdown" \
+    || bad "LT-49a l2 counts in --json" "text=$txtn json=$(jq44 "$W9.json" '(d.get("l2_warnings"), d.get("l2_by_rule"))' | cut -c1-160)"
+else
+  skip "LT-49a l2 counts in --json — okflint not installed"
+fi
+J49="$TMP/j49"; mkbundle "$J49"
+"$CHECK" "$J49" --json >"$J49.json" 2>&1
+{ [ "$(jq44 "$J49.json" '"l2_warnings" in d and "l2_by_rule" in d and "lifecycle" in d')" = True ] && [ "$(jq44 "$J49.json" 'd["l2_warnings"] is None')" = True ]; } \
+  && ok "LT-49b when L2 did not run, l2_warnings is null (not 0) and the keys are still present" \
+  || bad "LT-49b l2 keys when skipped" "$(jq44 "$J49.json" '(d.get("l2_warnings"), d.get("l2_by_rule"), d.get("lifecycle"))' | cut -c1-160)"
+# (b) 80 notes with a status outside the lifecycle used to read as "84 need attention" beside 4 expired notes
+# and made --fail-stale exit 4 on a bundle in which nothing had expired.
+L49="$TMP/l49"; mkbundle "$L49"; rm -f "$L49/c.md"
+for i in 1 2 3; do printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: accepted\nstale_after: "2099-01-01"\n---\nb\n' > "$L49/s$i.md"; done
+"$CHECK" "$L49" --fail-stale --json >"$L49.json" 2>&1; rcl=$?
+"$CHECK" "$L49" >"$L49.txt" 2>&1
+{ [ "$rcl" -eq 0 ] && grep -Eq 'L3 staleness +PASS +nothing expired' "$L49.txt" && grep -Eq 'L3 lifecycle +3 concept\(s\)' "$L49.txt" && [ "$(jq44 "$L49.json" 'len(d["stale"])')" = 0 ] && [ "$(jq44 "$L49.json" 'len(d["lifecycle"])')" = 3 ]; } \
+  && ok "LT-49c three notes with an unknown status and none expired: --fail-stale exits 0, L3 says nothing expired, the status findings sit on their own L3 lifecycle line and in lifecycle[]" \
+  || bad "LT-49c unknown status vs expired" "rc=$rcl $(grep -n 'L3' "$L49.txt" | head -3 | cut -c1-130 | tr '\n' ' ')"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n---\nb\n' > "$L49/old.md"
+"$CHECK" "$L49" --fail-stale >"$L49.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 4 ] && grep -Eq 'L3 staleness +1 concept\(s\) need attention' "$L49.txt" && grep -Eq 'L3 lifecycle +3 concept\(s\)' "$L49.txt"; } \
+  && ok "LT-49d with one expired note beside three unknown-status notes the counts are separate (1 and 3) and --fail-stale exits 4" \
+  || bad "LT-49d separate counts" "rc=$rcl $(grep -n 'L3' "$L49.txt" | head -3 | cut -c1-130 | tr '\n' ' ')"
+
+# --- LT-50 (0.9.2, public issue #7): the doc-reuse "closest notes" hint says when it is off ----------------------------
+# The hint needs a search binary (`okf`) that okf-check never installs; without it the hint was off with no word anywhere.
+O50="$TMP/o50"; mkdir -p "$O50/empty"; printf '#!/bin/sh\nexit 0\n' > "$O50/okf"; chmod +x "$O50/okf"
+out=$(env OKF_SEARCH_BIN= PATH="/usr/bin:/bin" "$CHECK" --doctor 2>&1)
+printf '%s' "$out" | grep -Eq 'okf search +absent' && ok "LT-50a --doctor reports the missing search binary and what it switches off" || bad "LT-50a doctor absent" "$(printf '%s' "$out" | grep -n 'okf search' | head -1)"
+out=$(env OKF_SEARCH_BIN="$O50/okf" "$CHECK" --doctor 2>&1)
+printf '%s' "$out" | grep -Eq 'okf search +present' && ok "LT-50b --doctor names the search binary when it is configured" || bad "LT-50b doctor present" "$(printf '%s' "$out" | grep -n 'okf search' | head -1)"
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

@@ -50,7 +50,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.1"
+VERSION="0.9.2"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -146,6 +146,54 @@ for c in python3 python; do command -v "$c" >/dev/null 2>&1 && { PY="$c"; break;
 MIRROR_ROOT=""
 L2_MIRROR_ROOT=""
 say()  { [ "$JSON" -eq 1 ] && return 0; local m="$*"; [ -n "$MIRROR_ROOT" ] && m=${m//"$MIRROR_ROOT"/"$BUNDLE"}; [ -n "$L2_MIRROR_ROOT" ] && m=${m//"$L2_MIRROR_ROOT"/"$BUNDLE"}; printf '%s\n' "$m"; }
+# record <kind> <text> — one finding for --json (kind: error, stale, l2, skipped). Appends to a file, so it also works
+# inside `| while read` pipelines. The text lines of the human report stay untouched.
+record() { printf '%s\t%s\n' "$1" "$(printf '%s' "$2" | tr '\n\t' '  ')" >> "$TMP/findings.tsv" 2>/dev/null; return 0; }
+# emit_json <exit> — the ONE place --json is printed, so every exit path carries the same keys. The bundle path
+# goes through a real JSON encoder: a path with a double quote used to produce invalid JSON.
+emit_json() {
+  local code="$1" _cd _ign _w _t _b _f
+  if   [ "${FP_DEGRADED:-0}" -eq 1 ]; then _cd=degraded
+  elif [ "${CONCURRENT:-0}"  -eq 1 ]; then _cd=changed
+  else _cd=ok; fi
+  _ign=""; [ -n "${IGNORED:-}" ] && _ign=",\"ignored\":$IGNORED"
+  _w="[]"; [ -s "$TMP/l1warn.json" ] && _w=$(cat "$TMP/l1warn.json")
+  _t="[]"; [ -s "$TMP/trust.json" ] && _t=$(cat "$TMP/trust.json"); [ "${TRUST_RAN:-1}" -eq 0 ] && _t=null
+  if [ -n "$PY" ]; then
+    _b=$(printf '%s' "$BUNDLE" | "$PY" -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))')
+    _f=$("$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" <<'PY'
+import json, sys
+out = {"errors": [], "stale": [], "l2_findings": [], "skipped": [], "lifecycle": [], "l2_warnings": None, "l2_by_rule": {}}
+key = {"error": "errors", "stale": "stale", "l2": "l2_findings", "skipped": "skipped", "lifecycle": "lifecycle"}
+# The L2 advisory totals the text prints ("138 warning(s), by rule: S202 x136, L002 x2"); null when L2 did not run (public issue #2).
+if sys.argv[3] == "ran":
+    try:
+        rows = open(sys.argv[2], encoding="utf-8", errors="replace").read().splitlines()
+        out["l2_warnings"] = int(rows[0].split()[1])
+        for r in rows[1:]:
+            if r.startswith("C|"):
+                _, code, n = r.split("|")
+                out["l2_by_rule"][code] = int(n)
+    except (OSError, IndexError, ValueError):
+        pass
+try:
+    lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+except OSError:
+    lines = []
+for line in lines:
+    kind, _, text = line.partition("\t")
+    if kind in key:
+        out[key[kind]].append(text)
+print(json.dumps(out)[1:-1])
+PY
+)
+  else
+    _b="\"${BUNDLE//\"/\\\"}\""
+    _f='"errors":[],"stale":[],"l2_findings":[],"skipped":[],"lifecycle":[],"l2_warnings":null,"l2_by_rule":{}'
+  fi
+  printf '{"bundle":%s,"exit":%d,"l1_errors":%s,"l1_warnings":%s,"concepts":%s,"change_detection":"%s"%s,"warnings":%s,"trust_findings":%s,"l2_profile":"%s",%s}\n' \
+    "$_b" "$code" "${L1_ERR:-null}" "${L1_WARN:-null}" "${L1_CONCEPTS:-null}" "$_cd" "$_ign" "$_w" "$_t" "${L2_PROFILE:-ran}" "$_f"
+}
 # say_capped <limit> <indent>  — lines on stdin, capped, and HONEST about it.
 # Four dumps cut at 10-12 lines with no note of the cut: a reader sees twelve
 # §11 errors and concludes there are twelve. Same silent-cap defect fixed in
@@ -301,7 +349,7 @@ okflint_version() {
 # Returns 0 if L1 can run at all. The DOCTOR never installs anything: it names the command (installing is `--install-deps`)
 # and stops. (Same read/write split as code-knowledge-graphs:ask — a tool that
 # installs on its own initiative cannot be audited before it acts.)
-# ------------------------------------------------- prerequisites (GitHub issue #4)
+# ------------------------------------------------- prerequisites
 # Install is explicit, not silent: a plugin that runs `uv tool install` on every session start
 # is a supply-chain risk. `--preflight` only REPORTS; `--install-deps` prints a plan and acts
 # only with --yes; OKF_AUTO_INSTALL=1 is the owner's opt-in to let the preflight act.
@@ -456,6 +504,15 @@ doctor() {
     say "  pyyaml             MISSING and the vendored copy did not import"
     say "                     <- reinstall okf-check, or: $PY -m pip install pyyaml"
     fatal=1
+  fi
+
+  # The doc-reuse reminder can name the closest existing notes when a search binary (`okf`) is on PATH or in
+  # OKF_SEARCH_BIN. okf-check never installs it, so say whether the hint is on (public issue #7).
+  local _sb="${OKF_SEARCH_BIN:-}"; [ -n "$_sb" ] || _sb=$(command -v okf 2>/dev/null)
+  if [ -n "$_sb" ] && [ -x "$_sb" ]; then
+    say "  okf search         present ($_sb): doc-reuse reminders name the closest notes"
+  else
+    say "  okf search         absent (optional): doc-reuse reminders work without it but cannot name the closest notes; okf-check never installs it"
   fi
 
   if [ -f "$VALIDATOR" ]; then
@@ -667,6 +724,7 @@ PY
   # Through say(), not raw stdout: these detail lines used to bypass it and
   # corrupt --json on every non-clean bundle. E-4 only ever tested a CLEAN
   # bundle, so the suite was green over it. (R-3)
+  grep '^E|' "$TMP/l1.txt" | sed 's/^E|//' | while IFS= read -r _e; do record error "$_e"; done
   grep '^E|' "$TMP/l1.txt" | sed 's/^E|//' | say_capped 12 "                   "
   l1_list_warnings
   return $EXIT_CONFORM
@@ -746,7 +804,7 @@ l2_isolate() {
 }
 
 L2_CRASHED=()
-# run_profile: the L2 core, plus the crashed-note report and its exit status (issue #17).
+# run_profile: the L2 core, plus the crashed-note report and its exit status.
 run_profile() {
   local rc k
   L2_CRASHED=()
@@ -770,7 +828,7 @@ __l2_core() {
   local bundle="$1"
   local manifest="$bundle/okf-base.yaml"
   if ! command -v okflint >/dev/null 2>&1; then
-    SKIPPED=$((${SKIPPED:-0} + 1)); L2_PROFILE=skipped
+    SKIPPED=$((${SKIPPED:-0} + 1)); L2_PROFILE=skipped; record skipped "L2 profile: okflint not installed"
     say "  L2 profile       SKIPPED — okflint not installed (install: uv tool install okflint)"
     say "                   house rules are NOT enforced — this is a skip, not a pass."
     # Two things are missing here, and the person needs both: the tool and the rules file.
@@ -779,7 +837,7 @@ __l2_core() {
   fi
   if [ ! -f "$manifest" ]; then
     SKIPPED=$((${SKIPPED:-0} + 1))
-    L2_PROFILE=skipped
+    L2_PROFILE=skipped; record skipped "L2 profile: no okf-base.yaml in the bundle"
     say "  L2 profile       SKIPPED — no okf-base.yaml in $bundle"
     say "                   house rules are NOT enforced. Create a starter file with: okf-check --init-house-rules '$bundle'"
     say "                   (or copy $TEMPLATE)"
@@ -790,7 +848,7 @@ __l2_core() {
   # now, instead of letting it eat memory. A reached L1 verdict (exit 1) still outranks this.
   local _nbomb
   # The validator's own message (an error for a note, a warning for the root index.md), not a note's PATH.
-  _nbomb=$(grep -Ec '^[EW]\|.*frontmatter is not valid YAML: the YAML document (expands to more than|holds a single scalar)' "$TMP/l1.txt" 2>/dev/null); _nbomb=${_nbomb:-0}
+  _nbomb=$(grep -Ec '^[EW]\|.*frontmatter is not valid YAML: the YAML document (expands to more than|holds a single scalar|is nested too deeply)' "$TMP/l1.txt" 2>/dev/null); _nbomb=${_nbomb:-0}
   if [ "$_nbomb" -gt 0 ]; then
     L2_PROFILE=could_not_run
     say "  L2 profile       COULD NOT RUN — okflint was not run: L1 rejected ${_nbomb} note(s) as YAML alias bombs, which okflint would expand in memory"
@@ -802,7 +860,7 @@ __l2_core() {
   # directions (a WARNING containing ❌ used to be counted as an error). The
   # documented contract is: 0 clean, 1 findings, 2 bad manifest. (R-2)
   local out ec
-  # Time-bounded (issue #10): a hung okflint used to stall the run for as long as it hung.
+  # Time-bounded: a hung okflint used to stall the run for as long as it hung.
   local l2limit="${OKF_L2_TIMEOUT:-120}"
   case "$l2limit" in ''|*[!0-9]*|0) l2limit=120;; esac
   run_limited "$l2limit" "$TMP/l2.out" sh -c 'cd "$1" && exec okflint validate . --manifest okf-base.yaml --json' _ "$bundle"; ec=$?
@@ -835,8 +893,8 @@ __l2_core() {
   # Parse the structured report. If okflint signalled findings (exit 1) but we
   # cannot parse them, that is COULD NOT RUN — never a pass.
   local counts errs warns
-  counts=$("$PY" - "$TMP/l2.txt" <<'PY' 2>/dev/null
-import json, sys
+  counts=$("$PY" - "$TMP/l2.txt" "$bundle" <<'PY' 2>/dev/null
+import json, os, re, sys
 raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 
 # `raw.find("[")` grabbed the FIRST bracket anywhere — including one inside
@@ -862,12 +920,35 @@ if doc is None:
 def sev(x):
     return str(x.get("severity", "")).lower() if isinstance(x, dict) else ""
 
+# okflint 0.5.0 resolves a wikilink by FILE NAME only, so [[sub/b]] is reported as L001 "broken" although sub/b.md
+# exists (public issue #1: 2,368 of 2,477 L001 findings on one real bundle). OKF section 6.1 defines markdown links only,
+# so how a wikilink resolves is a house convention, and this one matches Obsidian: a path from the bundle root, or from
+# the note's own folder, with or without .md. An L001 whose target is such a file is dropped and COUNTED, never hidden.
+_root = os.path.realpath(sys.argv[2])
+def _resolves(x):
+    if not (isinstance(x, dict) and x.get("code") == "L001"):
+        return False
+    m = re.search(r"\[\[(.*)\]\]", str(x.get("message", "")))
+    target = m.group(1).split("|")[0].split("#")[0].strip().lstrip("/") if m else ""
+    if not target:
+        return False
+    note_dir = os.path.dirname(os.path.join(_root, str(x.get("file", ""))))
+    for base in (_root, note_dir):
+        for cand in (target, target + ".md"):
+            p = os.path.realpath(os.path.join(base, cand))
+            if (p == _root or p.startswith(_root + os.sep)) and os.path.isfile(p) and p.endswith(".md"):
+                return True
+    return False
+dropped = [x for x in doc if _resolves(x)]
+dropped_err = sum(1 for x in dropped if sev(x) == "error")
+doc = [x for x in doc if not _resolves(x)]
+
 # A finding with NO severity key is not a warning — it is a finding we cannot
 # classify. Counting it as a warning let okflint exit 1 while L2 said PASS. (G-4b)
 errors  = [x for x in doc if sev(x) == "error"]
 unknown = [x for x in doc if isinstance(x, dict) and "severity" not in x]
 others  = [x for x in doc if sev(x) not in ("error",) and x not in unknown]
-print(len(errors), len(others), len(unknown))
+print(len(errors), len(others), len(unknown), len(dropped), dropped_err)
 for x in errors + unknown:
     print("E|%s %s — %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", "")))
 # Advisory findings grouped by rule code, most frequent first (ecosystem ticket 01): a flat
@@ -891,16 +972,20 @@ PY
   errs=$(head -1 "$TMP/l2parsed.txt" | awk '{print $1}')
   warns=$(head -1 "$TMP/l2parsed.txt" | awk '{print $2}')
   unknown=$(head -1 "$TMP/l2parsed.txt" | awk '{print $3}')
+  local dropped dropped_err
+  dropped=$(head -1 "$TMP/l2parsed.txt" | awk '{print $4+0}')
+  dropped_err=$(head -1 "$TMP/l2parsed.txt" | awk '{print $5+0}')
   # okflint's EXIT STATUS is authoritative about whether findings exist. If it
   # said 1 and we parsed zero errors, our classification is wrong — not okflint.
   # Failing open here is how R-2 happened. (G-4b)
-  if [ "$ec" -eq 1 ] && [ "${errs:-0}" -eq 0 ] && [ "${unknown:-0}" -eq 0 ]; then
+  if [ "$ec" -eq 1 ] && [ "${errs:-0}" -eq 0 ] && [ "${unknown:-0}" -eq 0 ] && [ "${dropped_err:-0}" -eq 0 ]; then
     say "  L2 profile       COULD NOT RUN — okflint reported findings (exit 1) but none parsed as errors"
     say "                   NOT a pass: its report format may have changed (see VERSION-SKEW in --doctor)."
     return $EXIT_DEP
   fi
   if [ "${unknown:-0}" -gt 0 ]; then
     say "  L2 profile       FAIL   ${unknown} finding(s) with no severity — treated as errors, not warnings"
+    grep '^E|' "$TMP/l2parsed.txt" | sed 's/^E|//' | while IFS= read -r _e; do record l2 "$_e"; done
     grep '^E|' "$TMP/l2parsed.txt" | sed 's/^E|//' | say_capped 12 "                   "
     return $EXIT_PROFILE
   fi
@@ -910,10 +995,13 @@ PY
   if [ "${errs:-0}" -eq 0 ]; then
     say "  L2 profile       PASS   0 errors, ${warns:-0} warning(s) (advisory)"
     [ -n "$bycode" ] && say "                   by rule: $bycode"
+    [ "${dropped:-0}" -gt 0 ] && say "                   ${dropped} path wikilink(s) resolved by okf-check (okflint reports them as L001 although the note exists)"
     return 0
   fi
   say "  L2 profile       FAIL   ${errs} house-rule error(s)"
   [ -n "$bycode" ] && say "                   advisory by rule: $bycode"
+  [ "${dropped:-0}" -gt 0 ] && say "                   ${dropped} path wikilink(s) resolved by okf-check (okflint reports them as L001 although the note exists)"
+  grep '^E|' "$TMP/l2parsed.txt" | sed 's/^E|//' | while IFS= read -r _e; do record l2 "$_e"; done
   grep '^E|' "$TMP/l2parsed.txt" | sed 's/^E|//' | say_capped 12 "                   "
   return $EXIT_PROFILE
 }
@@ -940,8 +1028,9 @@ PY
 # total is the job; counting sentences is not.
 run_index() {
   local bundle="$1"
-  [ -f "$bundle/index.md" ] || { say "  L2 index         SKIPPED — no index.md in this bundle"; return $EXIT_OK; }
+  [ -f "$bundle/index.md" ] || { SKIPPED=$((${SKIPPED:-0} + 1)); record skipped "L2 index: no index.md in this bundle"; say "  L2 index         SKIPPED — no index.md in this bundle"; return $EXIT_OK; }
   if [ -z "$PY" ]; then
+    SKIPPED=$((${SKIPPED:-0} + 1)); record skipped "L2 index: no python3"
     say "  L2 index         SKIPPED — no python3; declared counts are NOT verified"
     say "                   this is a skip, not a pass."
     return $EXIT_OK
@@ -1038,7 +1127,7 @@ PYEOF
     return $EXIT_PROFILE
   fi
   case "$out" in
-    SKIP\ *) say "  L2 index         SKIPPED — ${out#SKIP }" ;;
+    SKIP\ *) SKIPPED=$((${SKIPPED:-0} + 1)); record skipped "L2 index: ${out#SKIP }"; say "  L2 index         SKIPPED — ${out#SKIP }" ;;
     *)       say "  L2 index         PASS   $(printf '%s\n' "$out" | grep -c '^OK ') declared count(s) match the files on disk"
              printf '%s\n' "$out" | while IFS= read -r l; do
                case "$l" in UNVERIFIABLE\ *) say "                   not derivable from any type: \"${l#UNVERIFIABLE }\"" ;; esac
@@ -1236,12 +1325,26 @@ run_staleness() {
   # A crashed awk printed nothing and nothing read as "PASS nothing expired" (ticket 07).
   if [ "$scan_rc" -ne 0 ]; then say "  L3 staleness     COULD NOT RUN (the awk/xargs scan exited $scan_rc)"; return $EXIT_DEP; fi
   if [ -z "$report" ]; then say "  L3 staleness     PASS   nothing expired"; return 0; fi
-  local n; n=$(printf '%s\n' "$report" | grep -c .)
-  ADVISORIES=$((ADVISORIES + n))
-  say "  L3 staleness     ${n} concept(s) need attention"
-  # through say(), or --json is corrupted by the detail lines (R-3)
-  printf '%s\n' "$report" | say_capped 10 ""
-  [ "$FAIL_STALE" -eq 1 ] && return $EXIT_STALE
+  # "expired" and "malformed stale_after" are STALENESS. A status outside draft/stable/deprecated (OKF 5.4) is a lifecycle
+  # finding that L1 also warns about: counting it as "need attention" beside the expired notes made 4 overdue notes read as
+  # 84, and made --fail-stale exit 4 on a bundle in which nothing had expired (public issue #3).
+  local n_stale n_status
+  n_stale=$(printf '%s\n' "$report" | grep -Ec '^ +(expired|malformed) '); n_status=$(printf '%s\n' "$report" | grep -Ec '^ +status ')
+  ADVISORIES=$((ADVISORIES + n_stale + n_status))
+  if [ "$n_stale" -gt 0 ]; then
+    say "  L3 staleness     ${n_stale} concept(s) need attention"
+    # through say(), or --json is corrupted by the detail lines (R-3)
+    printf '%s\n' "$report" | grep -E '^ +(expired|malformed) ' | sed 's/^ *//' | while IFS= read -r _e; do record stale "$_e"; done
+    printf '%s\n' "$report" | grep -E '^ +(expired|malformed) ' | say_capped 10 ""
+  else
+    say "  L3 staleness     PASS   nothing expired"
+  fi
+  if [ "$n_status" -gt 0 ]; then
+    say "  L3 lifecycle     ${n_status} concept(s) have a status outside draft, stable, deprecated (OKF 5.4; L1 warns about them too)"
+    printf '%s\n' "$report" | grep -E '^ +status ' | sed 's/^ *//' | while IFS= read -r _e; do record lifecycle "$_e"; done
+    printf '%s\n' "$report" | grep -E '^ +status ' | say_capped 10 ""
+  fi
+  [ "$FAIL_STALE" -eq 1 ] && [ "$n_stale" -gt 0 ] && return $EXIT_STALE
   return 0
 }
 
@@ -1409,7 +1512,7 @@ if ! doctor >/dev/null 2>&1; then doctor; echo "L1 cannot run — fix the above.
 
 say "okf-check $VERSION — $BUNDLE"
 worst=0
-# .okfignore (issue #7): every layer sees a filtered COPY of the notes and config; the bundle
+# .okfignore: every layer sees a filtered COPY of the notes and config; the bundle
 # itself is never touched. No file: LAYER_BUNDLE is the bundle and nothing below changes.
 LAYER_BUNDLE="$BUNDLE"; IGNORED=""
 if [ -f "$BUNDLE/.okfignore" ]; then
@@ -1432,7 +1535,7 @@ if [ -f "$BUNDLE/.okfignore" ]; then
     LAYER_BUNDLE="$TMP/okfmirror"; MIRROR_ROOT="$LAYER_BUNDLE"
     if [ "${_kept:-0}" -eq 0 ] && [ "${_exnotes:-0}" -gt 0 ]; then
       say "  IGNORE           .okfignore excludes every note - nothing was checked (not a pass)"
-      [ "$JSON" -eq 1 ] && printf '{"bundle":"%s","exit":%d,"ignored":%s}\n' "$BUNDLE" "$EXIT_DEP" "${IGNORED:-0}"
+      [ "$JSON" -eq 1 ] && emit_json "$EXIT_DEP"
       exit $EXIT_DEP
     fi
   fi
@@ -1534,23 +1637,11 @@ elif [ "$FP_BEFORE" != "$FP_AFTER" ]; then
 fi
 
 if [ "$JSON" -eq 1 ]; then
-  # `change_detection` exists because the DEGRADED warning goes through say(),
-  # which --json suppresses by design (R-3) — so a machine consumer read
-  # {"exit":0,...} with no hint that the E-7 lane was off. Not corruption: a
-  # silent capability gap, and worse for a reader who cannot see the human
-  # text. Emitted on EVERY run, not only the degraded one, so its absence is
-  # never something a consumer has to infer. (Z-9)
-  if   [ "$FP_DEGRADED" -eq 1 ]; then _cd=degraded
-  elif [ "$CONCURRENT"  -eq 1 ]; then _cd=changed
-  else _cd=ok; fi
-  _ign=""; [ -n "$IGNORED" ] && _ign=",\"ignored\":$IGNORED"
-  # `warnings` is the list behind the `l1_warnings` count. Present on every run that reaches the layers
-  # (an empty list when L1 did not run or found none). The early exits for an unusable bundle (for example a
-  # .okfignore that excludes every note) print only the short key set they always printed.
-  _w="[]"; [ -s "$TMP/l1warn.json" ] && _w=$(cat "$TMP/l1warn.json")
-  _t="[]"; [ -s "$TMP/trust.json" ] && _t=$(cat "$TMP/trust.json"); [ "$TRUST_RAN" -eq 0 ] && _t=null
-  printf '{"bundle":"%s","exit":%d,"l1_errors":%s,"l1_warnings":%s,"concepts":%s,"change_detection":"%s"%s,"warnings":%s,"trust_findings":%s,"l2_profile":"%s"}\n' \
-    "$BUNDLE" "$worst" "${L1_ERR:-null}" "${L1_WARN:-null}" "${L1_CONCEPTS:-null}" "$_cd" "$_ign" "$_w" "$_t" "$L2_PROFILE"
+  # `change_detection` exists because the DEGRADED warning goes through say(), which --json suppresses by design (R-3):
+  # a machine consumer would read {"exit":0,...} with no hint that the E-7 lane was off. It is emitted on EVERY run.
+  # `warnings` is the list behind `l1_warnings`; errors, stale, l2_findings and skipped list the findings behind the
+  # other counts and the layers that did not run. Every exit path that prints JSON uses emit_json.
+  emit_json "$worst"
 fi
 say ""
 # Never print a bare pass while the body reported something. A summary that

@@ -41,7 +41,8 @@ _L3LIB="$(cd -P "$(dirname "$_self")" && pwd)/l3-lib.sh"
 # be skipped silently. Found in okf-check by test E-6b and fixed here in the same
 # pass — "my new entry works now" is how 30 other missing entries stay hidden
 # (lessons/readdir-symlink-dirent-trap.md).
-report=$(find -L "$L" -name '*.md' -type f 2>/dev/null | tr '\n' '\0' | xargs -0 awk -v today="$TODAY" "$L3_AWK_LIB"'
+# -print0, not `| tr '\n' '\0'`: a directory NAME holding a newline split the list and the hook printed nothing at all.
+report=$(find -L "$L" -name '*.md' -type f -print0 2>/dev/null | xargs -0 awk -v today="$TODAY" "$L3_AWK_LIB"'
   { sub(/\r$/, "") }   # CRLF notes (LT-02b)
   FNR == 1 {
     base = FILENAME

@@ -49,7 +49,7 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 |---|---|---|
 | L0 doctor | Can the gate run here at all? | runtimes, dependencies, version pins, behaviour probes |
 | L1 conformance | Is this valid OKF? | the vendored OKF v0.2 validator |
-| L2 profile | Is this valid *our* OKF (house rules)? | `okflint` and the bundle's `okf-base.yaml` |
+| L2 profile | Is this valid *our* OKF (house rules)? | `okflint` and the bundle's `okf-base.yaml`. `okflint` finds a wikilink by file name only, so it reports `[[sub/b]]` as broken even when `sub/b.md` exists; `okf-check` drops that finding when the file exists (from the bundle root or from the note's folder) and prints how many it dropped |
 | L2 index | Does `index.md` describe this bundle? | its bold count declaration against the files on disk |
 | Trust (C4) | Can you believe a `human:` verification? | `okf-trust.py`: a draft note, or a review dated before the change, with a human verifier is a warning; an agent-generated note with one is an advisory. It cannot prove who a person is. |
 | L3 staleness | Is it still true? | `stale_after` against today, and `status` |
@@ -121,13 +121,13 @@ $ okf-check notes
   L2 profile       SKIPPED — no okf-base.yaml in notes
   L3 staleness     PASS   nothing expired
 
-  PASS — no blocking errors, but 1 advisory(ies) and 1 skipped layer(s) above
+  PASS — no blocking errors, but 1 advisory(ies) and 2 skipped layer(s) above
 ```
 
 A Trust warning counts as an advisory in the last line, so the run still passes (exit 0) unless you pass `--strict-trust`.
 
 `okf-verify` checks two kinds of claim. A cited commit SHA is looked up in each `--repo` folder. Absolute file paths
-in backticks or quotes (and paths that start with `~`) are checked on disk; relative paths are not read.
+in backticks or quotes (and paths that start with `~`) are checked on disk, but only inside the bundle or a `--repo` folder: a path elsewhere on the machine is UNRESOLVED, so a bundle you did not write cannot use the check to learn which files exist on your machine. Add `--host-paths` to look those up too. Relative paths are not read. In a shallow clone (the `actions/checkout` default), commits older than the clone are missing: use `fetch-depth: 0`.
 
 A near-miss actor is a wrongly written actor such as `Human:dana`. OKF reads it as an agent, so a person's review is
 lost without any other symptom. `--strict-trust` fails on it.
@@ -175,12 +175,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.1
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.2
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
           fail-stale: 'false'     # optional, default 'false'
+          require-house-rules: 'false'   # optional; 'true' fails the job (exit 3) when L2 was skipped
 ```
+
+The job logs a `::warning::` when the bundle has 0 concepts and for every skipped layer, because both end in exit 0. GitHub's runners do not ship `okflint`, so L2 is skipped there unless an earlier step installs it; set `require-house-rules: 'true'` to make that a failure.
 
 **pre-commit** (the hook passes no filenames. It checks the bundle named in `args`, and runs when a Markdown file is
 staged):
@@ -188,13 +191,13 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.1
+    rev: v0.9.2
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
 ```
 
-Your `args` replace the hook's default (`.`). pre-commit 4.7.0 accepts the hook's `language: script`. Its source maps
+Your `args` replace the hook's default (`.`, which only works when the repository root is the bundle: a root `README.md` without frontmatter is a concept that fails L1). pre-commit 4.7.0 accepts the hook's `language: script`. Its source maps
 that name to `unsupported_script`; it prints no removal notice today. The hook has been run end to end by pre-commit 4.7.0
 on macOS: a clean bundle commits, a draft note with a human verifier is blocked, and a commit that stages no Markdown
 file skips the hook.
@@ -245,8 +248,8 @@ The full behaviour contract, one row per scenario with its test, is
 
 | Platform | Status |
 |---|---|
-| macOS | The 0.9.1 test suites passed here, on bash 3.2 and the BSD tools. The gate was built and measured on this platform. |
-| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.1 suites passed on Debian 12 (aarch64, GNU coreutils 9.1, gawk 5.2.1, bash 5.2.15, non-root user) with `okflint` and pre-commit 4.7.0 installed in a Python 3.12 environment. 0 tests failed. 6 tests were skipped because they cannot apply there: no `claude` CLI, no installed plugin to compare, a case-sensitive filesystem, no lesson file as a fixture, and no Pillow to render the demo. Debian 12 ships Python 3.11, which cannot install `okflint`. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). |
+| macOS | The 0.9.2 test suites passed here, on bash 3.2 and the BSD tools. The gate was built and measured on this platform. |
+| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.2 suites passed on Debian 12 (aarch64, GNU coreutils 9.1, gawk 5.2.1, bash 5.2.15, non-root user) with `okflint` and pre-commit 4.7.0 installed in a Python 3.12 environment. 0 tests failed. 6 tests were skipped because they cannot apply there: no `claude` CLI, no installed plugin to compare, a case-sensitive filesystem, no lesson file as a fixture, and no Pillow to render the demo. Debian 12 ships Python 3.11, which cannot install `okflint`. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). |
 | Windows | There is no native Windows support: the gate is a set of bash scripts. WSL (Windows Subsystem for Linux) is the only path, and nothing has been run under it: UNVERIFIED, as are the Action and the pre-commit hook on Windows. |
 | Claude Code | The plugin form (hooks and the skill) needs Claude Code. The command line, the GitHub Action and the pre-commit hook do not. |
 

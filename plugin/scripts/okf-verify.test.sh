@@ -146,7 +146,7 @@ vok "V-2 an existing file path is CONFIRMED"
 # cited path; only its absence is asserted.
 B3="$TMP/b3"; mkb "$B3"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee `%s/definitely-not-here-xyz.txt`.\n' "$NONEPH" > "$B3/c.md"
-rc=$(run "$B3" --repo "$REPO")
+rc=$(run "$B3" --repo "$REPO" --host-paths)
 vrefuted "V-3 a missing file path is REFUTED"
 [ "$rc" != "0" ] && ok "V-3 a refuted claim is a non-zero exit" || bad "V-3 refuted -> non-zero exit" "exit 0"
 
@@ -392,12 +392,12 @@ fi
 # passed against the unfixed regex for exactly that reason.
 BD12="$TMP/bd12"; mkb "$BD12"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nThe fix landed in `%s/never-written-d12.md'"'"' as noted.\n' "$NONEPH" > "$BD12/c.md"
-run "$BD12" --repo "$REPO" >/dev/null
+run "$BD12" --repo "$REPO" --host-paths >/dev/null
 # guard: the matched-delimiter form of the same path MUST be REFUTED, else the
 # test above could pass because the path was never extracted at all.
 BD12M="$TMP/bd12m"; mkb "$BD12M"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nThe fix landed in `%s/never-written-d12.md` as noted.\n' "$NONEPH" > "$BD12M/c.md"
-"$VERIFY" "$BD12M" --repo "$REPO" >"$TMP/d12m.txt" 2>&1
+"$VERIFY" "$BD12M" --repo "$REPO" --host-paths >"$TMP/d12m.txt" 2>&1
 grep -qE '^  REFUTED ' "$TMP/d12m.txt" \
   || bad "D-12 guard: the matched-delimiter form must still be REFUTED" \
          "no REFUTED for \`$NONEPH/never-written-d12.md\` — extraction is broken, not delimiter-strict"
@@ -427,12 +427,12 @@ grep -q 'and 3 more' "$TMP/out.txt" \
 # "checked and false" from "not checked" reported neither, and looked clean.
 G13="$TMP/g13"; mkb "$G13"; mkdir -p "$G13/sub"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee `%s/definitely-not-here-g13.md` for detail.\n' "$NONEPH" > "$G13/sub/claim.md"
-rc=$(run "$G13" --repo "$REPO")
+rc=$(run "$G13" --repo "$REPO" --host-paths)
 grep -qE '^  REFUTED ' "$TMP/out.txt" \
   || bad "G-13 control: the claim must be REFUTED while the subdir is readable" \
          "no REFUTED verdict — fixture is wrong, so the assertion below proves nothing"
 chmod 000 "$G13/sub"
-rc=$(run "$G13" --repo "$REPO")
+rc=$(run "$G13" --repo "$REPO" --host-paths)
 chmod 755 "$G13/sub"
 [ "$rc" != "0" ] \
   && ok "G-13 an unreadable subdirectory fails CLOSED (exit $rc)" \
@@ -585,22 +585,49 @@ grep -q 'no checkable claim' "$TMP/out.txt" \
   && ok "Z-11b a bare backticked all-digit token is still not treated as a SHA" \
   || bad_hard "Z-11b an issue number was treated as a SHA" "precision lost: bare 1234567 must stay rejected"
 
-# I-1 (GitHub issue #7): a note under a .okfignore path is not verified.
+# I-1: a note under a .okfignore path is not verified.
 BI="$TMP/bi"; mkb "$BI"; mkdir -p "$BI/archive"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee `%s/ignored-not-here-xyz.txt`.\n' "$NONEPH" > "$BI/archive/c.md"
-rc=$(run "$BI" --repo "$REPO")
+rc=$(run "$BI" --repo "$REPO" --host-paths)
 [ "$rc" != "0" ] && ok "I-1a baseline: the refuted claim under archive/ fails without .okfignore" || bad "I-1a baseline" "exit 0"
 cp "$B4/c.md" "$BI/live.md"; printf 'archive/\n' > "$BI/.okfignore"
-rc=$(run "$BI" --repo "$REPO")
+rc=$(run "$BI" --repo "$REPO" --host-paths)
 [ "$rc" = "0" ] && ok "I-1b the same claim under an ignored path is not verified (exit 0)" || bad "I-1b ignored path skipped" "exit $rc"
 
 printf '*\n' > "$BI/.okfignore"
-rc=$(run "$BI" --repo "$REPO")
+rc=$(run "$BI" --repo "$REPO" --host-paths)
 [ "$rc" = "2" ] && ok "I-1c a .okfignore that excludes every note exits 2" || bad "I-1c all excluded" "exit $rc"
 
 mkdir -p "$TMP/bi-out"; printf -- 'x\n' > "$TMP/bi-out/o.md"; ln -s "$TMP/bi-out" "$BI/lnk"
-rc=$(run "$BI" --repo "$REPO")
+rc=$(run "$BI" --repo "$REPO" --host-paths)
 [ "$rc" = "2" ] && ok "I-1d a symlinked directory cannot hide that everything was excluded" || bad "I-1d symlink bypass" "exit $rc"
+
+# --- 0.9.2 F5: found by the 0.9.1 final review ----------------------------------------------------------------
+note5() { # <bundle> <body line> — a one-note bundle citing <body line>
+  mkb "$1"; printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\n%s\n' "$2" > "$1/n.md"
+}
+# (a) ".." in a cited path is resolved, not mistaken for a case difference
+mkdir -p "$REPO/sub"
+note5 "$TMP/f5a" "See \`$REPO/sub/../f.txt\` for the fix."
+rc=$(run "$TMP/f5a" --repo "$REPO")
+vok "V-F5a a cited path with .. that lands on an existing file inside --repo is CONFIRMED (not 'only a case-variant')"
+# (b) a path outside the bundle and every --repo folder is not probed unless --host-paths is given
+note5 "$TMP/f5b" "See \`$HERE/okf-verify.test.sh\` for the tool."
+rc=$(run "$TMP/f5b" --repo "$REPO")
+{ vunresolved "V-F5b a path outside the bundle and --repo is UNRESOLVED by default"; } 
+grep -q 'outside the bundle' "$TMP/out.txt" && ok "V-F5b2 ... and the reason says it is outside the bundle and the --repo folders" || bad "V-F5b2 reason" "$(grep -n 'okf-verify' "$TMP/out.txt" | head -1)"
+rc=$(run "$TMP/f5b" --repo "$REPO" --host-paths)
+vok "V-F5b3 --host-paths checks it on disk (CONFIRMED)"
+note5 "$TMP/f5b2" "See \`$HERE/no-such-file-here.xyz\` for the tool."
+rc=$(run "$TMP/f5b2" --repo "$REPO")
+{ grep -qE '^  unresolved ' "$TMP/out.txt" && ! grep -qE '^  REFUTED ' "$TMP/out.txt"; } && ok "V-F5b4 a missing outside path is UNRESOLVED too: no REFUTED/CONFIRMED difference leaks host files" || bad "V-F5b4 oracle" "$(grep -n 'no-such' "$TMP/out.txt" | head -1)"
+# (c) a SHA missing from a shallow clone says so
+SH="$TMP/cl5"; git -C "$REPO" -c commit.gpgsign=false commit -q --allow-empty -m "second commit for the shallow test"
+git clone -q --depth 1 "file://$REPO" "$SH" 2>/dev/null
+OLD_SHA=$(git -C "$REPO" rev-parse --short HEAD~1)
+note5 "$TMP/f5c" "Fixed in commit $OLD_SHA."
+rc=$(run "$TMP/f5c" --repo "$SH")
+grep -qi 'shallow' "$TMP/out.txt" && ok "V-F5c a SHA absent from a shallow clone says the clone is shallow (git fetch --unshallow)" || bad "V-F5c shallow" "$(grep -n 'unresolved' "$TMP/out.txt" | head -1 | cut -c1-200)"
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

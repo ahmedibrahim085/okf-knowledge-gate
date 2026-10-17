@@ -29,16 +29,17 @@ function okfstatusok(v) { return v == "stable" || v == "draft" || v == "deprecat
 # State lives in L3_infm / L3_sa / L3_st. The callers keep their own skip rules and reporting.
 # l3_begin: call on FNR==1. Returns "reserved", "nofm" (no frontmatter) or "open".
 function l3_begin(first, reserved) {
-  L3_infm = 0; L3_sa = ""; L3_st = ""
+  L3_infm = 0; L3_sa = ""; L3_st = ""; L3_sk = 0
   if (reserved) return "reserved"
-  if (first != "---") return "nofm"
+  if (first !~ /^---[ \t]*$/) return "nofm"   # same fence rule as L1 (okf_validate.split_frontmatter): trailing blanks allowed
   L3_infm = 1; return "open"
 }
 # l3_line: feed each later line of an "open" file. Returns 1 on the closing delimiter,
 # with L3_sa already date-normalised and L3_st holding the status value.
 function l3_line(line) {
-  if (line == "---") { L3_infm = 0; L3_sa = okfdate(L3_sa); return 1 }
-  if (line ~ /^stale_after:/)  { sub(/^stale_after:[ \t]*/, "", line); L3_sa = okfval(line) }
+  if (!L3_infm) return 0   # past the closing fence the rest is body: a "---" block there is not frontmatter
+  if (line ~ /^---[ \t]*$/) { L3_infm = 0; L3_sa = okfdate(L3_sa); if (L3_sk && L3_sa == "") L3_sa = "<empty>"; return 1 }   # a key with no value is reported, not skipped
+  if (line ~ /^stale_after:/)  { L3_sk = 1; sub(/^stale_after:[ \t]*/, "", line); L3_sa = okfval(line) }
   else if (line ~ /^status:/)  { sub(/^status:[ \t]*/, "", line);      L3_st = okfval(line) }
   return 0
 }

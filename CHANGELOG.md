@@ -9,6 +9,34 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.2] - 2026-10-17
+
+OKF Knowledge Gate 0.9.2 closes the false passes the final 0.9.1 review found, makes `--json` carry the findings, and stops two noisy results (the Action's silent green, and `[[sub/b]]` reported as broken).
+
+### Fixed
+- **L3 (staleness) uses the same frontmatter fence rule as L1.** A note whose fences had trailing spaces (`--- `) and an expired `stale_after` passed; a `---` block in a note's body was read as frontmatter (a false stale, and an expired note listed up to three times).
+- **The Trust layer reads look-alikes.** `verified[].by: humаn:dana` written with a Cyrillic or fullwidth letter is a near-miss of `human:` (`--strict-trust` exits 1); a string-valued `verified: human:dana` on a draft note is read; a bare `generated.by` token such as `claudebot` counts as an agent. A prefix wholly in another script (`团队:`) is not flagged.
+- **L1 and L3 findings that were silent:** a deeply nested document is an L1 error on that note instead of a crash that blanked L1 and Trust for the whole bundle; a duplicate frontmatter key and a `generated.at` later than tomorrow are warnings; a `stale_after:` with no value is reported by L3.
+- **The verdict line counts every skipped layer.** It said "1 skipped layer(s)" when two layers were SKIPPED (the L2 index skip was not counted).
+- **`--json` is valid JSON for any bundle path** (a path containing a double quote broke it) and has the same keys on every exit path.
+- **`okf-verify`:** a `..` in a cited path no longer reads as "only a case-variant exists"; a SHA missing from a shallow clone says the clone is shallow.
+- **The pre-commit hook** also runs when only `okf-base.yaml` or `.okfignore` changes.
+- **L2 no longer reports path-qualified wikilinks as broken.** `okflint` finds a wikilink by file name only, so `[[sub/b]]` was reported (L001) although `sub/b.md` exists. `okf-check` drops that finding when the file exists, from the bundle root or from the note's folder, and prints how many it dropped. A link to a note that does not exist is still reported.
+
+### Added
+- **L3 keeps a status outside draft, stable, deprecated apart from staleness.** It has its own `L3 lifecycle` line and is no longer counted as "need attention" beside expired notes; `--fail-stale` exits 4 only when a note is expired or its `stale_after` is malformed (before, 80 unknown-status notes made it exit 4 with nothing expired).
+- `--json` carries `errors[]`, `stale[]`, `l2_findings[]`, `skipped[]`, `lifecycle[]`, `l2_warnings` and `l2_by_rule` next to the counts. The L2 totals are what the text prints ("138 warning(s), by rule: S202 x136, L002 x2"); they are null when L2 did not run.
+- The GitHub Action logs a `::warning::` for a bundle with 0 concepts and for each skipped layer, and has an input `require-house-rules` (default `false`): `true` fails the job with exit 3 when L2 was skipped.
+- `okf-verify --host-paths` (see Changed).
+
+### Changed
+- `--doctor` says whether the optional `okf` search binary is present. Without it the doc-reuse reminder cannot name the closest existing notes, and nothing said so before.
+- **The export keeps CHANGELOG compare links for releases the public repository holds** (the exported suite failed on them).
+- **Fixed by the cross-vendor review:** the staleness hook no longer prints nothing when a directory name holds a newline; an active `.okfignore` no longer drops a note reachable only through a symlinked directory; the doc-reuse hook no longer ships the maintainer's lesson-store facts.
+- **`okf-verify` no longer looks up cited paths outside the bundle and the `--repo` folders.** Such a path is UNRESOLVED. Before, a bundle you did not write could use the check to learn which files exist on your machine. Pass `--host-paths` for the old behaviour.
+- The public export drops private issue numbers and commit ids from every file (the vendored validator keeps its public upstream references).
+- A plugin installed at a different version than the source tree is now a test failure, not a skip.
+
 ## [0.9.1] - 2026-10-17
 
 OKF Knowledge Gate 0.9.1 fixes a memory problem: a small note can no longer make `okf-check` use gigabytes of memory.
@@ -340,4 +368,13 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[0.5.7]: https://github.com/ahmedibrahim085/okf-knowledge-gate/releases/tag/v0.5.7
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.2...HEAD
+[0.9.2]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.1...v0.9.2
+[0.9.1]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.0...v0.9.1
+[0.9.0]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.8.1...v0.9.0
+[0.8.1]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.8.0...v0.8.1
+[0.8.0]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.7.2...v0.8.0
+[0.7.2]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.6.1...v0.7.0
+[0.6.1]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.6.0...v0.6.1

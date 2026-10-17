@@ -231,7 +231,10 @@ def check_sha(sha: str, repos: list[Path], subjects: list[str]):
         return UNRESOLVED, (f"could not query {'; '.join(unavailable)} — that lookup did not run, "
                             f"which is not the same as absent (searched: {where})")
     searched = ", ".join(r.name for r in usable)
-    return UNRESOLVED, f"not found in the searched repos ({searched}); other repos not searched"
+    shallow = [r.name for r in usable if git(r, "rev-parse", "--is-shallow-repository") == (0, "true")]
+    note = (f"; {', '.join(shallow)} is a shallow clone, so older commits are missing "
+            f"(git fetch --unshallow, or actions/checkout with fetch-depth: 0)") if shallow else ""
+    return UNRESOLVED, f"not found in the searched repos ({searched}); other repos not searched{note}"
 
 
 def case_exact(p: Path) -> bool:
@@ -258,11 +261,27 @@ def case_exact(p: Path) -> bool:
     return True
 
 
-def check_path(raw: str, bundle: Path):
+def inside_any(p: str, roots: list[Path]) -> bool:
+    """Is the normalised path `p` inside one of `roots`? Lexical (normpath), so asking costs no stat on `p`."""
+    for r in roots:
+        for form in {os.path.normpath(str(r)), os.path.realpath(str(r))}:
+            if p == form or p.startswith(form.rstrip(os.sep) + os.sep):
+                return True
+    return False
+
+
+def check_path(raw: str, bundle: Path, roots: list[Path] | None = None, host_paths: bool = False):
     """A path CAN be refuted — but only where we know we looked in the right place."""
     p = Path(os.path.expanduser(raw))
     if not p.is_absolute():
         p = bundle / raw
+    # `..` and `.` are resolved lexically before anything else: `case_exact` lists directories and `..` is in none.
+    p = Path(os.path.normpath(str(p)))
+    # A bundle is untrusted input. Probing arbitrary host paths answers "does this key file exist on the runner?" in
+    # a CI log, so only paths inside the bundle or a --repo folder are looked up unless --host-paths says otherwise.
+    if roots is not None and not host_paths and not inside_any(str(p), [bundle, *roots]):
+        return UNRESOLVED, ("outside the bundle and the --repo folders, so it was not looked up "
+                            "(pass --host-paths to check paths on this machine)")
 
     # EXISTENCE IS CHECKED FIRST. An earlier draft tested `ephemeral` before
     # `exists()`, which made a file that demonstrably EXISTS in a temp directory
@@ -327,7 +346,7 @@ def not_ignored(bundle: Path):
     return {x for x in r.stdout.decode("utf-8", "replace").split("\0") if x}
 
 
-def verify(bundle: Path, repos: list[Path]):
+def verify(bundle: Path, repos: list[Path], host_paths: bool = False):
     results, no_claims = [], []
     keep = not_ignored(bundle)
     for f in sorted(bundle.rglob("*.md")):
@@ -400,7 +419,7 @@ def verify(bundle: Path, repos: list[Path]):
                 continue
             seen.add(("path", raw))
             found += 1
-            v, d = check_path(raw, bundle)
+            v, d = check_path(raw, bundle, repos, host_paths)
             results.append({"concept": rel, "kind": "path", "claim": raw,
                             "verdict": v, "detail": d})
 
@@ -414,6 +433,8 @@ def main() -> int:
     ap.add_argument("bundle", type=Path)
     ap.add_argument("--repo", type=Path, action="append", default=[],
                     help="repository to resolve cited SHAs in (repeatable)")
+    ap.add_argument("--host-paths", action="store_true",
+                    help="also look up cited absolute paths outside the bundle and the --repo folders")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--strict", action="store_true", help="also fail on UNRESOLVED")
     a = ap.parse_args()
@@ -453,7 +474,7 @@ def main() -> int:
         if left == 0:
             print("error: .okfignore excludes every note - nothing was verified (not a pass)", file=sys.stderr)
             return 2
-    results, no_claims = verify(a.bundle, repos)
+    results, no_claims = verify(a.bundle, repos, a.host_paths)
 
     counts = {v: sum(1 for r in results if r["verdict"] == v)
               for v in (CONFIRMED, REFUTED, UNRESOLVED)}

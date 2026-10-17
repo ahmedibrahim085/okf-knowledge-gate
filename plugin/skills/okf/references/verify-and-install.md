@@ -5,7 +5,7 @@ Contents: okf-verify (verdicts, paths, SHAs) · setting up house rules · what t
 ## okf-verify (L4): is what it SAYS still true?
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/okf-verify" <bundle> [--repo DIR]... [--json] [--strict]
+"${CLAUDE_PLUGIN_ROOT}/scripts/okf-verify" <bundle> [--repo DIR]... [--host-paths] [--json] [--strict]
 ```
 
 Resolves the checkable claims in each concept — cited commit SHAs and file paths —

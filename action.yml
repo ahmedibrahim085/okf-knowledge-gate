@@ -15,6 +15,12 @@ inputs:
     description: "'true' makes stale concepts fail the job (exit 4)."
     required: false
     default: 'false'
+  require-house-rules:
+    description: >-
+      'true' fails the job (exit 3) when the house-rule layer (L2) was skipped, for example because okflint is not
+      installed on the runner or the bundle has no okf-base.yaml. Without it a skipped layer is only a warning.
+    required: false
+    default: 'false'
 runs:
   using: composite
   steps:
@@ -25,9 +31,11 @@ runs:
         INPUT_BUNDLE: ${{ inputs.bundle }}
         INPUT_STRICT_TRUST: ${{ inputs.strict-trust }}
         INPUT_FAIL_STALE: ${{ inputs.fail-stale }}
+        INPUT_REQUIRE_HOUSE_RULES: ${{ inputs.require-house-rules }}
         GITHUB_ACTION_PATH: ${{ github.action_path }}
       run: |
-        for pair in "strict-trust=$INPUT_STRICT_TRUST" "fail-stale=$INPUT_FAIL_STALE"; do
+        INPUT_REQUIRE_HOUSE_RULES=${INPUT_REQUIRE_HOUSE_RULES:-false}
+        for pair in "strict-trust=$INPUT_STRICT_TRUST" "fail-stale=$INPUT_FAIL_STALE" "require-house-rules=$INPUT_REQUIRE_HOUSE_RULES"; do
           case "${pair#*=}" in
             true|false) ;;
             # The value is not echoed back: it is untrusted text, and a newline in it would start a second workflow command.
@@ -46,4 +54,25 @@ runs:
         if [ "$INPUT_STRICT_TRUST" = true ]; then args+=(--strict-trust); fi
         if [ "$INPUT_FAIL_STALE" = true ]; then args+=(--fail-stale); fi
         # okf-check's own exit code is the job's exit code: 0 pass, 1 L1/trust, 2 could not run, 3 house rules, 4 stale.
-        exec "$GITHUB_ACTION_PATH/plugin/scripts/okf-check" "$INPUT_BUNDLE" ${args[@]+"${args[@]}"}
+        # The log is kept so the job can say, with a ::warning::, when exit 0 means less than "everything was checked".
+        log=$(mktemp)
+        set +e   # the runner starts bash with -e and pipefail: keep going after a failing okf-check so the warnings below print
+        "$GITHUB_ACTION_PATH/plugin/scripts/okf-check" "$INPUT_BUNDLE" ${args[@]+"${args[@]}"} 2>&1 | tee "$log"
+        rc=${PIPESTATUS[0]}
+        # Fixed messages only: the log can hold note names, which are untrusted text inside a workflow command.
+        if grep -Eq 'L1 conformance +PASS +0 concepts' "$log"; then
+          echo "::warning::okf-check found 0 concepts, so nothing was checked. Is the 'bundle' path right?"
+        fi
+        l2_skipped=0
+        grep -Eq '^ +L2 profile +SKIPPED' "$log" && l2_skipped=1
+        for layer in 'L2 profile' 'L2 index' 'L3 staleness'; do
+          if grep -Eq "^ +$layer +SKIPPED" "$log"; then
+            echo "::warning::okf-check skipped a layer ($layer): it is not a pass. See the log above for the reason."
+          fi
+        done
+        if [ "$INPUT_REQUIRE_HOUSE_RULES" = true ] && [ "$l2_skipped" -eq 1 ] && [ "$rc" -eq 0 ]; then
+          echo "::error::house rules were required but L2 was skipped (okflint missing, or no okf-base.yaml in the bundle)"
+          rc=3
+        fi
+        rm -f "$log"
+        exit "$rc"

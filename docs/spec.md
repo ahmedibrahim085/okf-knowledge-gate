@@ -38,7 +38,7 @@ misrepresent how the code was actually verified.
 
 - **US-1** — *As an agent about to commit a knowledge change,* I want one command that runs every check, so that I do not have to remember three tools. (Three tools that must be remembered get remembered zero times — the measured failure mode of every rotted store on this machine.)
 - **US-2** — *As a maintainer,* I want house rules in a manifest rather than in code, so that changing policy does not mean editing a script.
-- **US-3** — *As someone on a fresh machine,* I want the gate to tell me what is missing and, only when I ask, install the supported version, so that nothing is installed behind my back and I still do not hunt for commands. (Changed 2026-10-15, GitHub issue #4: it used to say "never to install".)
+- **US-3** — *As someone on a fresh machine,* I want the gate to tell me what is missing and, only when I ask, install the supported version, so that nothing is installed behind my back and I still do not hunt for commands. (Changed 2026-10-15: it used to say "never to install".)
 - **US-4** — *As the person who just upgraded okflint,* I want proof the gates still fire, because an upgrade that silently stops catching things is indistinguishable from a clean run.
 - **US-5** — *As CI,* I want distinct exit codes, so a spec violation and a house-rule violation do not look identical.
 - **US-6** — *As a reader of a report,* I never want a summary line that contradicts the body above it.
@@ -733,8 +733,8 @@ repo's own `shell-or-swallows-errors.md` names the class.
 #### `Z-2` — the packaging sweep, not the file
 
 `graphify_reconcile_ids.py` shipped to every install and was referenced by
-nothing. Tracing it first changed the fix: it was added at `tools/` in `292dd65`
-as a standalone graphify utility, and `dcd102b` swept the whole `scripts/`
+nothing. Tracing it first changed the fix: it was added at `tools/`
+as a standalone graphify utility, and a later commit swept the whole `scripts/`
 directory into the package. The defect is the **over-broad sweep**, so the
 remedy is to undo the move — restored byte-identical to `tools/`, out of the
 shipped surface, not deleted.
@@ -944,11 +944,11 @@ What matters is not the count but the shape: the UNRESOLVED set included
 rewrite. Reporting those as REFUTED would have been wrong — the fix they describe
 is still running in production.
 
-## 0.9.0 — warnings listed, trust check, init, CI doors (issue #21)
+## 0.9.0 — warnings listed, trust check, init, CI doors
 
-Full user stories and cases: issue #21 and its tickets #22-#28. Rows are added by the ticket that ships them.
+Full user stories and cases are in the private tracker. Rows are added by the ticket that ships them.
 
-### L1 warning listing (#22)
+### L1 warning listing
 Warning lines use the same capped listing as errors (`say_capped`, limit 50, "... and N more"): the cap and the wording are the existing helper's. They sit under the L1 line at the same indent as error lines (the spec text "+N more" and a two-space indent were replaced by that helper's form, so one cap style serves both).
 
 | ID | Scenario | Expected | State |
@@ -962,7 +962,7 @@ Warning lines use the same capped listing as errors (`say_capped`, limit 50, "..
 | LT-25g | `--json` on a clean bundle | `warnings` is an empty list, not a missing key | ✅ |
 | LT-25h | A bundle with one error and warnings | the FAIL line carries the warning count, so the warning lines under the error lines are accounted for | ✅ |
 
-### Trust layer C4 — unauthenticated human verification (#23)
+### Trust layer C4 — unauthenticated human verification
 OKF v0.2 records `verified: by: human:<id>` and cannot authenticate it. The layer (`okf-trust.py`, run by `okf-check`) reports, per `verified` entry whose actor starts with `human:` (the FIRST matching row wins): a draft note → warning; `verified.at` earlier than `generated.at` → warning; an agent-generated note (`<producer>/<version>` or `agent:<id>`) → advisory. `process:` and other actors are never reported. Warnings and advisories both count into the final advisory tally; the layer line shows the split. The exit code stays 0 (`--strict-trust` is #24). The vendored validator is not edited. The layer runs right after L1. The draft and changed-after warnings do not depend on the generator; only the advisory needs an agent generator, so a missing or near-miss `generated.by` gives no advisory (it still warns on a draft). A bare date compared with a timestamp is compared by day (a bare date cannot say which moment of the day). A note that starts with a UTF-8 BOM is read like any other. If the helper fails, the layer line says COULD NOT RUN with the helper's last error line, the exit code is 2, and `--json` reports `trust_findings` as `null` (unknown, not clean).
 
 | ID | Scenario | Expected | State |
@@ -998,7 +998,7 @@ OKF v0.2 records `verified: by: human:<id>` and cannot authenticate it. The laye
 | LT-26z | The trust helper fails | COULD NOT RUN with the helper's error line, exit 2, not a pass | ✅ |
 | LT-26z2 | `--json` when the trust helper failed | `trust_findings` is `null` (unknown), not `[]` | ✅ |
 
-### `--strict-trust` (#24)
+### `--strict-trust`
 Severity only: with `--strict-trust`, every C4 finding (warning or advisory) and every L1 near-miss actor warning (`Human:dana`) makes the run exit 1. The findings are the same with or without the flag. A `Trust policy FAIL` line follows the trust layer. When no layer failed except the trust policy, the final line reads "FAILED (exit 1) — trust policy failure (--strict-trust)"; with any other layer failing (an L1 or L2 error, staleness, a layer that could not run), that layer's line comes first and the summary does not blame trust alone. No new exit code.
 
 | ID | Scenario | Expected | State |
@@ -1015,7 +1015,7 @@ Severity only: with `--strict-trust`, every C4 finding (warning or advisory) and
 | LT-27j | Trust failure plus a stale failure (`--fail-stale`) | exit 1; the summary does not blame trust alone | ✅ |
 | LT-27k | Trust layer could not run, strict mode | the summary does not read as a plain trust-policy failure | ✅ |
 
-### `--init-house-rules` (#25)
+### `--init-house-rules`
 Without `<bundle>/okf-base.yaml` the L2 house-rules layer is SKIPPED. `okf-check --init-house-rules <bundle>` writes a starter `<bundle>/okf-base.yaml` (the path L2 reads), with the placeholder name set from the folder name (a name with anything but letters, digits, dot, dash, underscore or space falls back to `bundle`; no YAML escaping, by design). It is the ONLY writer of that file; it exits 1 and writes nothing when the file exists (also when it is empty), exits 64 without a usable bundle, and exits non-zero without creating anything when the folder is read-only. The skipped-L2 line names the command. `--json` carries `l2_profile` (`ran`, `skipped`, or `could_not_run` when L2 reached no verdict).
 
 | ID | Scenario | Expected | State |
@@ -1037,7 +1037,7 @@ Without `<bundle>/okf-base.yaml` the L2 house-rules layer is SKIPPED. `okf-check
 | LT-28o | No okflint and no `okf-base.yaml` (found by the Debian run) | the skipped-L2 line names the okflint install AND `okf-check --init-house-rules` | ✅ |
 | LT-28p | `--json` with okflint absent | `"l2_profile":"skipped"` | ✅ |
 
-### GitHub Action and pre-commit entry (#26)
+### GitHub Action and pre-commit entry
 Two thin doors onto `okf-check`; they add no logic, so the verdict is the one Claude Code gets. `action.yml` (repo root) is a composite action: inputs `bundle` (required), `strict-trust` and `fail-stale` (`'true'`/`'false'`, default `'false'`, anything else exits 64); inputs reach the script through `env`, never interpolated into it; the step runs with `shell: bash` (`-eo pipefail`) so `okf-check`'s exit code is the job's. `.pre-commit-hooks.yaml` (repo root) defines hook `okf-check`: `language: script`, entry `plugin/scripts/okf-check`, default `args: ['.']`, `files: '\.md$'`, `pass_filenames: false`. The public example may use GitHub-hosted runners (owner-confirmed exception to the self-hosted-only rule, which covers the private repo). Read from the sources: a root `action.yml` is the composite-action docs' own shape; pre-commit's source (`pre_commit/repository.py` `_hook`, a dict update) makes a user's `args` REPLACE the hook's default, resolves the first token of `entry` from the hook repo root and appends args after it. S22 is run two ways: through a REAL git commit with a hook script that does what pre-commit does for this hook (files selector, no filenames, entry plus args), and, when the tool is installed, end to end by the real pre-commit tool against a hook repo it clones (LT-29n, LT-29o2, LT-29o3; run on pre-commit 4.7.0 on macOS; not run on Linux: UNVERIFIED there). The `files: '\.md$'` selector runs the check whenever any Markdown file is staged (the hook cannot know which Markdown files belong to the bundle); a commit that stages no Markdown file does not run it. A `bundle` input that starts with `-` is refused (exit 64): it would reach `okf-check` as a flag.
 
 | ID | Scenario | Expected | State |
@@ -1063,7 +1063,7 @@ Two thin doors onto `okf-check`; they add no logic, so the verdict is the one Cl
 | LT-29q | Real `git commit` of a draft note with a human verifier | blocked; HEAD unchanged | ✅ |
 | LT-29r | Real `git commit` that stages no `.md` file | the check does not run | ✅ |
 
-### README claims (#27)
+### README claims
 The README states only what was measured or what the pinned files say. `LT-30a`..`LT-30i` compare it with the files that hold the facts (pin file, `VENDOR.md`) and with the tool's own words (`--latest` "may lack"), and forbid a promise of native Windows, a hedge word in a platform claim, and the stale "requires pyyaml" line.
 
 | ID | Scenario | Expected | State |
@@ -1078,7 +1078,7 @@ The README states only what was measured or what the pinned files say. `LT-30a`.
 | LT-30h | Install section | no longer says PyYAML must be installed (it is vendored) | ✅ |
 | LT-30i | Platform claims | no hedge words | ✅ |
 
-### Agent-ready plugin (#29)
+### Agent-ready plugin
 Source: the `plugin-dev` validator and skill-reviewer agents plus Anthropic's pages (plugins-reference: a plugin's `bin/` is on the Bash tool's PATH while the plugin is enabled; the Agent Skills best-practices page: third-person description of what and when, body under 500 lines, references one level deep). `plugin/bin/okf-check` and `plugin/bin/okf-verify` are pass-through wrappers (no logic; they follow a symlink to themselves). `skills/okf/SKILL.md` is the agent-facing document; maintainer detail lives in `references/`, moved verbatim. UNVERIFIED until the T7 reinstall and a new session: that Claude Code really puts `bin/` on PATH (`command -v okf-check`).
 
 | ID | Scenario | Expected | State |
@@ -1108,7 +1108,7 @@ Found by the three release reviewers (integration, spec coverage, claims and sec
 | LT-33a | The Action given an invalid `strict-trust` containing a newline | exit 64; one `::error::` line; the value is not echoed | ✅ |
 | LT-33b | README | says `okflint` (L2) needs Python 3.12 or newer | ✅ |
 
-### YAML alias bomb in L1 and L2 (#31, 0.9.1)
+### YAML alias bomb in L1 and L2
 A small note whose YAML aliases nest describes billions of items; `str()` on such a value took 4 s and 1094 MB on a 7-level bomb and 2.5 GB on a 9-level one in the vendored validator (identical in 0.8.1). One bounded loader (`load_frontmatter` in the vendored validator, reused by `okf-trust.py`) composes the node graph, counts the alias-expanded size with a memo (no expansion) as two separate numbers, items and scalar characters (one 1 MB scalar repeated by 300 aliases is only 302 items but 300 MB), and refuses a document above 1,000,000 items or 10,000,000 characters as an ordinary invalid-YAML error, which L1 reports as a §11.1 error on that note (a warning for the root `index.md`). The trust helper and the derived-staleness scan use the same loader. `okflint` is an external tool that expands the same bomb, so when L1 rejected any note that way, L2 is not run: `COULD NOT RUN`, with the reason. The guard matches the validator's own message, not a note's path. The vendored file therefore carries a LOCAL patch on top of the pinned upstream commit; `VENDOR.md` lists it.
 
 | ID | Scenario | Expected | State |
@@ -1123,6 +1123,15 @@ A small note whose YAML aliases nest describes billions of items; `str()` on suc
 | LT-34g | A note whose PATH contains the words "alias bomb", with an ordinary L1 error | `okflint` still runs | ✅ |
 | LT-35a | The vendored validator, the trust helper and `okf-check` | all parse frontmatter with `load_frontmatter`; no bare `yaml.safe_load` remains | ✅ |
 | LT-35b | `VENDOR.md` | lists the local patch and still names the pinned upstream commit (the literal id is held in the test) | ✅ |
+| LT-42 | L3 fence rule | trailing blanks on a fence are accepted as in L1; a `---` block after the closing fence is body | ✅ |
+| LT-43 | Trust actors | a mixed-script or NFKC-folding look-alike of `human:` is a near-miss; string `verified` and a bare `generated.by` token are read | ✅ |
+| LT-44 | L1/L3 robustness | deep nesting is an L1 error; duplicate keys, an empty `stale_after` and a future `generated.at` are reported | ✅ |
+| LT-45 | `--json` | carries `errors[]`, `stale[]`, `l2_findings[]`, `skipped[]`; valid for any bundle path; one key set on every exit path | ✅ |
+| LT-48 | file walkers | the staleness hook survives a directory name with a newline; an active `.okfignore` keeps notes behind a symlinked directory | ✅ |
+| LT-49 | `--json` L2 counts, L3 lifecycle | `l2_warnings` and `l2_by_rule` carry the text's L2 advisory totals (null when L2 did not run); an unknown `status` is a separate L3 lifecycle line and `lifecycle[]`, never counted as expired, and `--fail-stale` exits 4 only for expired notes | ✅ |
+| LT-50 | `--doctor` search binary | `--doctor` says whether the optional `okf` search binary is present (the doc-reuse closest-notes hint) and what is off without it | ✅ |
+| LT-47 | GitHub Action | warns on 0 concepts and on each skipped layer; `require-house-rules: true` exits 3 when L2 was skipped; other values exit 64 | ✅ |
+| LT-46 | L2 wikilinks | an L001 whose path-qualified target exists is dropped and counted | ✅ |
 
 ## Non-goals
 

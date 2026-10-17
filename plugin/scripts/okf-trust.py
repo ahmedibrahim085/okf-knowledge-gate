@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
 from okf_validate import load_frontmatter, split_frontmatter  # noqa: E402  (the validator's own splitter, so both agree)
 
 # `<producer>/<version>` or an `agent:<id>` actor; `human:` and `process:` are never agents.
-AGENT_FORM = re.compile(r"^(?:agent:\S+|[^\s:/]+/\S+)$")
+AGENT_FORM = re.compile(r"^(?:agent:\S+|[^\s:/]+/\S+|[^\s:/]+)$")   # a bare token (`claudebot`) is an agent too; `team:<id>` is not
 
 
 def as_text(value):
@@ -71,6 +71,8 @@ def findings_for(meta):
     gen_by = as_text(gen.get("by")) if isinstance(gen, dict) else ""
     gen_at = as_instant(gen.get("at")) if isinstance(gen, dict) else None
     ver = meta.get("verified")
+    if isinstance(ver, str):
+        ver = {"by": ver}   # L1 warns that `verified` is not a mapping; the claim itself is still read here
     entries = [ver] if isinstance(ver, dict) else ver
     if not isinstance(entries, list):
         return

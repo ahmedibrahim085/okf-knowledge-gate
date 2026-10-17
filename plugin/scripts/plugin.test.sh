@@ -219,6 +219,7 @@ fi
 # and printed "plugin not installed on this machine" — a check disabling itself
 # and reporting a benign reason, exactly when the manifest it depends on is
 # unreadable. Distinguish "cannot run" from "nothing to compare".
+p10_installed_versions() { ls -d "$1"/*/okf/*/ 2>/dev/null | sed 's#.*/okf/##; s#/$##' | tr '\n' ' '; }
 if [ -z "$pv" ]; then
   bad "P-10 cannot run — no version could be read from plugin.json" \
       "P-9 above explains why; P-10 is NOT a skip here, it is unable to check"
@@ -236,10 +237,21 @@ if [ -n "$CACHE" ] && [ -d "$CACHE/scripts" ]; then
     || bad "P-10 the installed plugin is STALE — users run pre-fix code" \
            "bump the version, then \`claude plugin update okf@<marketplace>\`; drift: $drift"
 elif [ -n "$pv" ]; then
-  # only a genuine "nothing installed to compare against" is a skip; the
-  # unreadable-version case was already reported as a failure above
-  skip "P-10 — plugin not installed on this machine (a skip, not a pass)"
+  # Only a genuine "nothing installed at all" is a skip; the unreadable-version case was reported above. An OLDER okf
+  # in the cache is the commonest stale state (the version was bumped and the plugin never reinstalled): that is a
+  # failure, not a skip (0.9.2 F7).
+  inst=$(p10_installed_versions "$HOME/.claude/plugins/cache")
+  if [ -n "$inst" ]; then
+    bad "P-10 the installed plugin is STALE — only other versions are installed" \
+        "source is $pv, the cache holds: $inst; reinstall: claude plugin uninstall okf@<marketplace> && claude plugin install okf@<marketplace>"
+  else
+    skip "P-10 — plugin not installed on this machine (a skip, not a pass)"
+  fi
 fi
+# P-10b: the cache listing itself, against a fixture cache (the live one above depends on this machine).
+mkdir -p "$TMP_W/p10cache/mk/okf/0.0.1/scripts" "$TMP_W/p10cache/mk/okf/0.0.2/scripts"
+[ "$(p10_installed_versions "$TMP_W/p10cache")" = "0.0.1 0.0.2 " ] && ok "P-10b the cache listing names every installed okf version" || bad "P-10b cache listing" "got '$(p10_installed_versions "$TMP_W/p10cache")'"
+[ -z "$(p10_installed_versions "$TMP_W/p10none")" ] && ok "P-10c an empty cache lists nothing (that is the skip case)" || bad "P-10c empty cache" "listed something"
 
 # W-1/W-2: the extractors themselves, against manifests crafted to break the
 # old sed. Both shapes are legal per the official schema.
@@ -276,7 +288,7 @@ got=$(ver_marketplace "$WF/mkt.json" other)
 
 # Z-2: every non-test file under scripts/ ships to every install, so each one
 # must be reachable from something. graphify_reconcile_ids.py was not: it
-# arrived as a standalone graphify tool in 292dd65 and dcd102b swept the whole
+# arrived as a standalone graphify tool and a later commit swept the whole
 # scripts/ directory into the package, carrying 13 KB of dead weight to every
 # machine. Nothing caught it because nothing was looking.
 #
@@ -318,7 +330,7 @@ done < <(find "$PLUGIN/scripts" -type f -print0 2>/dev/null)
 # Traceability, not correctness: it proves a row is CLAIMED by some assertion,
 # which is what a ✅ asserts. Whether that assertion has teeth is what mutation
 # testing is for.
-# The public export keeps the spec at docs/spec.md (issue #11).
+# The public export keeps the spec at docs/spec.md.
 SPEC="$MKT_ROOT/.okf/specs/okf-check.md"
 [ -f "$SPEC" ] || SPEC="$MKT_ROOT/docs/spec.md"
 if [ ! -f "$SPEC" ]; then
@@ -341,7 +353,7 @@ PY
   fi
 fi
 
-# --- 0.9.0 T5 (#26): GitHub Action + pre-commit entry (cases S19-S22) ---
+# --- 0.9.0 T5: GitHub Action + pre-commit entry (cases S19-S22) ---
 # Both are thin doors onto `okf-check`: they add no logic, so the verdict is the same one Claude Code gets.
 # Platform contracts (docs.github.com composite actions; pre-commit.com "creating new hooks"): the step sets
 # `shell: bash` (runs -eo pipefail), inputs reach the script through env (INPUT_*), GITHUB_ACTION_PATH is
@@ -374,8 +386,8 @@ else
   bad "LT-29a action.yml structure" "$ACT does not exist"; : > "$TMP_W/act_run.sh"
 fi
 # Run the action's own script locally, exactly as the runner does (bash -eo pipefail), with its env contract.
-runact() { # <bundle> <strict> <stale> [action-root]
-  ( cd "$TMP_W" && env INPUT_BUNDLE="$1" INPUT_STRICT_TRUST="$2" INPUT_FAIL_STALE="$3" GITHUB_ACTION_PATH="${4:-$MKT_ROOT}" \
+runact() { # <bundle> <strict> <stale> [action-root] [require-house-rules]
+  ( cd "$TMP_W" && env INPUT_BUNDLE="$1" INPUT_STRICT_TRUST="$2" INPUT_FAIL_STALE="$3" GITHUB_ACTION_PATH="${4:-$MKT_ROOT}" ${5:+INPUT_REQUIRE_HOUSE_RULES="$5"} \
       bash --noprofile --norc -eo pipefail "$TMP_W/act_run.sh" ) >"$TMP_W/act_out.txt" 2>&1
 }
 mkab() { mkdir -p "$1"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$1/index.md"; printf -- '# Log\n\n## 2026-01-01\n* created\n' > "$1/log.md"; }
@@ -433,7 +445,7 @@ PC1="$TMP_W/pc1"; mkab "$PC1"; mkabnote "$PC1" draft agent/1 2099-01-01
 PC2="$TMP_W/pc2"; mkab "$PC2"; mkabnote "$PC2" stable human:t 2099-01-01
 ( cd "$PC2" && "$MKT_ROOT/plugin/scripts/okf-check" . --strict-trust ) >"$TMP_W/pc_out2.txt" 2>&1; rc=$?
 [ "$rc" -eq 0 ] && ok "LT-29m S22-N1 (emulated) a clean bundle lets the commit through" || bad "LT-29m S22-N1" "rc=$rc"
-# Review round 1 (#26). A `bundle` that starts with "-" reaches okf-check as a FLAG: `--doctor`, `--selftest`
+# Review round 1. A `bundle` that starts with "-" reaches okf-check as a FLAG: `--doctor`, `--selftest`
 # and `--help` exit 0, so the job went green without checking anything. Refused before okf-check runs.
 for flagval in --doctor --selftest --help -h; do
   runact "$flagval" false false; rc=$?
@@ -483,7 +495,7 @@ else
   skip "LT-29n S22 end-to-end through the real pre-commit tool — pre-commit is not installed; unlock it with tools/install-dev-deps.sh --yes (UNVERIFIED end-to-end until then)"
 fi
 
-# --- 0.9.0 T6 (#27): README states the platforms and both pins (cases S23, S24) ---
+# --- 0.9.0 T6: README states the platforms and both pins (cases S23, S24) ---
 # A reader should not discover "Windows does not work" or "this rests on two unmerged pull requests" by failure.
 # The commit ids are compared with the files that actually pin them, so the README cannot drift from the pins.
 README="$MKT_ROOT/README.md"
@@ -522,7 +534,7 @@ n_never=$(tr -s '[:space:]' ' ' < "$TMP_W/readme_deps.txt" | grep -o 'never merg
   && ok "LT-30f the README shows the Action and the pre-commit hook, --strict-trust, --init-house-rules and the python3 prerequisite" \
   || bad "LT-30f README usage" "missing: $(for p in 'okf-knowledge-gate@' 'id: okf-check' '--strict-trust' '--init-house-rules'; do grep -q -- "$p" "$README" || printf '%s ' "$p"; done)"
 
-# --- 0.9.0 T8 (#29): the plugin is usable by an AGENT as shipped ---
+# --- 0.9.0 T8: the plugin is usable by an AGENT as shipped ---
 # Anthropic: files in a plugin's bin/ are on the Bash tool's PATH while the plugin is enabled (plugins-reference);
 # Agent Skills best practices: a third-person description saying what and when, a body under 500 lines,
 # references one level deep. The skill is the one document an agent reads, so it must teach what 0.9.0 added.
@@ -565,7 +577,7 @@ nrefs=$(grep -o 'references/[A-Za-z0-9_.-]*\.md' "$SKILL" | sort -u | wc -l | tr
 deep=$(grep -l 'references/' "$PLUGIN"/skills/okf/references/*.md 2>/dev/null || true)
 { [ -z "$ref_bad" ] && [ "$nrefs" -ge 1 ] && [ -z "$deep" ]; } && ok "LT-31g SKILL.md links $nrefs reference file(s), all exist, and none links another reference (one level deep)" || bad "LT-31g references" "missing:$ref_bad count=$nrefs nested:$deep"
 
-# Review round 1 (#29). A PATH entry may be a SYMLINK to the wrapper; resolving the link's own folder broke it (exit 126).
+# Review round 1. A PATH entry may be a SYMLINK to the wrapper; resolving the link's own folder broke it (exit 126).
 SLN="$TMP_W/symlinked"; mkdir -p "$SLN"
 for tool in okf-check okf-verify; do
   ln -sf "$PLUGIN/bin/$tool" "$SLN/$tool"
@@ -591,7 +603,7 @@ nerr=$(grep -c '^::error::' "$TMP_W/act_out.txt")
   || bad "LT-33a echo of the input value" "rc=$rc error lines=$nerr $(grep -n 'injected' "$TMP_W/act_out.txt" | head -1)"
 grep -q 'Python 3.12' "$README" && ok "LT-33b the README says okflint (L2) needs Python 3.12 or newer" || bad "LT-33b README Python" "no mention of Python 3.12"
 
-# --- 0.9.1 B1 (#31): the vendored validator carries a LOCAL patch; it must be documented and must not be lost ---
+# --- 0.9.1 B1: the vendored validator carries a LOCAL patch; it must be documented and must not be lost ---
 VENDF="$PLUGIN/vendor/okf_validate.py"; VMD="$PLUGIN/vendor/VENDOR.md"
 { grep -q 'def load_frontmatter' "$VENDF" && ! grep -q 'yaml\.safe_load(raw)' "$VENDF" && grep -q 'load_frontmatter' "$PLUGIN/scripts/okf-trust.py" && ! grep -q 'yaml\.safe_load(raw)' "$PLUGIN/scripts/okf-trust.py" && grep -q 'load_frontmatter' "$PLUGIN/scripts/okf-check" && ! grep -q 'yaml\.safe_load' "$PLUGIN/scripts/okf-check"; } \
   && ok "LT-35a the bounded loader is in the vendored validator and the trust helper, and no frontmatter is parsed with a bare yaml.safe_load" \
@@ -600,7 +612,7 @@ VENDF="$PLUGIN/vendor/okf_validate.py"; VMD="$PLUGIN/vendor/VENDOR.md"
   && ok "LT-35b VENDOR.md lists the local patch and still names the pinned upstream commit" \
   || bad "LT-35b VENDOR.md" "the local patch is not documented, or the pinned commit is gone"
 
-# --- 0.9.1 B2 (#32): README and release notes, reviewed by a stranger-reader and a facts-reader ---
+# --- 0.9.1 B2: README and release notes, reviewed by a stranger-reader and a facts-reader ---
 # A claim is only as good as what backs it: the sample on the README's first screen is REAL output (compared line
 # by line with a fresh run), the exit table says what exit 0 really covers, and the release notes do not claim
 # a fix that was not in the release.
@@ -655,7 +667,7 @@ latest_rel=$(grep -o '^## \[[0-9][0-9.]*\]' "$CL" | head -1 | tr -d '#[] '); pre
 first_latest=$(sec "$latest_rel" | awk 'NF{print; exit}')
 case "$first_latest" in '#'*|'-'*|'') bad "LT-37e the latest release opens with a plain summary sentence" "first line: '$first_latest'";; *) ok "LT-37e the latest release ($latest_rel) opens with a plain summary sentence";; esac
 
-# --- 0.9.1 B3 (#33): the demo GIF is embedded with alt text that says what it shows, and the file ships ---
+# --- 0.9.1 B3: the demo GIF is embedded with alt text that says what it shows, and the file ships ---
 alt=$(grep -o '!\[[^]]*\](docs/demo\.gif)' "$README" | head -1 | sed 's/^!\[//; s/\](docs\/demo\.gif)$//')
 { [ "${#alt}" -ge 60 ] && [ -f "$MKT_ROOT/docs/demo.gif" ]; } && ok "LT-38 the README embeds docs/demo.gif with alt text that describes it (${#alt} chars) and the file exists" || bad "LT-38 demo embed" "alt='${alt}' file=$([ -f "$MKT_ROOT/docs/demo.gif" ] && echo yes || echo no)"
 
@@ -666,14 +678,15 @@ latest_rel=$(grep -o '^## \[[0-9][0-9.]*\]' "$MKT_ROOT/CHANGELOG.md" | head -1 |
 tags=$(grep -oE '(okf-knowledge-gate@v|rev: v)[0-9.]+' "$README" | grep -oE 'v[0-9.]+$' | sort -u | tr '\n' ' ')
 { [ -n "$latest_rel" ] && [ "$tags" = "v$latest_rel " ]; } && ok "LT-37f the README's @v / rev: v example tags equal the latest released version in the CHANGELOG (v$latest_rel)" || bad "LT-37f README example tags" "CHANGELOG latest=$latest_rel, README tags='$tags'"
 
-# --- final review (#36): version pins outside the README, wording that a clean run falsifies, hook scope ---
+# --- final review: version pins outside the README, wording that a clean run falsifies, hook scope ---
 SKILL_MD="$PLUGIN/skills/okf/SKILL.md"
 other=$(grep -hoE '(okf-knowledge-gate@v|rev: v)[0-9.]+' "$SKILL_MD" "$MKT_ROOT/.pre-commit-hooks.yaml" | grep -oE 'v[0-9.]+$' | sort -u | tr '\n' ' ')
 { [ -n "$latest_rel" ] && [ "$other" = "v$latest_rel " ]; } && ok "LT-41a the skill's @v pin and the pre-commit hook's rev: comment equal the latest released version (v$latest_rel)" || bad "LT-41a version pins outside the README" "CHANGELOG latest=$latest_rel, found='$other'"
 ! tr -s '[:space:]' ' ' < "$README" | grep -q 'says so on every run' \
   && ok "LT-41b the README does not claim the Trust layer speaks 'on every run' (a clean run prints no such note)" || bad "LT-41b README on every run" "claim present"
-tr -s '[:space:]' ' ' < "$SKILL_MD" | grep -Eq -- '--json.{1,4} carries the verdict only' \
-  && ok "LT-41c the skill says --json carries the verdict only, not the failing notes" || bad "LT-41c skill --json scope" "sentence missing"
+jsonkeys=$(tr -s '[:space:]' ' ' < "$SKILL_MD" | grep -o -- '--json.\{1,4\} carries the verdict[^.]*' | head -1)
+{ for k in 'errors\[\]' 'l2_findings\[\]' 'stale\[\]' 'skipped\[\]'; do printf '%s' "$jsonkeys" | grep -q "$k" || exit 1; done; } \
+  && ok "LT-41c the skill names the --json finding lists (errors, l2_findings, stale, skipped)" || bad "LT-41c skill --json scope" "sentence missing or incomplete: $jsonkeys"
 ! grep -q 'refuses to say .ALL GATES PASS' "$SKILL_MD" \
   && ok "LT-41d the skill does not claim ALL GATES PASS is refused while a layer is skipped (an opted-out L2 index still passes)" || bad "LT-41d skill ALL GATES PASS claim" "claim present"
 hf=$(grep -E "^  files:" "$MKT_ROOT/.pre-commit-hooks.yaml")
@@ -682,7 +695,7 @@ hf=$(grep -E "^  files:" "$MKT_ROOT/.pre-commit-hooks.yaml")
 cl_ver=$(grep -o '^## \[[0-9][0-9.]*\] - [0-9-]*' "$MKT_ROOT/CHANGELOG.md" | head -1)
 case "$cl_ver" in *' - 20'*) ok "LT-37g the latest CHANGELOG section is dated ($cl_ver)";; *) bad "LT-37g dated release section" "latest section: '$cl_ver'";; esac
 
-# --- 0.9.1 B5 (#35): the README is a funnel (what, demo, WHY use it, contents, install, use, tools, ... licence last) ---
+# --- 0.9.1 B5: the README is a funnel (what, demo, WHY use it, contents, install, use, tools, ... licence last) ---
 # Structure from primary sources read 2026-10-17 (GitHub Docs "About READMEs", makeareadme.com, the standard-readme spec,
 # opensource.guide; ruff, shellcheck and gitleaks as examples): what the project does and why it is useful come first,
 # a Contents list is required past 100 lines, Install carries the dependencies, the licence is last.
@@ -751,6 +764,26 @@ chk "GitHub Actions" 'composite' "$MKT_ROOT/action.yml"
 [ -d "$PLUGIN/vendor/pyyaml" ] || { tools_ok=0; miss="$miss PyYAML"; }
 [ -f "$PLUGIN/vendor/okf_validate.py" ] || { tools_ok=0; miss="$miss okf-skills"; }
 [ "$tools_ok" -eq 1 ] && ok "LT-40 every tool the README's Tools table names is used by the repo (okflint, uv, git, pre-commit, jq, the Action, the vendored PyYAML and validator)" || bad "LT-40 Tools table vs the repo" "not found in the repo:$miss"
+
+# --- LT-47 (0.9.2 F6, #43): the Action says when nothing, or less than everything, was checked ---------------------
+# A job was green for an empty or mistyped bundle path and on a runner without okflint (exit 0, "0 concepts", L2 SKIPPED).
+AB5="$TMP_W/ab5_empty"; mkab "$AB5"
+runact "$AB5" false false; rc=$?
+{ [ "$rc" -eq 0 ] && grep -q '^::warning::.*0 concepts' "$TMP_W/act_out.txt"; } \
+  && ok "LT-47a a bundle with 0 concepts still exits 0 but the job log carries a ::warning:: that nothing was checked" \
+  || bad "LT-47a empty bundle warning" "rc=$rc $(grep -n 'warning\|concepts' "$TMP_W/act_out.txt" | head -2 | tr '\n' ' ')"
+runact "$AB1" false false; rc=$?
+{ [ "$rc" -eq 0 ] && grep -q '^::warning::.*skipped.*L2 profile' "$TMP_W/act_out.txt"; } \
+  && ok "LT-47b a skipped layer (no okf-base.yaml / no okflint) exits 0 with a ::warning:: that names the layer" \
+  || bad "LT-47b skipped-layer warning" "rc=$rc $(grep -n 'warning\|SKIPPED' "$TMP_W/act_out.txt" | head -2 | tr '\n' ' ')"
+runact "$AB1" false false "$MKT_ROOT" true; rc=$?
+{ [ "$rc" -eq 3 ] && grep -q '^::error::.*house rules' "$TMP_W/act_out.txt"; } \
+  && ok "LT-47c require-house-rules: true fails the job (exit 3) with an ::error:: when L2 was skipped" \
+  || bad "LT-47c require-house-rules" "rc=$rc $(grep -n 'error\|SKIPPED' "$TMP_W/act_out.txt" | head -2 | tr '\n' ' ')"
+runact "$AB1" false false "$MKT_ROOT" yes; rc=$?
+{ [ "$rc" -eq 64 ] && grep -q "require-house-rules must be 'true' or 'false'" "$TMP_W/act_out.txt"; } \
+  && ok "LT-47d a require-house-rules value other than true/false is refused (exit 64)" \
+  || bad "LT-47d invalid require-house-rules" "rc=$rc $(head -1 "$TMP_W/act_out.txt")"
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then
