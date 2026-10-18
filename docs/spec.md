@@ -1167,7 +1167,7 @@ okf-check's own options live in ONE `okf_check:` block of `okf-base.yaml`; each 
 | LT-51a | S4-N1: an unknown key inside `okf_check:` | exit 2; the output names `okf_check.<key>` | ✅ |
 | LT-51b | S4-H1: a valid `okf_check:` block, real `okflint` | `l2_profile`, `l2_warnings` and `l2_by_rule` equal the run without the block (SKIPPED when `okflint` is absent) | ✅ |
 | LT-51c | S4-E1: no `okf_check:` block | text and `--json` output and exit code byte-identical to the same build with the okf_check step deleted | ✅ |
-| LT-52 | One table of `okf_check:` shapes (valid, wrong type, null, list, typo'd key, unknown entry key, empty path, invalid UTF-8, invalid YAML; `deprecated_requires` valid, typo'd, a list and null; `require_owner`/`owners` valid, a string for the boolean, a list, an int or empty owner, and `owners` without `require_owner: true`; `duplicates` valid, out of bounds, a string, zero and a typo'd key) to BOTH tools | both exit 0 on a valid block; both exit 2 on an invalid one, and `okf-check` shows `okf-verify`'s message | ✅ |
+| LT-52 | One table of `okf_check:` shapes (valid, wrong type, null, list, typo'd key, unknown entry key, empty path, invalid UTF-8, invalid YAML; `deprecated_requires` valid, typo'd, a list and null; `require_owner`/`owners` valid, a string for the boolean, a list, an int or empty owner, and `owners` without `require_owner: true`; `duplicates` valid, out of bounds, a string, zero and a typo'd key; `body_threshold` valid and out of bounds) to BOTH tools | both exit 0 on a valid block; both exit 2 on an invalid one, and `okf-check` shows `okf-verify`'s message | ✅ |
 
 ### `--selftest` covers every layer (#59, 0.9.6)
 `--selftest` has a probe for each layer: L0 (the doctor, pointed at a validator path that does not exist, must say `MISSING`), L1, L2 profile, L2 index (an `index.md` that declares 5 notes for the 1-note baseline; the original `index.md` is put back), Trust, L3 staleness and L3 derived staleness (a note that records the baseline note as of 2000-01-01). Each new probe is proven by a plugin copy with that layer disabled: `--selftest` then reports `NOT FIRED` (the Gherkin "did not fire") and exits 5. Without `okflint` the L2 profile probes are SKIPPED with the reason, and the verdict line names the skipped layer instead of "every gate still fires"; the exit stays 0, as for a skipped layer in a check.
@@ -1240,6 +1240,21 @@ The threshold default is **1.0** (identical description word sets only). It was 
 | LT-56m | a plugin without `okf_notes.py` (the note reader the successor, owner and duplicates rules share) | exit 2 naming the file; the rules never switch themselves off | ✅ |
 | LT-56n | `--selftest` | a `Duplicates (--duplicates)` probe fires on a note titled like the baseline note; a copy with the title signal disabled reports `NOT FIRED` and exits 5 | ✅ |
 | LT-56o | a BOM-prefixed note with the same title | listed (the shared `okf_notes.py` reader decodes `utf-8-sig`, as L1 does) | ✅ |
+
+### `--duplicates-body`: similar bodies (#70, public #10, 0.9.10)
+`okf-check <bundle> --duplicates-body` is `--duplicates` plus a `body` signal: the Jaccard of the two bodies' 5-word shingle sets (after the same normalization as titles) at or above `okf_check.duplicates.body_threshold` (default **0.6**). Candidates come from MinHash signatures (64 permutations of one 64-bit hash, seeded, so a run is repeatable) in 32 bands of 2 rows, which a pair at J=0.3 reaches with probability 0.95 and at 0.5 with 1.00; each candidate is then checked exactly, so the banding can miss a pair close to the threshold but never invents one. A pair already listed by a stronger signal, or linked by `superseded_by`, is not listed again. The same `time_limit` applies, with `CUT SHORT`. The default 0.6 is measured on bodies: the 24 body pairs a 0.3 run found in one live vault plus 20 random pairs with 0 < body overlap < 0.3, labelled DUP/NOT by a fresh-context agent blind to scores. At 0.3, 12 of 24 were DUP (precision 0.50); every NOT was at or below 0.57 and every pair from 0.62 up was DUP, so 0.6 is the lowest threshold with precision ≥ 0.8 (5 of 5, 1.00); all 20 controls were NOT. On the #69 sample 0.6 also has precision 1.00 (43 of 43). The labels are agent-made, so the figures are INFERRED-grade.
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-57a | S7-E3: two notes whose bodies share a long paragraph | `body 0.xx` listed; exit 0 | ✅ |
+| LT-57b | the same notes with plain `--duplicates` | not compared, not listed | ✅ |
+| LT-57c | `body_threshold: 0.95` | the pair below it is not listed | ✅ |
+| LT-57f | `body_threshold: 0.3`, a body pair at 0.3-0.5 | found by the banding (8 bands of 4 rows missed it) | ✅ |
+| LT-57g | the same pair, no option | not listed: the default body_threshold is 0.6 | ✅ |
+| LT-57d | S7-E3: 1,000 notes of 200 words | complete within the 60 s default | ✅ |
+| LT-57e | S7-E3: the limit reached | `CUT SHORT`; exit 0 | ✅ |
+| LT-57h | `--selftest` | a `Duplicates (--duplicates-body)` probe fires on a note whose body equals the baseline note's; a copy with the body signal disabled reports `NOT FIRED` and exits 5 | ✅ |
+| LT-57i | a BOM-prefixed note with the same body | `body 1.00` (the body is read after the frontmatter, `utf-8-sig`) | ✅ |
 
 ## Non-goals
 

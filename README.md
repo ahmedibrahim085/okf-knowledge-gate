@@ -22,7 +22,7 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 - **One verdict you can gate on.** `okf-check` runs every layer. Exit 1 means "not valid", exit 2 means "could not run",
   and a skipped layer is printed as SKIPPED and never shown as PASS (the exit code stays 0, and the verdict line reports
   a skipped layer). `--selftest` plants one defect in each of L0 (doctor), L1, L2 (profile), L2 (index), Trust,
-  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule and `--duplicates` and fails if a gate misses it. Without `okflint` the L2 profile probes are
+  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule, `--duplicates` and `--duplicates-body` and fails if a gate misses it. Without `okflint` the L2 profile probes are
   SKIPPED, and the verdict line names them.
 - **The same check in three places.** Claude Code (hooks, plus a skill an agent reads), a GitHub Action, and a pre-commit
   hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)).
@@ -103,6 +103,7 @@ okf-check <bundle> --strict-trust  # unauthenticated human verification and near
 okf-check <bundle> --fail-on-change   # exit 6 if the bundle changes during the scan
 okf-check <bundle> --json          # machine-readable summary
 okf-check <bundle> --duplicates    # list candidate duplicate notes (a report, always exit 0)
+okf-check <bundle> --duplicates-body   # the same, plus notes whose bodies are similar
 okf-check --doctor                 # what is installed, and does okflint behave
 okf-check --selftest               # re-prove every gate still fires
 okf-check --init-ignore <bundle>   # write a starter .okfignore (never automatic, never overwrites)
@@ -191,6 +192,9 @@ above `okf_check.duplicates.threshold` (default `1.0`, identical word sets; on o
 flagged templated series, not duplicates). Each pair shows the signal and score, both statuses, `generated.at` and
 owners. Pairs linked by `superseded_by` are skipped. It is a report, not a gate: exit 0. It stops at
 `okf_check.duplicates.time_limit` seconds (default 60) and says `CUT SHORT` if it did. `--json` gives `duplicates[]`.
+`--duplicates-body` adds pairs whose bodies share 5-word shingles at or above `okf_check.duplicates.body_threshold`
+(default `0.6`; on our labelled live sample, 0.3 flagged as many unrelated notes as duplicates), found with MinHash
+and then checked exactly, within the same time limit.
 
 **Environment variables** (all optional):
 
@@ -218,7 +222,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.9
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.10
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -234,7 +238,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.9
+    rev: v0.9.10
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

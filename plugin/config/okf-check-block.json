@@ -16,10 +16,11 @@
     "require_owner": {"type": "boolean"},
     "owners": {"map": {"type": "string"}, "key_no_prefix": "!", "requires": {"require_owner": true}},
     "duplicates": {
-      "_comment": "threshold 1.0: on the #69 labelled sample (101 pairs, agent-labelled) no description overlap below 1.0 reached precision 0.8. time_limit in seconds.",
+      "_comment": "threshold 1.0: on the #69 labelled sample (101 pairs, agent-labelled) no description overlap below 1.0 reached precision 0.8. body_threshold 0.6 (#70): on the 24 live body pairs of one vault, blind-labelled, 0.3 had precision 0.50 and 0.6 had 1.00 (every NOT at or below 0.57). time_limit in seconds.",
       "keys": {
         "threshold": {"type": "number", "min": 0.1, "max": 1, "default": 1.0},
-        "time_limit": {"type": "number", "min": 1, "max": 3600, "default": 60}
+        "time_limit": {"type": "number", "min": 1, "max": 3600, "default": 60},
+        "body_threshold": {"type": "number", "min": 0.1, "max": 1, "default": 0.6}
       }
     }
   }

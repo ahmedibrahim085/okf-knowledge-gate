@@ -2981,6 +2981,9 @@ par dup-high      err 'okf_check:\n  duplicates:\n    threshold: 1.5\n'
 par dup-str       err 'okf_check:\n  duplicates:\n    time_limit: soon\n'
 par dup-zero      err 'okf_check:\n  duplicates:\n    time_limit: 0\n'
 par dup-unknown   err 'okf_check:\n  duplicates:\n    treshold: 0.6\n'
+par dup-body      ok  'okf_check:\n  duplicates:\n    body_threshold: 0.3\n'
+par dup-body-06   ok  'okf_check:\n  duplicates:\n    body_threshold: 0.6\n'
+par dup-body-high err 'okf_check:\n  duplicates:\n    body_threshold: 2\n'
 # an alias bomb in okf-base.yaml: both tools go through the bounded loader (LT-35a forbids a bare yaml.safe_load), so it is a YAML error, not a hang
 BOMB52=$("$REALPY" -c 'print("x0: &a0 [x,x,x,x,x,x,x,x,x]"); [print("x%d: &a%d [%s]" % (i, i, ",".join(["*a%d" % (i - 1)] * 9))) for i in range(1, 8)]')
 par alias-bomb    err "okf_check: {}\n$BOMB52\n"
@@ -3375,6 +3378,82 @@ printf '\357\273\277---\ntype: Lesson\ntitle: Deploy rule\ndescription: Two\nsta
 "$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
 { [ "$rcl" -eq 0 ] && grep -Eq 'title 1\.00 +a\.md .* ~ +bom\.md' "$D.txt"; } \
   && ok "LT-56o a BOM-prefixed note with the same title is listed" || bad "LT-56o BOM note" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+
+# --- LT-57 (0.9.10, #70, case S7-E3): --duplicates-body adds pairs whose bodies are similar (MinHash, time-boxed) ---------
+# body57 <file> <title> <description> <body> — a stable Lesson with that body.
+body57() { printf -- '---\ntype: Lesson\ntitle: %s\ndescription: %s\nstatus: stable\nstale_after: "2099-01-01"\n---\n%s\n' "$2" "$3" "$4" > "$1"; }
+P57="Run the migration on a copy of the production database first, check the row counts against the source tables, keep the old schema for one release, and only then drop the columns the new code no longer reads."
+mk56 e3; D="$TMP/lt56-e3"
+body57 "$D/a.md" "Migrations" "How we change tables" "$P57 Ask the data owner before you start."
+body57 "$D/b.md" "Schema changes" "Rules for altering columns" "$P57 Write the rollback down in the ticket."
+"$CHECK" "$D" --duplicates-body >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -Eq 'body 0\.[0-9]+ +a\.md .* ~ +b\.md' "$D.txt"; } \
+  && ok "LT-57a S7-E3 --duplicates-body adds a pair whose bodies share most of their text (exit 0)" \
+  || bad "LT-57a S7-E3 body pair" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1
+grep -q 'no candidate duplicates' "$D.txt" && ok "LT-57b plain --duplicates does not compare bodies" || bad "LT-57b plain --duplicates" "$(head -4 "$D.txt" | tr '\n' ' ')"
+printf 'okf_check:\n  duplicates:\n    body_threshold: 0.95\n' >> "$D/okf-base.yaml"
+"$CHECK" "$D" --duplicates-body >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -q 'no candidate duplicates' "$D.txt"; } \
+  && ok "LT-57c okf_check.duplicates.body_threshold is honoured: a pair below 0.95 is not listed" || bad "LT-57c body_threshold" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# Banding recall at body_threshold 0.3 (set explicitly): two bodies sharing about a third of their shingles are found.
+mk56 e3n '  duplicates:\n    body_threshold: 0.3\n'; D="$TMP/lt56-e3n"
+body57 "$D/a.md" "Release notes" "One" "$P57 alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima mike november oscar papa quebec romeo sierra tango uniform victor whiskey xray yankee zulu"
+body57 "$D/b.md" "Upgrade steps" "Two" "$P57 one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twentyone twentytwo twentythree twentyfour twentyfive twentysix"
+"$CHECK" "$D" --duplicates-body >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -Eq 'body 0\.(3[0-9]|4[0-9]) +a\.md' "$D.txt"; } \
+  && ok "LT-57f with body_threshold 0.3 a body pair at 0.3-0.5 is found by the banding" \
+  || bad "LT-57f body recall near the threshold" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# The default body_threshold is 0.6: on 24 live body pairs, blind-labelled, 0.3 had precision 0.50 and 0.6 had 1.00
+# (every NOT at or below 0.57). The same 0.3-0.5 pair is not listed without the option.
+cp "$HERE/../config/okf-base.yaml.template" "$D/okf-base.yaml"
+"$CHECK" "$D" --duplicates-body >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -q 'no candidate duplicates' "$D.txt"; } \
+  && ok "LT-57g without the option body_threshold is 0.6: a 0.3-0.5 body pair is not listed" \
+  || bad "LT-57g default body_threshold" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# S7-E3 "time-boxed": 1,000 notes with bodies complete within the 60 s default; a reached limit says CUT SHORT.
+mk56 e3k; D="$TMP/lt56-e3k"
+"$REALPY" - "$D" <<'PY'
+import random, sys
+r = random.Random(70); words = ["w%d" % i for i in range(3000)]
+for i in range(1000):
+    body = " ".join(r.choice(words) for _ in range(200))
+    open("%s/n%04d.md" % (sys.argv[1], i), "w").write('---\ntype: Lesson\ntitle: Note %d\ndescription: Item %d\nstatus: stable\nstale_after: "2099-01-01"\n---\n%s\n' % (i, i, body))
+PY
+t0=$SECONDS; "$CHECK" "$D" --duplicates-body >"$D.txt" 2>&1; rcl=$?; el=$((SECONDS - t0))
+{ [ "$rcl" -eq 0 ] && [ "$el" -lt 60 ] && ! grep -q 'CUT SHORT' "$D.txt"; } \
+  && ok "LT-57d S7-E3 --duplicates-body on 1,000 notes of 200 words completes within the 60 s default (${el} s here)" \
+  || bad "LT-57d S7-E3 1,000 bodies" "rc=$rcl ${el}s $(head -3 "$D.txt" | tr '\n' ' ')"
+OKF_DUP_TIME_LIMIT=0.000001 "$CHECK" "$D" --duplicates-body >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -q 'CUT SHORT' "$D.txt"; } \
+  && ok "LT-57e S7-E3 a --duplicates-body run that reaches the limit says CUT SHORT, exit 0" || bad "LT-57e cut short" "rc=$rcl $(head -3 "$D.txt" | tr '\n' ' ')"
+# --selftest has a Duplicates-body probe (project rule): a note whose body equals the baseline note's must be listed.
+"$CHECK" --selftest >"$TMP/lt57h.txt" 2>&1; rcl=$?
+L57=$(grep -A1 '^  Duplicates (--duplicates-body):' "$TMP/lt57h.txt" | grep -c 'FIRED  *same body')
+r=$(lt55_dead body 's/            if jb >= body_threshold:/            if False:/' okf-duplicates.py)
+{ [ "$rcl" -eq 0 ] && [ "$L57" -eq 1 ] && [ "$r" = "rc=5" ] && grep -A1 '^  Duplicates (--duplicates-body):' "$TMP/lt55-body.txt" | grep -q 'NOT FIRED'; } \
+  && ok "LT-57h --selftest has a Duplicates-body probe that fires, and a copy with the body signal disabled reports NOT FIRED and exits 5" \
+  || bad "LT-57h Duplicates-body selftest probe" "healthy rc=$rcl fired=$L57; crippled $r $(grep -n 'Duplicates\|SELFTEST' "$TMP/lt55-body.txt" 2>/dev/null | tr '\n' ' ')"
+# A BOM-prefixed note's body is its text after the frontmatter, as for any note.
+mk56 e3b; D="$TMP/lt56-e3b"
+body57 "$D/a.md" "Migrations" "How we change tables" "$P57"
+printf '\357\273\277---\ntype: Lesson\ntitle: Schema changes\ndescription: Rules for altering columns\nstatus: stable\nstale_after: "2099-01-01"\n---\n%s\n' "$P57" > "$D/b.md"
+"$CHECK" "$D" --duplicates-body >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -Eq 'body 1\.00 +a\.md .* ~ +b\.md' "$D.txt"; } \
+  && ok "LT-57i a BOM-prefixed note with the same body is a body 1.00 pair (its frontmatter is not counted as body)" \
+  || bad "LT-57i BOM body" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# LT-57j (0.9.10 review, HIGH): a symlink alias of a note is the same note, not a body duplicate of its target.
+mk56 e3l; D="$TMP/lt56-e3l"; body57 "$D/a.md" "Alias" "One" "$P57"; ln -s a.md "$D/alias.md"
+"$CHECK" "$D" --duplicates-body >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -q 'no candidate duplicates' "$D.txt"; } \
+  && ok "LT-57j a symlink alias of a note is not a body duplicate of its target" \
+  || bad "LT-57j symlink alias body" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# LT-57k (0.9.10 review, HIGH): a .md entry that cannot be read (dangling symlink, a directory) is skipped, not a crash: the report is advisory, exit 0.
+mk56 e3u; D="$TMP/lt56-e3u"; body57 "$D/a.md" "Alpha" "One" "$P57"; ln -s missing.md "$D/broken.md"; mkdir -p "$D/dir.md"
+"$CHECK" "$D" --duplicates-body >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -q 'no candidate duplicates' "$D.txt" && ! grep -q Traceback "$D.txt"; } \
+  && ok "LT-57k a dangling symlink and a directory named x.md are skipped by --duplicates-body (exit 0)" \
+  || bad "LT-57k unreadable .md entry" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

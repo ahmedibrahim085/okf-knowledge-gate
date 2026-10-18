@@ -48,10 +48,11 @@
 #                                          findings are the same with or without the flag.
 #   okf-check <bundle> --fail-on-change    make a mid-scan change blocking (exit 6)
 #   okf-check <bundle> --duplicates        list candidate duplicate notes (advisory: exit 0)
+#   okf-check <bundle> --duplicates-body   the same, plus notes whose bodies are similar (MinHash, time-boxed)
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.9"
+VERSION="0.9.10"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -114,7 +115,7 @@ py_with_vendor() {  # run $PY with the vendored PyYAML visible to IT ONLY
 PINS="${OKF_PINNED_VERSIONS:-$ROOT/config/pinned-versions.txt}"
 TEMPLATE="$ROOT/config/okf-base.yaml.template"
 
-BUNDLE=""; MODE="check"; JSON=0; FAIL_STALE=0; STRICT_TRUST=0; ASSUME_YES=0; USE_LATEST=0
+BUNDLE=""; MODE="check"; DUP_BODY=0; JSON=0; FAIL_STALE=0; STRICT_TRUST=0; ASSUME_YES=0; USE_LATEST=0
 for a in "$@"; do
   case "$a" in
     --doctor)      MODE="doctor" ;;
@@ -125,6 +126,7 @@ for a in "$@"; do
     --fail-on-change) FAIL_ON_CHANGE=1 ;;
     --fingerprint) MODE="fingerprint" ;;
     --duplicates)  MODE="duplicates" ;;
+    --duplicates-body) MODE="duplicates"; DUP_BODY=1 ;;
     --preflight)   MODE="preflight" ;;
     --init-ignore) MODE="init-ignore" ;;
     --init-house-rules) MODE="init-house-rules" ;;
@@ -957,7 +959,7 @@ run_duplicates() {
   # .okfignore: the notes it leaves in, NUL-separated, as the L3 derived layer reads them (OKF_KEEP_LIST).
   local keep=""
   if [ -f "$bundle/.okfignore" ]; then okfignore_list "$bundle" > "$TMP/dup-keep.lst" 2>/dev/null && keep="$TMP/dup-keep.lst"; fi
-  OKF_KEEP_LIST="$keep" OKF_OWNERS_TSV="$TMP/owners.tsv" OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor "$HERE/okf-duplicates.py" "$bundle" "$ROOT/config/okf-check-block.json" "$JSON"
+  OKF_KEEP_LIST="$keep" OKF_OWNERS_TSV="$TMP/owners.tsv" OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor "$HERE/okf-duplicates.py" "$bundle" "$ROOT/config/okf-check-block.json" "$JSON" "$DUP_BODY"
   rc=$?
   [ "$rc" -eq 0 ] || { say "  Duplicates       COULD NOT RUN — okf-duplicates.py exited $rc"; return $EXIT_DEP; }
   return 0
@@ -1669,6 +1671,11 @@ selftest() {
   # A note titled like the baseline note (good.md, "Baseline") must be listed as a same-title pair (#69).
   _dup_probe() { local DUP_BODY=0; run_duplicates "$1"; }
   probe "same title" "title 1.00" _dup_probe "bad.md" '---\ntype: Lesson\ntitle: baseline!\ndescription: Another text.\nstatus: stable\nstale_after: "2099-01-01"\n---\nother body\n'
+
+  say "  Duplicates (--duplicates-body):"
+  # A note whose body equals the baseline note's ("body") must be listed as a body pair (#70).
+  _body_probe() { local DUP_BODY=1; run_duplicates "$1"; }
+  probe "same body" "body 1.00" _body_probe "bad.md" '---\ntype: Lesson\ntitle: Other\ndescription: Another text.\nstatus: stable\nstale_after: "2099-01-01"\n---\nbody\n'
 
   say ""
   # A skipped probe is a gate nobody watched fire: the verdict names it instead of saying "every gate" (S3-E1).

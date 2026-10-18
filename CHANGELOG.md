@@ -9,6 +9,15 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.10] - 2026-10-18
+
+OKF Knowledge Gate 0.9.10 finds notes whose bodies are near copies, with `--duplicates-body`.
+
+### Added
+- **`okf-check <bundle> --duplicates-body`.** The same report as `--duplicates`, plus pairs of notes whose bodies share 5-word shingles at or above `okf_check.duplicates.body_threshold` (default `0.6`: on a blind-labelled sample of 24 live body pairs, 0.3 had precision 0.50 and 0.6 had 1.00). Candidates come from MinHash signatures with LSH banding, and the exact Jaccard of the shingle sets decides. It is advisory and time-boxed like `--duplicates`: exit 0, `CUT SHORT` when the limit was hit, `--json` `duplicates[]`. A note that starts with a byte order mark is counted by its body, not its frontmatter.
+- **A symlink alias of a note is not a body duplicate of its target, and an unreadable `.md` entry** (a dangling symlink, a folder named `x.md`) **is skipped.** Both were found in review: the first listed a note against itself, the second stopped the report with exit 2.
+- **`--selftest` probes `--duplicates-body`**, and a crippled copy exits 5.
+
 ## [0.9.9] - 2026-10-18
 
 OKF Knowledge Gate 0.9.9 lists candidate duplicate notes, so a maintainer can deprecate one of a pair.
@@ -436,7 +445,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.9...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.10...HEAD
+[0.9.10]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.6...v0.9.7
