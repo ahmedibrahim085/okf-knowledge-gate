@@ -22,7 +22,7 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 - **One verdict you can gate on.** `okf-check` runs every layer. Exit 1 means "not valid", exit 2 means "could not run",
   and a skipped layer is printed as SKIPPED and never shown as PASS (the exit code stays 0, and the verdict line reports
   a skipped layer). `--selftest` plants one defect in each of L0 (doctor), L1, L2 (profile), L2 (index), Trust,
-  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule, `wikilink_root`, `--duplicates` and `--duplicates-body` and fails if a gate misses it. Without `okflint` the L2 profile probes are
+  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule, the Size rule, `wikilink_root`, `--duplicates` and `--duplicates-body` and fails if a gate misses it. Without `okflint` the L2 profile probes are
   SKIPPED, and the verdict line names them.
 - **The same check in three places.** Claude Code (hooks, plus a skill an agent reads), a GitHub Action, and a pre-commit
   hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)).
@@ -159,7 +159,7 @@ Read the exit code, do not just test for zero:
 | Exit | Meaning |
 |---|---|
 | 0 | No gate failed. Skipped layers and warnings print above the verdict: read them |
-| 1 | L1: the bundle is not conformant OKF, or (with `--strict-trust`) a trust policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite an existing file |
+| 1 | L1: the bundle is not conformant OKF, an `okf_check` house-rule error (`deprecated_requires`, `require_owner`, a body above `size.max_body_chars`), or (with `--strict-trust`) a trust policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite an existing file |
 | 2 | A gate could not run. Never treat as a pass |
 | 3 | L2: house rules broken, or `index.md` miscounts |
 | 4 | L3: stale concepts (with `--fail-stale`) |
@@ -176,7 +176,7 @@ file by itself.
 `okf-verify` check it against one schema, `plugin/config/okf-check-block.json`: a key it does not know, or a value of the
 wrong shape, exits 2 and names the key, so a typo cannot switch an option off without a word. Known keys: `verify`
 (read by `okf-verify`; `repos` is a list of `path:` entries), `deprecated_requires`, `require_owner`, `owners`,
-`duplicates`, `wikilink_root` and `edit_hook` (`true` turns the edit hook on for this bundle; a boolean, so a string
+`size`, `duplicates`, `wikilink_root` and `edit_hook` (`true` turns the edit hook on for this bundle; a boolean, so a string
 such as `"on"` is refused).
 
 ```yaml
@@ -220,6 +220,24 @@ okf_check:
   wikilink_root: ../../..
 ```
 
+`size`: a body-size budget per note, for notes that agents read whole inside a fixed context window. `max_body_chars`
+and `warn_body_chars` are optional whole numbers from 1, and the warning limit must be below the maximum (else exit 2,
+naming the key). The measure is the BODY only, the text after the frontmatter's closing `---` line (a long `verified:`
+block does not count), in characters, not bytes or tokens: a two-byte letter is one, a CRLF line break is one, a BOM is
+none, and the final newline counts. A note with no frontmatter is all body. A body above `max_body_chars` is a house-rule
+error (exit 1, like `require_owner`); above `warn_body_chars` it is a warning (exit 0, counted as an advisory in the
+verdict). Each finding names the note, its size and the limit, and says to split the note or move a section to a
+companion note, not to compress it. `index.md` and `log.md` are measured like any note (a log only grows); leave a
+note out with `.okfignore`. A note that is not valid UTF-8 is reported by L1 only. Findings are in the text and, for
+errors, in `--json` `errors[]`.
+
+```yaml
+okf_check:
+  size:
+    max_body_chars: 40000
+    warn_body_chars: 38000
+```
+
 **Duplicates:** `okf-check <bundle> --duplicates` lists pairs of notes that may record the same knowledge: the same
 title (case, punctuation and spacing ignored), the same `sources[].resource`, or descriptions whose words overlap at or
 above `okf_check.duplicates.threshold` (default `1.0`, identical word sets; on our labelled sample, lower values
@@ -258,7 +276,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.25
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.26
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -274,7 +292,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.25
+    rev: v0.9.26
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

@@ -444,6 +444,12 @@ def check_node(value, node: dict, where: str, bundle: Path | None = None) -> Non
                 if value.get(sib) != want:
                     shown = "true" if want is True else "false" if want is False else want
                     raise BaseConfigError(f"{where}.{k} needs {where}.{sib}: {shown}")
+        # {below: sibling}: when that sibling is set, this value is smaller than it. After every value is checked, so
+        # the comparison only ever sees numbers (#104: a warn limit at or above the maximum would never fire).
+        for k, v in value.items():
+            other = node["keys"][str(k)].get("below")
+            if other in value and not v < value[other]:
+                raise BaseConfigError(f"{where}.{k} must be below {where}.{other}")
     elif "map" in node:
         # A mapping whose keys are free (each a non-empty string, e.g. a folder glob); each value is checked against node.
         if not isinstance(value, dict):
@@ -485,6 +491,10 @@ def check_node(value, node: dict, where: str, bundle: Path | None = None) -> Non
         home = os.path.realpath(os.path.expanduser("~"))
         if target == os.sep or home == target or home.startswith(target + os.sep):
             raise BaseConfigError(f"{where}: {value} is too broad: the file system root, the home folder and the folders above it are refused")
+    elif node.get("type") == "integer":
+        # {type: integer, min, max}: a whole number within the bounds (inclusive); 40.5 and true are not.
+        if isinstance(value, bool) or not isinstance(value, int) or not node["min"] <= value <= node["max"]:
+            raise BaseConfigError(f"{where} must be a whole number from {node['min']} to {node['max']}")
     elif node.get("type") == "boolean":
         if not isinstance(value, bool):
             raise BaseConfigError(f"{where} must be true or false")

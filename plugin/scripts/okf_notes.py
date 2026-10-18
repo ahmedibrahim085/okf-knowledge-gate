@@ -5,7 +5,7 @@ points at. Needs the vendored okf_validate on sys.path (its bounded loader refus
 """
 import os
 
-from okf_validate import load_frontmatter
+from okf_validate import load_frontmatter, split_frontmatter
 
 
 INVALID = object()   # pass as meta(p, invalid=INVALID) to tell "not valid YAML" from "no frontmatter"
@@ -26,6 +26,20 @@ def meta(p, invalid=None):
     except Exception:
         return {} if invalid is None else invalid
     return m if isinstance(m, dict) else {}
+
+
+def body_chars(p):
+    """The length of note `p`'s body in characters (code points), or None when the file cannot be read as UTF-8.
+
+    The body is what follows the frontmatter's closing `---` line, split by the validator's own split_frontmatter, so
+    the size rule and L1 agree on where a body starts. A note with no frontmatter is all body. The file is read in
+    text mode, so CRLF counts as one character: the same note checked out with LF or CRLF line endings measures the same.
+    """
+    try:
+        t = open(p, encoding="utf-8").read().lstrip("\ufeff")   # as the validator's _read_text: a BOM is not content
+    except (OSError, UnicodeDecodeError):
+        return None   # L1 reports a file it cannot read; the size rule does not report it a second time
+    return len(split_frontmatter(t)[1])
 
 
 def resolve(ref, note, root):

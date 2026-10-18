@@ -26,7 +26,8 @@
 #
 # EXIT CODES — by PRECEDENCE, not by numeric maximum.
 #   5  --selftest failure            — A GATE STOPPED FIRING (the worst outcome)
-#   1  L1 OKF conformance ERROR      — the bundle is not conformant OKF
+#   1  L1 OKF conformance ERROR      — the bundle is not conformant OKF; or an okf_check house-rule
+#                                      error (deprecated_requires, require_owner, size)
 #   3  L2 house-profile ERROR        — your own rules are broken
 #   2  L0/L2 could not run           — a gate was unable to reach a verdict
 #   6  bundle changed mid-scan       — only with --fail-on-change
@@ -52,7 +53,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.25"
+VERSION="0.9.26"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -1016,6 +1017,71 @@ PYEOF
   return 0
 }
 
+# ------------------------------------------------------- body-size budget (#104, public #17)
+# With okf_check.size: {max_body_chars: N} a note whose BODY (the text after the frontmatter) is longer than N characters
+# is a house-rule error (exit 1, like require_owner: the bundle breaks a rule it declared; exit 2 stays "could not run"
+# or "the config is wrong"). index.md and log.md are measured like any note: an agent reads them whole too, and a
+# log that only ever grows is the case the budget exists for; a bundle that wants one left out lists it in .okfignore.
+# Option off: nothing is printed.
+run_size() {
+  local bundle="$1" out ec
+  [ -f "$BUNDLE/okf-base.yaml" ] && [ -n "$PY" ] || return 0
+  # A block that failed the schema is already the Config line's exit 2; its numbers are not trusted here (as run_owner).
+  [ "${CONFIG_RC:-0}" -eq 0 ] || return 0
+  # The notes by the one rule every walker shares (okf_md_files), so a symlinked folder is not entered.
+  okf_md_files "$bundle" > "$TMP/size-files.lst" 2>/dev/null
+  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$BUNDLE/okf-base.yaml" "$TMP/size-files.lst" <<'PYEOF'
+import os, sys
+try:
+    sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
+    from okf_validate import load_frontmatter
+    from okf_notes import body_chars
+    cfg = load_frontmatter(open(sys.argv[2], encoding="utf-8", errors="replace").read())
+except Exception:
+    sys.exit(0)
+opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}
+size = opt.get("size") if isinstance(opt, dict) else None
+lim = {k: (size.get(k) if isinstance(size, dict) else None) for k in ("max_body_chars", "warn_body_chars")}
+mx, wn = lim["max_body_chars"], lim["warn_body_chars"]
+if not any(isinstance(v, int) and not isinstance(v, bool) for v in (mx, wn)):
+    sys.exit(0)   # the values are checked once, by the shared schema (run_config)
+fix = "(fix: split or move a section to a companion note; do not compress)"
+bundle = sys.argv[1]
+files = [f for f in open(sys.argv[3], "rb").read().decode("utf-8", "replace").split("\0") if f]
+n = 0
+for f in sorted(files):
+    c = body_chars(f)
+    if c is None:
+        continue
+    n += 1
+    rel = os.path.relpath(f, bundle).replace("\n", " ").replace("\t", " ")
+    if isinstance(mx, int) and c > mx:
+        print("E|%s: body is %d characters, above okf_check.size.max_body_chars %d %s" % (rel, c, mx, fix))
+    elif isinstance(wn, int) and c > wn:
+        print("W|%s: body is %d characters, above okf_check.size.warn_body_chars %d %s" % (rel, c, wn, fix))
+print("N|%d" % n)
+PYEOF
+  ); ec=$?
+  [ "$ec" -eq 0 ] || { say "  Size             COULD NOT RUN — the size check exited $ec"; return $EXIT_DEP; }
+  [ -n "$(printf '%s\n' "$out" | sed -n 's/^N|//p')" ] || return 0
+  local ne nw
+  ne=$(printf '%s\n' "$out" | grep -c '^E|'); nw=$(printf '%s\n' "$out" | grep -c '^W|')
+  if [ "$ne" -gt 0 ]; then
+    say "  Size             FAIL   ${ne} note(s) over the body budget, ${nw} over the warning limit"
+  elif [ "$nw" -gt 0 ]; then
+    say "  Size             WARN   ${nw} note(s) over the warning limit (advisory)"
+  else
+    say "  Size             PASS   $(printf '%s\n' "$out" | sed -n 's/^N|//p') note(s) within the body budget"
+    return 0
+  fi
+  ADVISORIES=$((ADVISORIES + nw))
+  printf '%s\n' "$out" | grep '^[EW]|' | while IFS= read -r l; do
+    [ "${l%%|*}" = E ] && record error "${l#?|}"; say "                   ${l#?|}"
+  done
+  [ "$ne" -eq 0 ] || return $EXIT_CONFORM
+  return 0
+}
+
 # ------------------------------------------------------- --duplicates (#69, public #10)
 # Candidate duplicate pairs: the same normalized title, the same sources[].resource, or descriptions whose word overlap
 # reaches okf_check.duplicates.threshold. Advisory: exit 0. A block that fails the schema is exit 2, as in a check.
@@ -1851,6 +1917,24 @@ selftest() {
   }
   probe "note without an owner" "bad.md: no owner" _owner_probe "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\nbody\n'
 
+  say "  Size (okf_check.size):"
+  # The limit is set for this probe only (50 characters; the baseline notes are shorter), like the Owner probe (#104).
+  _size_probe() {
+    local BUNDLE="$1" CONFIG_RC=0 rc
+    [ -f "$1/okf-base.yaml" ] && cp -p "$1/okf-base.yaml" "$TMP/selftest.base"
+    printf 'okf_check:\n  size:\n    max_body_chars: 50\n' >> "$1/okf-base.yaml"
+    local o; o=$(run_size "$1"; echo "rc=$?")
+    printf '%s\n' "$o"
+    rc=${o##*rc=}
+    if [ -f "$TMP/selftest.base" ]; then mv "$TMP/selftest.base" "$1/okf-base.yaml"; else rm -f "$1/okf-base.yaml"; fi
+    # Control leg: only bad.md may be listed. A rule that flags every note also "finds" bad.md.
+    if [ "$(printf '%s\n' "$o" | grep -c 'body is ')" -eq 1 ] && printf '%s\n' "$o" | grep -q 'bad.md: body is 60 characters'; then
+      echo "size probe: bad.md listed, the notes under the limit are not"
+    fi
+    return $rc
+  }
+  probe "body over the limit" "size probe: bad.md listed, the notes under the limit are not" _size_probe "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\n123456789012345678901234567890123456789012345678901234567890'
+
   say "  Duplicates (--duplicates):"
   # A note titled like the baseline note (good.md, "Baseline") must be listed as a same-title pair (#69).
   _dup_probe() { local DUP_BODY=0; run_duplicates "$1"; }
@@ -2050,6 +2134,7 @@ run_profile     "$LAYER_BUNDLE"; worse_other $?
 run_index       "$LAYER_BUNDLE"; worse_other $?
 run_successor   "$LAYER_BUNDLE"; worse_other $?
 run_owner       "$LAYER_BUNDLE"; worse_other $?
+run_size        "$LAYER_BUNDLE"; worse_other $?
 run_staleness   "$LAYER_BUNDLE"; worse_other $?
 run_derived_stale "$BUNDLE"; worse_other $?
 FP_AFTER=$(bundle_fingerprint "$BUNDLE")

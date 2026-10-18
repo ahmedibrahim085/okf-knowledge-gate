@@ -30,7 +30,7 @@ Do not just test for zero. `2` ("could not run") is distinct from `1` ("not conf
 | Exit | Meaning | What to do |
 |---|---|---|
 | 0 | All gates pass (advisories and skipped layers are printed above the last line) | Proceed. A skipped layer is not a pass. |
-| 1 | L1: the bundle is not conformant OKF. With `--strict-trust`: a Trust (C4) policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite a file | Read the output. Fix the notes it names. |
+| 1 | L1: the bundle is not conformant OKF, or an `okf_check` house-rule error (`deprecated_requires`, `require_owner`, a body above `size.max_body_chars`). With `--strict-trust`: a Trust (C4) policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite a file | Read the output. Fix the notes it names. |
 | 2 | A gate COULD NOT RUN (missing dependency, crashed scan, hung tool) | Run `okf-check --doctor`. Report what is missing. Do not install anything without the owner's consent. Never report a pass. |
 | 3 | L2: house rules broken, or `index.md` miscounts its own bundle | Fix the notes it names. Never edit `okf-base.yaml` to make a run pass. |
 | 4 | L3: stale concepts (only with `--fail-stale`) | List them and ask the owner. Never bump `stale_after` to silence it. |
@@ -46,7 +46,7 @@ Precedence when several apply: 5 > 1 > 3 > 2 > 6 > 4. A reached verdict outranks
 - **warn** is soft guidance. Broken cross-links are tolerated by the spec (§6.1): they are knowledge not yet
   written. Never "fix" a bundle by deleting an outbound link.
 - **SKIPPED** means a layer did not run. A skipped layer is counted in the verdict line and never shown as PASS; the exit code stays 0 unless another gate fails.
-- **`--json`** carries the verdict, the counts and the findings behind them: `errors[]` (L1), `l2_findings[]` (house-rule errors only), `l2_advisories[]` (the L2 advisories behind `l2_warnings`, as `RULE file — message`; the first 200, then one last line that counts the rest; empty when L2 did not run), `l2_warnings` and `l2_by_rule` (the L2 advisory totals; null when L2 did not run), `stale[]` (expired or malformed `stale_after`), `lifecycle[]` (a status outside draft, stable, deprecated), `skipped[]` (layers that did not run), `warnings[]` and `trust_findings`. Each entry is one text line that names the note. The key set is the same on every exit path.
+- **`--json`** carries the verdict, the counts and the findings behind them: `errors[]` (L1 and the okf_check house rules such as size), `l2_findings[]` (house-rule errors only), `l2_advisories[]` (the L2 advisories behind `l2_warnings`, as `RULE file — message`; the first 200, then one last line that counts the rest; empty when L2 did not run), `l2_warnings` and `l2_by_rule` (the L2 advisory totals; null when L2 did not run), `stale[]` (expired or malformed `stale_after`), `lifecycle[]` (a status outside draft, stable, deprecated), `skipped[]` (layers that did not run), `warnings[]` and `trust_findings`. Each entry is one text line that names the note. The key set is the same on every exit path.
 - **CONCURRENT** means the bundle changed during the scan; the report is a point-in-time reading.
 
 ## Trust (C4): can a "verified by a human" claim be trusted?
@@ -69,6 +69,10 @@ as an agent) into exit 1; it changes severity only, never what is found.
   sits inside a larger note vault. Setting `okf_check: {wikilink_root: ../../..}` in `okf-base.yaml` (a folder relative
   to the bundle: the bundle itself or a parent) makes okf-check look for such a target there. Set it only when the
   owner asks, and never to hide a link whose target is really missing: that still gives L001.
+
+- A `Size` line means the bundle sets `okf_check.size` in `okf-base.yaml`: a note body above `max_body_chars` is exit 1
+  (a house-rule error), above `warn_body_chars` an advisory (exit 0). Fix it by splitting the note or moving a
+  section to a companion note. Never compress the text to get under the number and never raise the limit to pass a run.
 
 ## What this never does
 
@@ -126,7 +130,7 @@ empty or inside the vault). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.25`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.26`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

@@ -9,6 +9,14 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.26] - 2026-10-18
+
+OKF Knowledge Gate 0.9.26 adds a size budget for notes, so a note that grows past what an agent can read in one pass is caught before it is compressed in a hurry.
+
+### Added
+- **`okf_check.size`** (public issue 17). `max_body_chars` and `warn_body_chars` set an error limit and a warning limit for the body of each note: the text after the frontmatter, in characters, not bytes or tokens (a long `verified:` block does not count; a CRLF line break counts one, a BOM none). A body above the maximum is a house-rule error (exit 1, like `require_owner`); above the warning limit it is a warning. Each finding names the note, its size and the limit, and says to split the note or move a section to a companion note, not to compress it. `index.md` and `log.md` are measured; `.okfignore` leaves a note out. The values must be whole numbers from 1 and the warning limit must be below the maximum, else `okf-check` and `okf-verify --check-config` refuse them with exit 2. Without the setting nothing changes. `--selftest` has a new probe: a note over the limit must be listed and a note under it must not.
+- The schema that `okf-verify --check-config` reads has a whole-number type with bounds and a "below its sibling" rule for such pairs.
+
 ## [0.9.25] - 2026-10-18
 
 OKF Knowledge Gate 0.9.25 lets a bundle that sits inside a larger note vault resolve root-style wikilinks.
@@ -570,7 +578,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.25...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.26...HEAD
+[0.9.26]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.25...v0.9.26
 [0.9.25]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.24...v0.9.25
 [0.9.24]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.23...v0.9.24
 [0.9.23]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.22...v0.9.23
