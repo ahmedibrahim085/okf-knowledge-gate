@@ -100,9 +100,14 @@ finding (`<note>: L1 error: ...`, `L1 warning`, `Trust warning`), nothing when t
 their meaning (1 an L1 error, or a Trust finding under `--strict-trust`; 2 could not run; 64 the note is not a `.md`
 inside the bundle). It is meant for an edit hook; the full run is still the gate.
 
+The plugin ships that hook, OFF by default: `okf_check: {edit_hook: true}` in a bundle's `okf-base.yaml` (or
+`OKF_EDIT_HOOK=1`) makes every Write/Edit of a note in that bundle run it. On an L1 error or a Trust warning Claude
+sees one line starting `okf-check:` after the edit; fix the note it names. The hook is time-boxed and stays silent
+when it cannot run.
+
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.12`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.13`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

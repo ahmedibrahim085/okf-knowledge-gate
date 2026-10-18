@@ -2964,6 +2964,12 @@ par path-empty    err 'okf_check:\n  verify:\n    repos:\n      - path: ""\n'
 par typo-repo     err 'okf_check:\n  verify:\n    repo:\n      - path: .\n'
 par entry-extra   err 'okf_check:\n  verify:\n    repos:\n      - path: .\n        nmae: x\n'
 par top-unknown   err 'okf_check:\n  colour: red\n'
+# edit_hook (#61) is a boolean leaf: YAML 1.1 reads yes as true; a string or a number is refused by both tools
+par edit-hook-true   ok  'okf_check:\n  edit_hook: true\n'
+par edit-hook-false  ok  'okf_check:\n  edit_hook: false\n'
+par edit-hook-yes    ok  'okf_check:\n  edit_hook: yes\n'
+par edit-hook-string err 'okf_check:\n  edit_hook: "on"\n'
+par edit-hook-int    err 'okf_check:\n  edit_hook: 1\n'
 par bad-utf8      err 'okf_check:\n  verify:\n    repos:\n      - path: \377\n'
 par bad-yaml      err 'okf_check: [\n'
 # #67: deprecated_requires is an enum node (one allowed value today)

@@ -9,6 +9,15 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.13] - 2026-10-18
+
+OKF Knowledge Gate 0.9.13 can check each note Claude writes or edits, at once, with an opt-in hook.
+
+### Added
+- **An opt-in PostToolUse hook, `okf-edit-hook.py`.** After a `Write` or `Edit` of a `.md` note inside a bundle (the nearest folder above the note that holds `okf-base.yaml`), it runs `okf-check <bundle> --file <note>` and gives Claude one warning line for an L1 error or a Trust warning, so a batch of edits is checked before anyone runs the full gate. A note outside any bundle is ignored. It is **off by default**: turn it on with `okf_check: {edit_hook: true}` in the bundle's `okf-base.yaml` (a YAML boolean; a quoted string such as `"on"` is refused) or with `OKF_EDIT_HOOK=1` for every bundle. It is time-boxed (`plugin/config/edit-hook.json`, 4 s; `OKF_EDIT_HOOK_TIMEOUT` overrides) and fails open: on a timeout, a crash or any other error it exits 0 without output, and the edit stands. An L1 warning (a missing `tags`) does not fire it, because it would fire on every edit of such a note. The one line Claude reads is cleaned: control characters become `?` and it is cut at 300 characters, because it quotes note values back. `OKF_EDIT_HOOK_TIMEOUT` cannot raise the box above 4.5 s (the platform cancels the hook at 5 s).
+- **The hook is registered for every install** (`plugin/hooks/hooks.json`, matcher `Write|Edit`, platform timeout 5 s). While it is off, it reads the event and, for a `.md` file inside a bundle, that bundle's `okf-base.yaml`, then exits (about 0.07 s measured).
+- **A new suite, `plugin/scripts/edit-hook.test.sh`,** in the release gate.
+
 ## [0.9.12] - 2026-10-18
 
 OKF Knowledge Gate 0.9.12 checks one note in well under a second, so an edit hook can run it.
@@ -464,7 +473,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.12...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.13...HEAD
+[0.9.13]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.12...v0.9.13
 [0.9.12]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.9...v0.9.10

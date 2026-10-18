@@ -1166,6 +1166,12 @@ A small note whose YAML aliases nest describes billions of items; `str()` on suc
 | SC-5..7 | `--file` edges | outside the bundle, not `.md`, missing, or no value: exit 64; an `.okfignore`-excluded note is not checked (one line); a crashing helper is exit 2, never an L1 verdict | ✅ |
 | SC-8 | `--file` speed | on a 100-note bundle, under half the time of a full run on the same bundle (median of 3; about 0.1 s against 0.65 s measured, so well under the 1 s of #60) | ✅ |
 | SC-9 | `--selftest` | a `Scoped (--file)` probe fires on a note without frontmatter; a copy whose helper drops every finding reports `NOT FIRED` and exits 5 | ✅ |
+| S9-H1 | edit hook on (`edit_hook: true`), a note with an L1 error is edited (#61) | exit 2 and ONE stderr line `okf-check: <finding>` (Claude sees it, https://code.claude.com/docs/en/hooks) | ✅ |
+| S9-N1 | edit hook with no key, `false`, or an invalid block | nothing runs, nothing printed; `OKF_EDIT_HOOK=1` turns it on | ✅ |
+| S9-N2 | a file in no bundle, or not `.md` | ignored | ✅ |
+| S9-E1 | the check outlasts the hook's time box | killed with its children, exit 0, no warning | ✅ |
+| SH-7 | the hook run by a plain python3 that writes bytecode beside the module (as on Linux) | no `__pycache__` left in the plugin directory (LT-56m's rule) | ✅ |
+| LT-52 edit_hook | `edit_hook: true/false/yes` vs `"on"`/`1` | both tools accept the booleans and refuse the rest (one schema, boolean leaf) | ✅ |
 
 ### The `okf_check:` options block (#66, 0.9.4)
 okf-check's own options live in ONE `okf_check:` block of `okf-base.yaml`; each option is off by default. `okflint` 0.5.0 reads only the manifest keys it knows, so the block is not stripped before L2: the L2 warning count with and without it is equal, and LT-51b pins that against the real `okflint`. A block of the wrong shape or a key nobody knows is reported on a `Config` line and in `errors[]`, and the run exits 2: a typo would otherwise switch an option off in silence. The rules live ONCE, as data, in `plugin/config/okf-check-block.json` (each option's ticket adds its key there); `okf-verify` enforces them and `okf-check` calls `okf-verify --check-config`, so the two tools cannot disagree. LT-52 feeds one table of block shapes to both tools and asserts they agree. No block: no `Config` line, and text and `--json` output are byte-identical to the build before this change (measured against 5709b2e).

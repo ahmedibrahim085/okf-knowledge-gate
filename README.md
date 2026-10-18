@@ -64,6 +64,10 @@ Also shipped:
 - A PreToolUse hook that stops a duplicate document being written (`doc-reuse-guard.sh`). With an
   [`okf`](https://github.com/GoogleCloudPlatform/open-knowledge-format) search binary on PATH (or
   `OKF_SEARCH_BIN`) it also names the three closest existing notes. The plugin never installs it.
+- An opt-in PostToolUse hook (`okf-edit-hook.py`) that checks each note Claude writes or edits inside a bundle
+  (`okf-check --file`, L1 and Trust) and gives Claude one warning line on an L1 error or a Trust warning. Off until
+  `edit_hook: true` or `OKF_EDIT_HOOK=1`; time-boxed and silent on any failure. It is registered for every install
+  (`hooks/hooks.json`); while off it only reads the event and exits.
 - A skill, `okf`, so an agent knows how to run the gate and read its result.
 
 ## Install
@@ -157,8 +161,9 @@ file by itself.
 `okflint` ignores the block (measured: the L2 warning count is the same with and without it), and both `okf-check` and
 `okf-verify` check it against one schema, `plugin/config/okf-check-block.json`: a key it does not know, or a value of the
 wrong shape, exits 2 and names the key, so a typo cannot switch an option off without a word. Known keys: `verify`
-(read by `okf-verify`; `repos` is a list of `path:` entries), `deprecated_requires`, `require_owner`, `owners` and
-`duplicates`.
+(read by `okf-verify`; `repos` is a list of `path:` entries), `deprecated_requires`, `require_owner`, `owners`,
+`duplicates` and `edit_hook` (`true` turns the edit hook on for this bundle; a boolean, so a string such as `"on"`
+is refused).
 
 ```yaml
 okf_check:
@@ -207,6 +212,8 @@ and then checked exactly, within the same time limit.
 | `OKF_AUTO_INSTALL` | off | `1` lets the session-start check run the install plan itself. |
 | `OKF_SEARCH_BIN` | `okf` on PATH | The `okf` search binary the doc-reuse reminder uses to name the closest notes. |
 | `OKF_DOC_DIRS_FILE` | `~/.config/okf/doc-dirs` | File of extra shell globs for locations the doc-reuse guard watches. |
+| `OKF_EDIT_HOOK` | off | `1` turns the edit hook on for every bundle, without the `edit_hook` key. |
+| `OKF_EDIT_HOOK_TIMEOUT` | `plugin/config/edit-hook.json` | Seconds the edit hook waits for the check before it gives up silently. |
 
 `OKF_TODAY`, `OKF_PINNED_VERSIONS`, `OKF_BUNDLE_DIR` and `OKF_DUP_TIME_LIMIT` exist for tests and replays.
 
@@ -223,7 +230,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.12
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.13
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -239,7 +246,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.12
+    rev: v0.9.13
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -327,6 +334,7 @@ probes. Upstream bug fixes we depend on are submitted as pull requests (see [Pin
 bash plugin/scripts/okf-check.test.sh     # the gate
 bash plugin/scripts/okf-verify.test.sh    # L4
 bash plugin/scripts/symlinks.test.sh      # every file walker treats symlinks alike
+bash plugin/scripts/edit-hook.test.sh     # the opt-in edit hook
 bash plugin/scripts/scoped.test.sh        # okf-check --file (one note)
 bash plugin/scripts/plugin.test.sh        # packaging and install drift
 bash tools/demo/demo.test.sh              # the README demo is a recording of real runs
