@@ -9,6 +9,16 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-10-18
+
+OKF Knowledge Gate 0.9.8 lets a bundle require that every note has an owner, and shows the owner on stale and lifecycle findings.
+
+### Added
+- **`okf_check.require_owner` and `okf_check.owners`.** With `require_owner: true` (off by default), every note must have an owner: an actor in the form of OKF section 7 (`human:dana`, `team:docs`, `tool/1.0`). A note's own `owner` key wins. Otherwise `owners` gives folder defaults as globs (the `.okfignore` syntax), and the last matching pattern wins. The new `Owner` line reports a note with no owner and an owner that is not an actor; both are house-rule errors and exit 1. `owners` is only valid when `require_owner` is on; a bad value exits 2 and names it.
+- **The owner shows on staleness findings.** Each L3 staleness and lifecycle finding ends with `owner <actor>`, in the text and in the `--json` `stale[]` and `lifecycle[]` entries, so a report can be sent to the right person.
+- **A note that starts with a byte order mark is read correctly by the Successor and Owner rules.** Before, such a note was accepted by L1 but its `superseded_by` or `owner` was not seen, so a deprecated note without a successor passed the Successor rule (0.9.7) and a note with an owner was reported as having none. An `owners` pattern that starts with `!` (negation) is refused with exit 2 instead of being ignored in silence, and an `owner` that is not a string (a list, a number, `false`) is reported as not an allowed actor form.
+- **`--selftest` probes the Owner rule** (a note without an owner, option on), and a crippled copy exits 5. The schema gained `map`, `boolean` and `requires` node kinds for these options.
+
 ## [0.9.7] - 2026-10-18
 
 OKF Knowledge Gate 0.9.7 lets a bundle require that a deprecated note names the note that replaces it.
@@ -417,7 +427,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.7...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.8...HEAD
+[0.9.8]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.4...v0.9.5

@@ -439,6 +439,26 @@ def check_node(value, node: dict, where: str) -> None:
                 raise BaseConfigError(f"{where}.{k} is not a known key (known: {', '.join(known)})")
         for k, v in value.items():
             check_node(v, node["keys"][str(k)], f"{where}.{k}")
+            # {requires: {sibling: value}}: this key only makes sense when a sibling key has that value (#68).
+            for sib, want in node["keys"][str(k)].get("requires", {}).items():
+                if value.get(sib) != want:
+                    shown = "true" if want is True else "false" if want is False else want
+                    raise BaseConfigError(f"{where}.{k} needs {where}.{sib}: {shown}")
+    elif "map" in node:
+        # A mapping whose keys are free (each a non-empty string, e.g. a folder glob); each value is checked against node.
+        if not isinstance(value, dict):
+            raise BaseConfigError(f"{where} must be a mapping")
+        for k, v in value.items():
+            if not isinstance(k, str) or not k:
+                raise BaseConfigError(f"{where} has a key that is not a non-empty string: {k}")
+            # {key_no_prefix: "!"}: the owners globs use the .okfignore syntax, which has no negation; a "!x" pattern
+            # would be inert, so it is refused rather than ignored (0.9.8 review G-2)
+            if node.get("key_no_prefix") and k.startswith(node["key_no_prefix"]):
+                raise BaseConfigError(f"{where}.{k}: a pattern that starts with {node['key_no_prefix']} (negation) is not supported")
+            check_node(v, node["map"], f"{where}.{k}")
+    elif node.get("type") == "boolean":
+        if not isinstance(value, bool):
+            raise BaseConfigError(f"{where} must be true or false")
     elif "list" in node:
         if not isinstance(value, list):
             raise BaseConfigError(f"{where} must be a list")

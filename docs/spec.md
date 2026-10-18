@@ -942,6 +942,7 @@ here"*. Conformance is a question about form; this is a question about fact.
 | RV-18 | A declared path that cannot be resolved (`~nosuchuser/x`; a path under an unreadable directory) | UNRESOLVED `cannot resolve: ...` in text and `--json`, exit 0, no traceback, no REFUTED; the other repositories are still searched | ✅ |
 | RV-19 | A `path:line @sha` citation, repository declared in `okf-base.yaml`, no `--repo` (S1 x S2 seam) | CONFIRMED when the path exists at that commit; REFUTED when it is missing | ✅ |
 | RV-24 | An `{enum: [...]}` schema node (`okf_check.deprecated_requires`) | the listed value: exit 0; any other: exit 2, the error names the value as JSON (`true`, `null`, `"x "`, not a Python repr) and the allowed ones (#67) | ✅ |
+| RV-25 | A `{type: boolean}` node (`require_owner`), a `{map: node}` node (`owners`: free keys, each value a node) and a node that `requires` a sibling value (`owners` needs `require_owner: true`), and `key_no_prefix` (an `owners` key that starts with `!`) | valid: exit 0; a non-boolean, a list for the map, a non-string or empty value, and a missing sibling: exit 2 with the message (#68) | ✅ |
 
 **V-10 and V-11 came from live-firing, not from imagination.** The first run on
 the real bundle REFUTED `/tmp/net-spy.log` — a `const LOG = …` literal inside an
@@ -1165,7 +1166,7 @@ okf-check's own options live in ONE `okf_check:` block of `okf-base.yaml`; each 
 | LT-51a | S4-N1: an unknown key inside `okf_check:` | exit 2; the output names `okf_check.<key>` | ✅ |
 | LT-51b | S4-H1: a valid `okf_check:` block, real `okflint` | `l2_profile`, `l2_warnings` and `l2_by_rule` equal the run without the block (SKIPPED when `okflint` is absent) | ✅ |
 | LT-51c | S4-E1: no `okf_check:` block | text and `--json` output and exit code byte-identical to the same build with the okf_check step deleted | ✅ |
-| LT-52 | One table of `okf_check:` shapes (valid, wrong type, null, list, typo'd key, unknown entry key, empty path, invalid UTF-8, invalid YAML; `deprecated_requires` valid, typo'd, a list and null) to BOTH tools | both exit 0 on a valid block; both exit 2 on an invalid one, and `okf-check` shows `okf-verify`'s message | ✅ |
+| LT-52 | One table of `okf_check:` shapes (valid, wrong type, null, list, typo'd key, unknown entry key, empty path, invalid UTF-8, invalid YAML; `deprecated_requires` valid, typo'd, a list and null; `require_owner`/`owners` valid, a string for the boolean, a list, an int or empty owner, and `owners` without `require_owner: true`) to BOTH tools | both exit 0 on a valid block; both exit 2 on an invalid one, and `okf-check` shows `okf-verify`'s message | ✅ |
 
 ### `--selftest` covers every layer (#59, 0.9.6)
 `--selftest` has a probe for each layer: L0 (the doctor, pointed at a validator path that does not exist, must say `MISSING`), L1, L2 profile, L2 index (an `index.md` that declares 5 notes for the 1-note baseline; the original `index.md` is put back), Trust, L3 staleness and L3 derived staleness (a note that records the baseline note as of 2000-01-01). Each new probe is proven by a plugin copy with that layer disabled: `--selftest` then reports `NOT FIRED` (the Gherkin "did not fire") and exits 5. Without `okflint` the L2 profile probes are SKIPPED with the reason, and the verdict line names the skipped layer instead of "every gate still fires"; the exit stays 0, as for a skipped layer in a check.
@@ -1195,6 +1196,26 @@ okf-check's own options live in ONE `okf_check:` block of `okf-base.yaml`; each 
 | LT-53h | `[x](new.md "t")`, `[x](new.md 't')`, `[x](<new.md>)` | each resolves to new.md: `Successor PASS` | ✅ |
 | LT-53i | `superseded_by: index.md`, `"[[log]]"` | `successor is not a note`; exit 1 | ✅ |
 | LT-53j | option on, no deprecated note | `Successor PASS no deprecated notes` | ✅ |
+
+### Ownership (#68, public #11, 0.9.8)
+`okf_check.require_owner: true` turns the rule on; it is off by default. A note's owner is its own `owner` key; without one, the folder default from `okf_check.owners` (a mapping of glob to owner, in file order). The globs use the `.okfignore` syntax without negation (a pattern that starts with `!` is a `Config` error, exit 2: it would be inert) and are matched by the same matcher (`ignore-lib.sh`), and the LAST matching pattern wins, not the most specific one. The owner must be a section 7 actor, checked by the vendored validator's own `check_actor` (the check L1 runs on `generated.by`): a value with no actor shape (`team-x`) and a near-miss of `human:` (`Human:dana`) are errors, for a note's key and for a folder default alike. A note with no owner and an owner that is not an actor are house-rule errors on the `Owner` line and in `errors[]`, exit 1. Every L3 staleness and lifecycle finding of a note with an owner ends with ` owner <actor>`, in the text and in each string of `--json` `stale[]` and `lifecycle[]` (no new JSON key: the LT-45 key set is unchanged). The values are checked by the shared schema (`config/okf-check-block.json`): `require_owner` is a `{type: boolean}` node, `owners` a `{map: {type: string}}` node (free glob keys) that `requires` `require_owner: true` (RV-25). A `require_owner` that is not `true`/`false`, `owners` that is not a mapping or has a value that is not a non-empty string, and `owners` without `require_owner: true` are a `Config` error, exit 2, named; the owner rule then does not run, so a default such as `3` never becomes an owner error that outranks that exit 2. Option off: no `Owner` line and no owner on findings. Decided on #68: the Gherkin's `owner: team-x` is not a section 7 actor (S6-E3 makes it an error), so S6-H1 uses `team:x` (and S6-H2 `team:a`); the Gherkin and the cases doc say so.
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-54a | S6-N1: option on, a note with no owner and no default | `Owner FAIL`, the error names the note; exit 1 | ✅ |
+| LT-54b | S6-H1: `owner: team:x` on an expired note | the stale line and its `stale[]` string end with `owner team:x`; exit 0 | ✅ |
+| LT-54c | S6-H2: `owners: {"decisions/**": team:a}`, a note under `decisions/` with no owner | owner `team:a` | ✅ |
+| LT-54d | S6-E1: two patterns match | the later one wins, in either order | ✅ |
+| LT-54e | S6-E2: a note owner and a different folder default | the note's owner | ✅ |
+| LT-54f | S6-E3: `team-x`, `Human:dana`, a folder default `team-a` | an error names the note and the value; exit 1 | ✅ |
+| LT-54g | a lifecycle finding (status `current`) of a note with an owner | its `lifecycle[]` string ends with `owner team:y` | ✅ |
+| LT-54h | option off, a note with an `owner` key | no `Owner` line, no owner on the stale line; exit 0 | ✅ |
+| LT-54i | S6-N2: `require_owner: yes-please`; `owners` as a list; `owners` without `require_owner` | exit 2, the key named | ✅ |
+| LT-54j | `--selftest` | an `Owner (require_owner)` probe fires (the option is on for that probe only); a copy with the rule disabled reports `NOT FIRED` and exits 5 | ✅ |
+| LT-54k | S6-E4: a note that starts with a UTF-8 BOM (`owner: team:x`; and a deprecated one without a successor) | the owner is read; the Successor rule sees the deprecated note (exit 1) | ✅ |
+| LT-54l | `owner: "human:"`; `owner: human:` (not valid YAML) | `not an allowed actor form`; `the frontmatter is not valid YAML, so its owner cannot be read` (never `no owner`) | ✅ |
+| LT-54m | S6-N3: `owner: [team:x]`, `owner: 0`, `owner: false` | `owner \`["team:x"]\` is not an allowed actor form` (the value as JSON; never a Python repr on the L3 line); exit 1 | ✅ |
+| LT-54n | S6-N4: an `owners` pattern `"!drafts/**"` | `okf_check.owners.!drafts/**: a pattern that starts with ! (negation) is not supported`, exit 2 (also RV-25 and the LT-52 parity row) | ✅ |
 
 ## Non-goals
 

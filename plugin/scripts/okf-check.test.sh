@@ -2965,6 +2965,16 @@ par dep-ok        ok  'okf_check:\n  deprecated_requires: superseded_by\n'
 par dep-typo      err 'okf_check:\n  deprecated_requires: superseded-by\n'
 par dep-list      err 'okf_check:\n  deprecated_requires: [superseded_by]\n'
 par dep-null      err 'okf_check:\n  deprecated_requires:\n'
+# #68: require_owner is a boolean node; owners is a {map: string} node (free glob keys) that requires require_owner: true
+par own-ok        ok  'okf_check:\n  require_owner: true\n  owners:\n    "**": team:a\n'
+par own-off       ok  'okf_check:\n  require_owner: false\n'
+par own-str       err 'okf_check:\n  require_owner: yes-please\n'
+par own-list      err 'okf_check:\n  require_owner: true\n  owners: [team:a]\n'
+par own-int       err 'okf_check:\n  require_owner: true\n  owners:\n    "decisions/**": 3\n'
+par own-empty     err 'okf_check:\n  require_owner: true\n  owners:\n    "decisions/**": ""\n'
+par own-norequire err 'okf_check:\n  owners:\n    "decisions/**": team:a\n'
+par own-reqfalse  err 'okf_check:\n  require_owner: false\n  owners:\n    "decisions/**": team:a\n'
+par own-negation  err 'okf_check:\n  require_owner: true\n  owners:\n    "!drafts/**": team:a\n'
 # an alias bomb in okf-base.yaml: both tools go through the bounded loader (LT-35a forbids a bare yaml.safe_load), so it is a YAML error, not a hang
 BOMB52=$("$REALPY" -c 'print("x0: &a0 [x,x,x,x,x,x,x,x,x]"); [print("x%d: &a%d [%s]" % (i, i, ",".join(["*a%d" % (i - 1)] * 9))) for i in range(1, 8)]')
 par alias-bomb    err "okf_check: {}\n$BOMB52\n"
@@ -3092,6 +3102,132 @@ for c in "i1|superseded_by: index.md" "i2|superseded_by: \"[[log]]\""; do
     || bad "LT-53i reserved file as successor $id" "$r $(grep -n 'Successor' -A1 "$TMP/lt53-$id.txt" | head -2 | tr '\n' ' ')"
 done
 
+# --- LT-54 (0.9.8, #68, cases S6-*): okf_check.require_owner and okf_check.owners folder defaults ------------------------
+# mk54 <name> <okf_check body, printf %b> — a bundle (c.md, no owner) with the template manifest plus that block.
+mk54() {
+  local d="$TMP/lt54-$1"; rm -rf "$d"; mkbundle "$d"
+  sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$d/okf-base.yaml"
+  printf 'okf_check:\n%b' "$2" >> "$d/okf-base.yaml"
+}
+# note54 <bundle dir> <rel path> <owner line or empty> [stale_after] — a stable Lesson.
+note54() {
+  mkdir -p "$(dirname "$1/$2")"
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "%s"\n%s---\nbody\n' "${4:-2099-01-01}" "${3:+$3
+}" > "$1/$2"
+}
+mk54 n1 '  require_owner: true\n'
+"$CHECK" "$TMP/lt54-n1" >"$TMP/lt54-n1.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 1 ] && grep -q 'Owner .*FAIL' "$TMP/lt54-n1.txt" && grep -q 'c.md: no owner' "$TMP/lt54-n1.txt"; } \
+  && ok "LT-54a S6-N1 a note with no owner and no folder default is a house-rule error naming the note (exit 1)" \
+  || bad "LT-54a S6-N1 no owner" "rc=$rcl $(grep -n 'Owner\|Config' "$TMP/lt54-n1.txt" | head -3 | tr '\n' ' ')"
+# S6-H1. The Gherkin's `team-x` matches no section 7 actor shape (S6-E3 makes that an error), so the owner is `team:x`,
+# the spec's own `<prefix>:<id>` form.
+mk54 h1 '  require_owner: true\n'; D="$TMP/lt54-h1"
+note54 "$D" c.md 'owner: team:x'; note54 "$D" old.md 'owner: team:x' 2000-01-01
+"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+"$CHECK" "$D" --json >"$D.json" 2>&1
+{ [ "$rcl" -eq 0 ] && grep -Eq 'expired +old.md .*owner team:x' "$D.txt" && grep -q 'Owner .*PASS' "$D.txt" \
+    && [ "$(jq44 "$D.json" '[s for s in d["stale"] if "old.md" in s and "owner team:x" in s] != []')" = True ]; } \
+  && ok "LT-54b S6-H1 a note's owner is shown on its stale finding, in the text and in --json stale[]" \
+  || bad "LT-54b S6-H1 owner on stale" "rc=$rcl $(grep -n 'expired\|Owner' "$D.txt" | head -3 | tr '\n' ' ') json: $(jq44 "$D.json" 'd["stale"]')"
+# lt54_owner <name> <okf_check body> <owner line of the expired note decisions/b/d.md> — prints "rc=N owner=<shown>".
+lt54_owner() {
+  local D="$TMP/lt54-$1"; mk54 "$1" "$2"
+  note54 "$D" c.md 'owner: team:x'; note54 "$D" decisions/b/d.md "$3" 2000-01-01
+  "$CHECK" "$D" >"$D.txt" 2>&1; local rc=$?
+  printf 'rc=%s owner=%s' "$rc" "$(sed -n 's/^ *expired  *decisions\/b\/d.md .* owner //p' "$D.txt")"
+}
+r=$(lt54_owner h2 '  require_owner: true\n  owners:\n    "decisions/**": team:a\n' '')
+[ "$r" = "rc=0 owner=team:a" ] && ok "LT-54c S6-H2 a folder default (decisions/**) is the owner of a note under it with no owner key" \
+  || bad "LT-54c S6-H2 folder default" "$r $(grep -n 'Owner' -A1 "$TMP/lt54-h2.txt" | head -2 | tr '\n' ' ')"
+r=$(lt54_owner e1a '  require_owner: true\n  owners:\n    "decisions/**": team:a\n    "decisions/b/**": team:b\n' '')
+r2=$(lt54_owner e1b '  require_owner: true\n  owners:\n    "decisions/b/**": team:b\n    "decisions/**": team:a\n' '')
+{ [ "$r" = "rc=0 owner=team:b" ] && [ "$r2" = "rc=0 owner=team:a" ]; } \
+  && ok "LT-54d S6-E1 when two folder patterns match, the later one wins (in either order, not the more specific one)" \
+  || bad "LT-54d S6-E1 last match wins" "a-then-b: $r; b-then-a: $r2"
+r=$(lt54_owner e2 '  require_owner: true\n  owners:\n    "decisions/**": team:a\n' 'owner: team:n')
+[ "$r" = "rc=0 owner=team:n" ] && ok "LT-54e S6-E2 a note's own owner beats the matching folder default" \
+  || bad "LT-54e S6-E2 note owner wins" "$r"
+# S6-E3: the owner must be a section 7 actor (the validator's own check_actor): `team-x` matches no shape, and
+# `Human:dana` is a near-miss of `human:` that section 5.3 reads as an agent. A bad folder default is caught the same way.
+for c in "e3a|owner: team-x|c.md|team-x" "e3b|owner: Human:dana|c.md|Human:dana"; do
+  id=${c%%|*}; rest=${c#*|}; line=${rest%%|*}; rest=${rest#*|}; nm=${rest%%|*}; val=${rest#*|}
+  mk54 "$id" '  require_owner: true\n'; note54 "$TMP/lt54-$id" c.md "$line"
+  "$CHECK" "$TMP/lt54-$id" >"$TMP/lt54-$id.txt" 2>&1; rcl=$?
+  { [ "$rcl" -eq 1 ] && grep -Eq "^ +$nm: owner .*$val" "$TMP/lt54-$id.txt"; } \
+    && ok "LT-54f S6-E3 owner '$val' is not an allowed actor form: an error names the note and the value (exit 1)" \
+    || bad "LT-54f S6-E3 $line" "rc=$rcl $(grep -n 'Owner' -A1 "$TMP/lt54-$id.txt" | head -2 | tr '\n' ' ')"
+done
+r=$(lt54_owner e3c '  require_owner: true\n  owners:\n    "decisions/**": team-a\n' '')
+{ case "$r" in rc=1*) true;; *) false;; esac && grep -Eq '^ +decisions/b/d.md: owner .*team-a' "$TMP/lt54-e3c.txt"; } \
+  && ok "LT-54f S6-E3 a folder default that is not an actor form is an error on each note it covers" \
+  || bad "LT-54f S6-E3 bad folder default" "$r $(grep -n 'Owner' -A1 "$TMP/lt54-e3c.txt" | head -2 | tr '\n' ' ')"
+# The owner travels on L3 lifecycle findings too (--json lifecycle[]).
+mk54 lc '  require_owner: true\n'; D="$TMP/lt54-lc"; note54 "$D" c.md 'owner: team:x'
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: current\nowner: team:y\nstale_after: "2099-01-01"\n---\nb\n' > "$D/odd.md"
+"$CHECK" "$D" --json >"$D.json" 2>&1
+[ "$(jq44 "$D.json" '[s for s in d["lifecycle"] if "odd.md" in s and s.endswith("owner team:y")] != []')" = True ] \
+  && ok "LT-54g the owner is shown on an L3 lifecycle finding in --json lifecycle[]" \
+  || bad "LT-54g owner on lifecycle" "$(jq44 "$D.json" 'd["lifecycle"]')"
+# Option off: an owner key in a note changes nothing (no Owner line, no owner on findings).
+mk54 off '  verify: {repos: [{path: .}]}\n'; D="$TMP/lt54-off"; note54 "$D" old.md 'owner: team:x' 2000-01-01
+"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && ! grep -q 'Owner\|owner team' "$D.txt" && grep -Eq 'expired +old.md' "$D.txt"; } \
+  && ok "LT-54h with require_owner off there is no Owner line and no owner on the stale finding" \
+  || bad "LT-54h option off" "rc=$rcl $(grep -n 'Owner\|expired' "$D.txt" | head -2 | tr '\n' ' ')"
+# A value that would switch the rule off in silence exits 2 and is named (as LT-51a, LT-53f).
+for c in "v1|  require_owner: yes-please\n|require_owner" "v2|  require_owner: true\n  owners: [team:a]\n|owners" \
+         "v3|  owners:\n    \"decisions/**\": team:a\n|owners"; do
+  id=${c%%|*}; rest=${c#*|}; body=${rest%%|*}; key=${rest#*|}
+  mk54 "$id" "$body"; "$CHECK" "$TMP/lt54-$id" >"$TMP/lt54-$id.txt" 2>&1; rcl=$?
+  { [ "$rcl" -eq 2 ] && grep -q "okf_check.$key" "$TMP/lt54-$id.txt"; } \
+    && ok "LT-54i S6-N2 an unusable okf_check.$key ($id) exits 2 and names the key" \
+    || bad "LT-54i unusable okf_check.$key ($id)" "rc=$rcl $(grep -n 'Owner\|Config' "$TMP/lt54-$id.txt" | head -2 | tr '\n' ' ')"
+done
+# --selftest has an Owner probe (project rule: every layer has one, proven by a copy with the rule disabled -> exit 5).
+"$CHECK" --selftest >"$TMP/lt54j.txt" 2>&1; rcl=$?
+L54=$(grep -A1 '^  Owner (require_owner):' "$TMP/lt54j.txt" | grep -c 'FIRED  *note without an owner')
+r=$(lt55_dead owner 's/^    if not own:$/    if False:/')
+{ [ "$rcl" -eq 0 ] && [ "$L54" -eq 1 ] && [ "$r" = "rc=5" ] && grep -A1 '^  Owner (require_owner):' "$TMP/lt55-owner.txt" | grep -q 'NOT FIRED'; } \
+  && ok "LT-54j --selftest has an Owner probe that fires, and a copy with the rule disabled reports NOT FIRED and exits 5" \
+  || bad "LT-54j Owner selftest probe" "healthy rc=$rcl fired=$L54; crippled $r $(grep -n 'Owner\|SELFTEST' "$TMP/lt55-owner.txt" 2>/dev/null | tr '\n' ' ')"
+# G-1 (0.9.8 review): a note that starts with a UTF-8 BOM is read like L1 reads it (the owner and the status are seen).
+mk54 bom '  require_owner: true\n  deprecated_requires: superseded_by\n'; D="$TMP/lt54-bom"; note54 "$D" c.md 'owner: team:x'
+printf '\357\273\277---\ntype: Lesson\ntitle: B\ndescription: D\nstatus: stable\nowner: team:x\nstale_after: "2099-01-01"\n---\nb\n' > "$D/bom.md"
+"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -q 'Owner .*PASS' "$D.txt" && ! grep -q 'bom.md: no owner' "$D.txt"; } \
+  && ok "LT-54k a BOM-prefixed note with owner: team:x has its owner (exit 0)" \
+  || bad "LT-54k BOM owner" "rc=$rcl $(grep -n 'Owner' -A1 "$D.txt" | head -2 | tr '\n' ' ')"
+printf '\357\273\277---\ntype: Lesson\ntitle: B\ndescription: D\nstatus: deprecated\nowner: team:x\nstale_after: "2099-01-01"\n---\nb\n' > "$D/bom.md"
+"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 1 ] && grep -q 'bom.md: status deprecated but no superseded_by' "$D.txt"; } \
+  && ok "LT-54k a BOM-prefixed deprecated note without a successor is seen by the Successor rule (exit 1)" \
+  || bad "LT-54k BOM successor" "rc=$rcl $(grep -n 'Successor' -A1 "$D.txt" | head -2 | tr '\n' ' ')"
+# owner "human:" (quoted) is not an actor; owner: human: (unquoted) is not valid YAML, so it cannot be read at all.
+mk54 hum '  require_owner: true\n'; D="$TMP/lt54-hum"; note54 "$D" c.md 'owner: "human:"'
+"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 1 ] && grep -q 'c.md: owner `human:` is not an allowed actor form' "$D.txt"; } \
+  && ok "LT-54l owner \"human:\" (an empty id) is not an allowed actor form" || bad "LT-54l quoted human:" "rc=$rcl $(grep -n 'Owner' -A1 "$D.txt" | head -2 | tr '\n' ' ')"
+note54 "$D" c.md 'owner: human:'
+"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 1 ] && grep -q 'c.md: the frontmatter is not valid YAML, so its owner cannot be read' "$D.txt" && ! grep -q 'c.md: no owner' "$D.txt"; } \
+  && ok "LT-54l owner: human: (not valid YAML) says the owner cannot be read, not 'no owner'" || bad "LT-54l unquoted human:" "rc=$rcl $(grep -n 'Owner' -A1 "$D.txt" | head -2 | tr '\n' ' ')"
+
+# G-3: an owner that is not a string (a list, a number, a boolean) is not an actor, and is never printed as a Python repr.
+for c in "t1|owner: [team:x]|[\"team:x\"]" "t2|owner: 0|0" "t3|owner: false|false"; do
+  id=${c%%|*}; rest=${c#*|}; line=${rest%%|*}; shown=${rest#*|}
+  mk54 "$id" '  require_owner: true\n'; D="$TMP/lt54-$id"; note54 "$D" c.md "$line" 2000-01-01
+  "$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+  { [ "$rcl" -eq 1 ] && grep -qF "c.md: owner \`$shown\` is not an allowed actor form" "$D.txt" && ! grep -q "owner \['" "$D.txt" && ! grep -q 'c.md: no owner' "$D.txt"; } \
+    && ok "LT-54m owner '$line' is not an allowed actor form (shown as $shown), exit 1" \
+    || bad "LT-54m owner type $id" "rc=$rcl $(grep -n 'Owner\|expired' -A1 "$D.txt" | head -3 | tr '\n' ' ')"
+done
+# G-2: an owners pattern with a leading ! (negation, not supported) is refused, not silently inert.
+mk54 neg '  require_owner: true\n  owners:\n    "**": team:a\n    "!drafts/**": team:b\n'; D="$TMP/lt54-neg"
+"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 2 ] && grep -q 'okf_check.owners.!drafts/\*\*: a pattern that starts with ! (negation) is not supported' "$D.txt"; } \
+  && ok "LT-54n S6-N4 an owners pattern that starts with ! exits 2 naming it (negation is not supported)" \
+  || bad "LT-54n negated owners pattern" "rc=$rcl $(grep -n 'Config\|Owner' "$D.txt" | head -2 | tr '\n' ' ')"
 echo
 if [ "$SKIPPED" -gt 0 ]; then
   echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"

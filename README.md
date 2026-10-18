@@ -22,7 +22,7 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 - **One verdict you can gate on.** `okf-check` runs every layer. Exit 1 means "not valid", exit 2 means "could not run",
   and a skipped layer is printed as SKIPPED and never shown as PASS (the exit code stays 0, and the verdict line reports
   a skipped layer). `--selftest` plants one defect in each of L0 (doctor), L1, L2 (profile), L2 (index), Trust,
-  L3 (staleness), L3 (derived staleness) and the Successor rule and fails if a gate misses it. Without `okflint` the L2 profile probes are
+  L3 (staleness), L3 (derived staleness), the Successor rule and the Owner rule and fails if a gate misses it. Without `okflint` the L2 profile probes are
   SKIPPED, and the verdict line names them.
 - **The same check in three places.** Claude Code (hooks, plus a skill an agent reads), a GitHub Action, and a pre-commit
   hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)).
@@ -154,7 +154,7 @@ file by itself.
 `okflint` ignores the block (measured: the L2 warning count is the same with and without it), and both `okf-check` and
 `okf-verify` check it against one schema, `plugin/config/okf-check-block.json`: a key it does not know, or a value of the
 wrong shape, exits 2 and names the key, so a typo cannot switch an option off without a word. Known keys: `verify`
-(read by `okf-verify`; `repos` is a list of `path:` entries) and `deprecated_requires`.
+(read by `okf-verify`; `repos` is a list of `path:` entries), `deprecated_requires`, `require_owner` and `owners`.
 
 ```yaml
 okf_check:
@@ -168,6 +168,20 @@ okf_check:
 path, a `[[wikilink]]`, a markdown link, or a list of them, resolved from the bundle root or the note's folder). The
 `Successor` line reports a missing `superseded_by`, a successor that is not found, a note that names itself, and a
 successor that is deprecated too (one hop: point at the final successor). Each is a house-rule error, exit 1.
+
+`require_owner: true`: every note has an owner, an actor as in OKF section 7 (`human:dana`, `team:docs`,
+`tool/1.0`). A note's own `owner` key wins; otherwise `owners` gives folder defaults as globs (the `.okfignore`
+syntax, without negation: a pattern that starts with `!` exits 2), and the last matching pattern wins. The `Owner` line reports a note with no owner and an owner that is not an
+actor (house-rule errors, exit 1). Each L3 staleness and lifecycle finding ends with `owner <actor>`, in the text and
+in `--json` `stale[]` and `lifecycle[]`.
+
+```yaml
+okf_check:
+  require_owner: true
+  owners:
+    "decisions/**": team:architecture
+    "decisions/security/**": human:dana
+```
 
 **Environment variables** (all optional):
 
@@ -195,7 +209,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.7
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.8
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -211,7 +225,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.7
+    rev: v0.9.8
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

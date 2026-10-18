@@ -948,6 +948,18 @@ cite "$TMP/rv1" "\`src/a.py:20-10 @$C2\`"; rc=$(run "$TMP/rv1" --repo "$CREPO")
 vok "RV-23 (S2-E4) a reversed range '20-10' is read as up to line 20 (the larger number): CONFIRMED for a 20-line file"
 cite "$TMP/rv2" "\`src/a.py:25-10 @$C2\`"; rc=$(run "$TMP/rv2" --repo "$CREPO")
 vrefuted "RV-23 (S2-E4) ... and REFUTED when the larger number is past the end"
+# --- RV-25 (#68): a {type: boolean} node, a {map: node} node (free keys) and a node that {requires} a sibling value
+cc() { # <name> <okf_check body, printf %b> <want rc> [message the error must contain]
+  note5 "$TMP/$1" "x"; printf 'okf_check:\n%b' "$2" > "$TMP/$1/okf-base.yaml"; rc=$(run "$TMP/$1" --check-config)
+  { [ "$rc" = "$3" ] && { [ -z "${4:-}" ] || grep -qF -- "$4" "$TMP/out.txt"; }; } && ok "RV-25 $1: exit $3${4:+, says '$4'}" || bad "RV-25 $1" "exit $rc: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+}
+cc bool-ok   '  require_owner: true\n' 0
+cc bool-str  '  require_owner: yes-please\n' 2 'okf_check.require_owner must be true or false'
+cc map-ok    '  require_owner: true\n  owners:\n    "decisions/**": team:a\n    "x/": human:dana\n' 0
+cc map-list  '  require_owner: true\n  owners: [team:a]\n' 2 'okf_check.owners must be a mapping'
+cc map-value '  require_owner: true\n  owners:\n    "decisions/**": 3\n' 2 'okf_check.owners.decisions/** must be a non-empty string'
+cc requires  '  owners:\n    "decisions/**": team:a\n' 2 'okf_check.owners needs okf_check.require_owner: true'
+cc negation  '  require_owner: true\n  owners:\n    "!x/**": team:a\n' 2 'okf_check.owners.!x/**: a pattern that starts with ! (negation) is not supported'
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

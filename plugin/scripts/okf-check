@@ -50,7 +50,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.7"
+VERSION="0.9.8"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -797,7 +797,8 @@ bundle = pathlib.Path(sys.argv[1])
 
 def meta(p):
     try:
-        t = p.read_text(encoding="utf-8", errors="replace")
+        # utf-8-sig: a note that starts with a BOM is read as L1 reads it (0.9.8 review G-1)
+        t = p.read_text(encoding="utf-8-sig", errors="replace")
     except OSError:
         return {}
     end = t.find("\n---", 3) if t.startswith("---") else -1
@@ -876,6 +877,116 @@ PYEOF
   fi
   if [ "$n" -eq 0 ]; then say "  Successor        PASS   no deprecated notes"
   else say "  Successor        PASS   ${n} deprecated note(s) name a valid successor"; fi
+  return 0
+}
+
+# ------------------------------------------------------- ownership (#68, public #11)
+# With okf_check.require_owner: true every note has an owner: its own `owner` key, else the folder default from
+# okf_check.owners. A note with neither is a house-rule error (exit 1). Option off: nothing is printed.
+run_owner() {
+  local bundle="$1" out ec pats f rel def pat own
+  [ -f "$BUNDLE/okf-base.yaml" ] && [ -n "$PY" ] || return 0
+  # An okf_check block that failed the schema is already the Config line's exit 2. Its owners are not trusted:
+  # a folder default of 3 would otherwise become an owner error that outranks that exit 2 (LT-52 own-int).
+  [ "${CONFIG_RC:-0}" -eq 0 ] || return 0
+  # Folder defaults: okf_check.owners maps a glob to an owner, in file order. The globs are matched by the .okfignore
+  # matcher (ignore-lib.sh), so the two cannot disagree about what a pattern covers; the LAST matching pattern wins.
+  pats=$(OKF_VENDOR_DIR="$ROOT/vendor" py_with_vendor - "$BUNDLE/okf-base.yaml" <<'PY' 2>/dev/null
+import os, sys
+sys.path.insert(0, os.environ["OKF_VENDOR_DIR"])
+from okf_validate import load_frontmatter   # bounded: an alias bomb in okf-base.yaml must not expand (LT-35a)
+d = load_frontmatter(open(sys.argv[1], encoding="utf-8", errors="replace").read())
+o = (d.get("okf_check") or {}) if isinstance(d, dict) else {}
+w = o.get("owners") if isinstance(o, dict) and o.get("require_owner") is True else None
+for k, v in (w.items() if isinstance(w, dict) else []):
+    if not any(c in str(k) + str(v) for c in "\t\n"):
+        print("%s\t%s" % (k, v))
+PY
+)
+  : > "$TMP/owner-defaults.tsv"
+  if [ -n "$pats" ]; then
+    # SHORTCUT: one matcher call per note and pattern, in bash. Fine for a few hundred notes; move the loop into
+    # ignore-lib.sh's matcher (one pass per pattern) if a bundle with thousands of notes makes this slow.
+    # A subshell, so OKFIGNORE_PATTERNS (the loaded .okfignore) is untouched outside it.
+    ( while IFS= read -r -d '' f; do
+        rel=${f#"$bundle"/}; def=""
+        case "$rel" in *$'\t'*|*$'\n'*) continue;; esac
+        while IFS=$'\t' read -r pat own; do
+          OKFIGNORE_PATTERNS=("$pat"); okfignore_match "$rel" && def=$own
+        done <<< "$pats"
+        [ -n "$def" ] && printf '%s\t%s\n' "$rel" "$def"
+      done < <(find -L "$bundle" -name '*.md' -type f -print0 2>/dev/null) ) > "$TMP/owner-defaults.tsv"
+  fi
+  # $TMP/owners.tsv (relative path, TAB, owner) is what L3 reads to show the owner on its findings.
+  out=$(OKF_VENDOR_DIR="$ROOT/vendor" py_with_vendor - "$bundle" "$BUNDLE/okf-base.yaml" "$TMP/owners.tsv" "$TMP/owner-defaults.tsv" <<'PYEOF'
+import json, os, pathlib, sys
+try:
+    sys.path.insert(0, os.environ["OKF_VENDOR_DIR"])
+    from okf_validate import load_frontmatter, check_actor, Report
+    cfg = load_frontmatter(open(sys.argv[2], encoding="utf-8", errors="replace").read())
+except Exception:
+    sys.exit(0)
+opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}
+# The values are checked once, by the shared schema (config/okf-check-block.json via run_config); this rule does not
+# run when that check failed (CONFIG_RC), so here only "on or off" is read.
+if not isinstance(opt, dict) or opt.get("require_owner") is not True:
+    sys.exit(0)
+bundle = pathlib.Path(sys.argv[1])
+
+def meta(p):
+    try:
+        # utf-8-sig: a note that starts with a BOM is read as L1 reads it (0.9.8 review G-1)
+        t = p.read_text(encoding="utf-8-sig", errors="replace")
+    except OSError:
+        return {}
+    end = t.find("\n---", 3) if t.startswith("---") else -1
+    if end < 0:
+        return {}
+    try:
+        m = load_frontmatter(t[3:end])
+    except Exception:
+        return None   # frontmatter that is not valid YAML: its owner cannot be read (L1 reports the error)
+    return m if isinstance(m, dict) else {}
+
+defaults = dict(l.rstrip("\n").split("\t", 1) for l in open(sys.argv[4], encoding="utf-8", errors="replace") if "\t" in l)
+n, rows = 0, []
+for p in sorted(bundle.rglob("*.md")):
+    if p.name in ("index.md", "log.md"):
+        continue
+    n += 1
+    rel = str(p.relative_to(bundle))
+    m = meta(p)
+    if m is None:
+        print("E|%s: the frontmatter is not valid YAML, so its owner cannot be read (L1 reports the YAML error)" % rel)
+        continue
+    raw = m.get("owner")
+    if raw is not None and not isinstance(raw, str):
+        # a list, a number or a boolean is not an actor; shown as JSON, never as a Python repr (0.9.8 review G-3)
+        print("E|%s: owner `%s` is not an allowed actor form (an owner is one string, such as team:docs)" % (rel, json.dumps(raw)))
+        continue
+    # The note's own owner beats a folder default.
+    own = (raw or "").strip() or defaults.get(rel, "").strip()
+    shape = Report()
+    if own:
+        check_actor(own, "owner", rel, shape)   # section 7, the same check L1 runs on generated.by
+    if not own:
+        print("E|%s: no owner (no owner key and no okf_check.owners default matches)" % rel)
+    elif shape.warnings:
+        print("E|%s: owner `%s` is not an allowed actor form (section 7: human:<id>, process:<id>, <prefix>:<id> or <producer>/<version>)" % (rel, own))
+    elif not any(c in rel + own for c in "\t\n"):
+        rows.append("%s\t%s\n" % (rel, own))
+open(sys.argv[3], "w", encoding="utf-8").write("".join(rows))
+print("N|%d" % n)
+PYEOF
+  ); ec=$?
+  [ "$ec" -eq 0 ] || { say "  Owner            COULD NOT RUN — the owner check exited $ec"; return $EXIT_DEP; }
+  [ -n "$(printf '%s\n' "$out" | sed -n 's/^N|//p')" ] || return 0
+  if printf '%s\n' "$out" | grep -q '^E|'; then
+    say "  Owner            FAIL   $(printf '%s\n' "$out" | grep -c '^E|') error(s): every note needs an owner"
+    printf '%s\n' "$out" | sed -n 's/^E|//p' | while IFS= read -r l; do record error "$l"; say "                   $l"; done
+    return $EXIT_CONFORM
+  fi
+  say "  Owner            PASS   $(printf '%s\n' "$out" | sed -n 's/^N|//p') note(s) have an owner"
   return 0
 }
 
@@ -1448,6 +1559,16 @@ run_staleness() {
   # A crashed awk printed nothing and nothing read as "PASS nothing expired" (ticket 07).
   if [ "$scan_rc" -ne 0 ]; then say "  L3 staleness     COULD NOT RUN (the awk/xargs scan exited $scan_rc)"; return $EXIT_DEP; fi
   if [ -z "$report" ]; then say "  L3 staleness     PASS   nothing expired"; return 0; fi
+  # Ownership (#68): each finding ends with its note's owner, so the text and --json stale[]/lifecycle[] both carry it.
+  # The path is everything between the kind word and the LAST " (", so a path with spaces or brackets survives.
+  if [ -s "$TMP/owners.tsv" ]; then
+    report=$(printf '%s\n' "$report" | awk -F'\t' 'NR==FNR { o[$1]=$2; next }
+      { s=$0; sub(/^ +[a-z]+ +/, "", s); pos=0; t=s
+        while ((j=index(t, " (")) > 0) { pos+=j; t=substr(t, j+1) }
+        rel=(pos > 0) ? substr(s, 1, pos-1) : s
+        if ((rel in o) && o[rel] != "") $0 = $0 " owner " o[rel]
+        print }' "$TMP/owners.tsv" -)
+  fi
   # "expired" and "malformed stale_after" are STALENESS. A status outside draft/stable/deprecated (OKF 5.4) is a lifecycle
   # finding that L1 also warns about: counting it as "need attention" beside the expired notes made 4 overdue notes read as
   # 84, and made --fail-stale exit 4 on a bundle in which nothing had expired (public issue #3).
@@ -1558,6 +1679,18 @@ selftest() {
     return $rc
   }
   probe "deprecated, no superseded_by" "no superseded_by names its successor" _succ_probe "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: deprecated\nstale_after: "2099-01-01"\n---\nbody\n'
+
+  say "  Owner (require_owner):"
+  # require_owner is switched on for this probe only, like the Successor probe (#68; the 0.9.7 review rule).
+  _owner_probe() {
+    local BUNDLE="$1" CONFIG_RC=0 rc
+    [ -f "$1/okf-base.yaml" ] && cp -p "$1/okf-base.yaml" "$TMP/selftest.base"
+    printf 'okf_check:\n  require_owner: true\n' >> "$1/okf-base.yaml"
+    run_owner "$1"; rc=$?
+    if [ -f "$TMP/selftest.base" ]; then mv "$TMP/selftest.base" "$1/okf-base.yaml"; else rm -f "$1/okf-base.yaml"; fi
+    return $rc
+  }
+  probe "note without an owner" "bad.md: no owner" _owner_probe "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\nbody\n'
 
   say ""
   # A skipped probe is a gate nobody watched fire: the verdict names it instead of saying "every gate" (S3-E1).
@@ -1720,7 +1853,7 @@ worse() { [ "$(rank "$1")" -gt "$(rank "$worst")" ] && worst="$1"; return 0; }
 OTHER_FAIL=0
 worse_other() { [ "$1" -ne 0 ] && OTHER_FAIL=1; worse "$1"; }
 
-run_config "$BUNDLE"; worse_other $?
+run_config "$BUNDLE"; CONFIG_RC=$?; worse_other $CONFIG_RC
 run_conformance "$LAYER_BUNDLE"; worse_other $?
 run_trust       "$LAYER_BUNDLE"; worse_other $?
 # --strict-trust: severity only. A C4 finding or an L1 near-miss actor warning becomes blocking (exit 1).
@@ -1737,6 +1870,7 @@ fi
 run_profile     "$LAYER_BUNDLE"; worse_other $?
 run_index       "$LAYER_BUNDLE"; worse_other $?
 run_successor   "$LAYER_BUNDLE"; worse_other $?
+run_owner       "$LAYER_BUNDLE"; worse_other $?
 run_staleness   "$LAYER_BUNDLE"; worse_other $?
 run_derived_stale "$BUNDLE"; worse_other $?
 FP_AFTER=$(bundle_fingerprint "$BUNDLE")
