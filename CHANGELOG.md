@@ -9,6 +9,13 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.17] - 2026-10-18
+
+OKF Knowledge Gate 0.9.17 closes a hole in the repository's own test gate: a test suite that exits early no longer passes.
+
+### Fixed
+- **`tools/check-tests.sh` rejects a suite with an unindented `exit` or `return` before its final-status line.** Such a suite ran nothing and still exited 0, so the pre-push gate counted it as a pass. The check skips heredoc bodies (quoted, unquoted, `<<-`, spaced), comments and quoted strings, and ignores here-strings and arithmetic shifts. A heredoc that never closes is now a loud `BROKEN` line instead of a silent skip. Known limits are listed in the script header: a multi-line quoted string holding an unindented `exit`, and a second heredoc on one line.
+
 ## [0.9.16] - 2026-10-18
 
 OKF Knowledge Gate 0.9.16 makes `okf-export` write the bundle's `log.md` from the vault's own history note.
@@ -497,7 +504,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.16...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.17...HEAD
+[0.9.17]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.16...v0.9.17
 [0.9.16]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.15...v0.9.16
 [0.9.15]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.14...v0.9.15
 [0.9.14]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.13...v0.9.14
