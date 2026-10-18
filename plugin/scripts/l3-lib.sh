@@ -44,3 +44,26 @@ function l3_line(line) {
   return 0
 }
 AWKEOF
+
+# okf_md_files <root>: print, NUL-separated, the *.md files a bundle holds, by the one rule every walker shares
+# (cases S8-H1, S8-N1, S8-E1). The rule is the vendored validator's, because that file is not ours to edit:
+# Python's rglob never enters a symlinked FOLDER (3.9 pathlib: `entry_is_dir and not entry.is_symlink()`) and
+# does yield a symlinked FILE. So a folder link below the root is not entered: it is an alias of a folder
+# already in the bundle (its notes count once, under their real path) or it points outside (not bundle notes).
+# A note-file link counts wherever it points; a dangling link is skipped. `-H`: the root itself may be a
+# symlink (E-6a). `find -L` here listed one note twice and counted notes outside the bundle (#62).
+okf_md_files() {
+  local f
+  while IFS= read -r -d '' f; do
+    [ -f "$f" ] && printf '%s\0' "$f"
+  done < <(find -H "$1" -name '*.md' \( -type f -o -type l \) -print0 2>/dev/null)
+}
+
+# okf_folder_links <root>: the symlinked folders below <root> that okf_md_files does not enter, one
+# root-relative path per line, sorted, so a run can name what it left out instead of dropping it silently.
+okf_folder_links() {
+  local f
+  find -H "$1" -mindepth 1 -type l -print0 2>/dev/null | while IFS= read -r -d '' f; do
+    [ -d "$f" ] && printf '%s\n' "${f#"${1%/}"/}"
+  done | sort
+}

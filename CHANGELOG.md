@@ -9,6 +9,16 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.11] - 2026-10-18
+
+OKF Knowledge Gate 0.9.11 makes every file walker treat symlinks the same way, so a note is counted once.
+
+### Fixed
+- **A symlinked folder is no longer entered; a symlinked note file still counts.** The layers walked with `find -L`, which followed a folder link: a folder that aliased another folder in the bundle listed every note in it twice (an expired note appeared twice under `--fail-stale`), and a link that pointed outside the bundle counted the outside notes as bundle notes. The vendored validator never entered folder links, so the layers disagreed with it. All walkers now use one rule (`okf_md_files`), the validator's: a folder link below the bundle root is not entered, a note-file link counts wherever it points, a dangling link is skipped, and the bundle root itself may be a symlink.
+- **The text report names what it left out.** When a bundle holds symlinked folders, the report has a line `symlinks  N symlinked folder(s) not entered`, so notes behind a link are left out on the record, not silently. It never changes the exit code. (`--json` does not list them.)
+- **`--duplicates` and `--duplicates-body` keep one entry per real path.** A symlink alias of a note is no longer listed against a third note that shares its title. The real file wins over the alias, whatever order the walk finds them.
+- **A new suite, `plugin/scripts/symlinks.test.sh`,** checks that every walker returns the same file set on the same symlink tree (case S8-E1), and runs in the release gate.
+
 ## [0.9.10] - 2026-10-18
 
 OKF Knowledge Gate 0.9.10 finds notes whose bodies are near copies, with `--duplicates-body`.
@@ -445,7 +455,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.10...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.11...HEAD
+[0.9.11]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.7...v0.9.8

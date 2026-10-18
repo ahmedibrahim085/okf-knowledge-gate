@@ -74,13 +74,13 @@ okfignore_list() {
     rel=${f#"$bundle"/}
     okfignore_match "$rel" && continue
     printf '%s\0' "$rel"
-  done < <(find -L "$bundle" -name .git -prune -o \( -type f -o -type l \) -name '*.md' -print0 2>/dev/null)
+  done < <(find -H "$bundle" -name .git -prune -o \( -type f -o -type l \) -name '*.md' -print0 2>/dev/null)   # -H: okf_md_files' rule (l3-lib.sh)
 }
 
 # okfignore_mirror <bundle> <dest>: copy the non-ignored notes and config (*.md, *.yaml, *.yml,
 # *.json) into <dest>. Prints "<kept> <excluded-notes> <excluded-files>" (the first two count concept notes: *.md other than
-# index.md and log.md). Same file set L1 sees without .okfignore: symlinked directories ARE
-# followed (find -L), so a note behind one is neither lost nor listed by one layer only. Exit 1 (naming the file on stderr) when a copy fails, so a note is never dropped
+# index.md and log.md). Same file set L1 sees without .okfignore: symlinked directories are NOT
+# entered (find -H, as okf_md_files and the validator, #62), so a note is neither lost nor listed by one layer only. Exit 1 (naming the file on stderr) when a copy fails, so a note is never dropped
 # silently. Nothing is deleted outside <dest>.
 okfignore_mirror() {
   local bundle="${1%/}" dest="$2" f rel kept=0 excl=0 exall=0 isnote rc
@@ -100,7 +100,7 @@ okfignore_mirror() {
     case "$rel" in */*) mkdir -p "$dest/${rel%/*}" || return 1;; esac
     cp -p "$f" "$dest/$rel" 2>/dev/null || { echo "okfignore: cannot copy $rel" >&2; return 1; }
     [ "$isnote" -eq 1 ] && kept=$((kept+1))
-  done < <(find -L "$bundle" -name .git -prune -o \( -type f -o -type l \) \( -name '*.md' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) -print0 2>/dev/null)
+  done < <(find -H "$bundle" -name .git -prune -o \( -type f -o -type l \) \( -name '*.md' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) -print0 2>/dev/null)
   printf '%s %s %s\n' "$kept" "$excl" "$exall"
 }
 

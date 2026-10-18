@@ -2051,14 +2051,15 @@ grep -q "timed out after 2 s" "$TMP/h21t.txt" && ok "LT-21d an okflint that igno
 pkill -f '^sleep 8$' 2>/dev/null
 
 # LT-20p: an ignore file that excludes nothing changes nothing, even when every note is
-# behind a symlinked directory.
+# behind a symlinked directory. Since #62 (S8-N1) a folder link that points outside the bundle is not
+# entered by any layer, so both runs see no note (exit 0) and both name the link; before, L3 alone saw it (exit 4).
 SL="$TMP/sl15"; mkdir -p "$SL/b" "$SL/out"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$SL/b/index.md"
 printf -- '---\ntype: Lesson\ntitle: S\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2000-01-01"\n---\nx\n' > "$SL/out/stale.md"
 ln -s "$SL/out" "$SL/b/lnk"
 "$CHECK" "$SL/b" --fail-stale >/dev/null 2>&1; rc0=$?
 printf '# nothing\n' > "$SL/b/.okfignore"
 "$CHECK" "$SL/b" --fail-stale >"$TMP/sl15.txt" 2>&1; rc1=$?
-{ [ "$rc0" = "4" ] && [ "$rc1" = "4" ] && ! grep -q "excludes every note" "$TMP/sl15.txt"; } \
+{ [ "$rc0" = "0" ] && [ "$rc1" = "0" ] && ! grep -q "excludes every note" "$TMP/sl15.txt" && grep -qxE ' +lnk' "$TMP/sl15.txt"; } \
   && ok "LT-20p a no-op .okfignore keeps the verdict (exit $rc0 -> $rc1) and prints no false message" \
   || bad "LT-20p no-op ignore file" "without=$rc0 with=$rc1 $(grep -n IGNORE "$TMP/sl15.txt" | head -1)"
 # LT-20q: a leading **/ also matches at the bundle root.
@@ -2830,7 +2831,9 @@ printf '%s' "$out" | grep -q 'old.md (stale_after' \
   || bad "LT-48a newline-named directory" "hook printed: $(printf '%s' "$out" | head -c 120)"
 # (b) With an active .okfignore, a note reachable only through a SYMLINKED DIRECTORY was checked by no layer: the ignore
 # mirror and keep-list walked with find without -L, so the run said "0 checked" about a bundle whose note it reports
-# without the ignore file (cross-vendor review, finding 3).
+# without the ignore file (cross-vendor review, finding 3). Since #62 (S8-N1) a folder link that points outside the
+# bundle is entered by NO layer, the ignore walker included: the note is not a bundle note in either run, both runs
+# name the link, and with archive/ ignored nothing is left, which the run says instead of passing.
 S48="$TMP/lt48b"; mkbundle "$S48"; rm -f "$S48/c.md"; mkdir -p "$S48/archive" "$TMP/lt48b_outside/sub"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n---\nb\n' > "$TMP/lt48b_outside/sub/old.md"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n---\nb\n' > "$S48/archive/a.md"
@@ -2838,8 +2841,9 @@ ln -s ../lt48b_outside "$S48/link"
 "$CHECK" "$S48" >"$S48.base.txt" 2>&1
 printf 'archive/\n' > "$S48/.okfignore"
 "$CHECK" "$S48" >"$S48.ign.txt" 2>&1
-{ grep -q 'link/sub/old.md' "$S48.base.txt" && grep -q 'link/sub/old.md' "$S48.ign.txt" && ! grep -q 'nothing was checked' "$S48.ign.txt"; } \
-  && ok "LT-48b an active .okfignore does not drop a note that is reachable only through a symlinked directory" \
+{ ! grep -q 'link/sub/old.md' "$S48.base.txt" && ! grep -q 'link/sub/old.md' "$S48.ign.txt" \
+  && grep -qxE ' +link' "$S48.base.txt" && grep -qxE ' +link' "$S48.ign.txt" && grep -q 'nothing was checked' "$S48.ign.txt"; } \
+  && ok "LT-48b with or without an active .okfignore, a note behind an outside folder link is not a bundle note, the link is named, and 'nothing was checked' is said" \
   || bad "LT-48b ignore + symlinked directory" "$(grep -n 'ignore \|IGNORE\|old.md' "$S48.ign.txt" | head -3 | cut -c1-120 | tr '\n' ' ')"
 
 # --- LT-49 (0.9.2, public issues #2 and #3): --json carries the L2 counts; L3 keeps "unknown status" apart from "expired" --
@@ -3302,6 +3306,15 @@ note56 "$D" a.md "Deploy rule" "One"; note56 "$D" b.md "Deploy rule" "Two" 'owne
 { [ "$rcl" -eq 0 ] && grep -Eq 'a\.md \[[^]]*owner team:a\] +~ +b\.md \[[^]]*owner team:b\]' "$D.txt"; } \
   && ok "LT-56g the owner shown is the effective one: the folder default for a note without an owner key" \
   || bad "LT-56g effective owner" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# --- LT-58 (0.9.11 review, #62 S8-E1): a dangling symlink named *.md is no note for the okf_check rules either -----------
+# The walkers of the layers skip it (okf_md_files); the Successor and Owner rules walked with rglob and counted it.
+mk56 dng '  require_owner: true\n  deprecated_requires: superseded_by\n'; D="$TMP/lt56-dng"; rm -f "$D/c.md"
+note56 "$D" a.md "Alpha" "One" 'owner: team:x'; ln -s nowhere.md "$D/dang.md"
+"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+# okflint (not ours) may itself fail on the dangling link, so the exit code is not asserted: the two rules' own lines are.
+{ grep -Eq '^  Owner +PASS +1 note' "$D.txt" && grep -Eq '^  Successor +PASS' "$D.txt" && ! grep -q 'dang.md: no owner' "$D.txt"; } \
+  && ok "LT-58a a dangling symlink named dang.md is not a note: the Owner rule counts 1 note and reports no finding for it" \
+  || bad "LT-58a dangling symlink in the okf_check rules" "rc=$rcl $(grep -n 'dang' "$D.txt" | head -3 | tr '\n' ' ')"
 # LT-56p (0.9.9 review, HIGH): a note whose `sources` is not a list passes L1 with a warning, so the report must read it, not crash.
 mk56 srcs; D="$TMP/lt56-srcs"; note56 "$D" a.md "Same" "One" 'sources: 5'; note56 "$D" b.md "Same" "Two" 'sources: {x: 1}'; note56 "$D" c.md "Other" "Three" 'sources: text'
 "$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
@@ -3314,6 +3327,14 @@ mk56 lnk; D="$TMP/lt56-lnk"; note56 "$D" a.md "Alias" "One"; ln -s a.md "$D/alia
 { [ "$rcl" -eq 0 ] && grep -q 'no candidate duplicates' "$D.txt"; } \
   && ok "LT-56q a symlink alias of a note is not listed as a duplicate of its target" \
   || bad "LT-56q symlink alias" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# LT-56r (0.9.9 review register, #62): the alias and its target are ONE note, so a third note that duplicates it is one
+# pair, listed under the real note. The alias sorts first on purpose: the real path must win, not the walk order.
+mk56 lnk3; D="$TMP/lt56-lnk3"; note56 "$D" b.md "Alias" "One"; ln -s b.md "$D/a-link.md"; note56 "$D" c.md "Alias" "Two"
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && [ "$(grep -c ' ~ ' "$D.txt")" = 1 ] && grep -Eq 'title 1\.00 +b\.md .*~ +c\.md' "$D.txt" \
+  && ! grep -q 'a-link\.md' "$D.txt"; } \
+  && ok "LT-56r a symlink alias is counted once: a third duplicate note is one pair, under the real note" \
+  || bad "LT-56r alias plus a third note" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
 # LT-56m: the plugin directory ships as it was installed. A python3 that writes bytecode beside the imported module
 # (Linux does; Apple's python redirects it to a cache folder) left scripts/__pycache__/ behind, and plugin.test.sh Z-2
 # then reported it as a dead file on the Debian gate (0.9.9). A shim python3 that clears the cache prefix reproduces

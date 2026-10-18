@@ -52,7 +52,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.10"
+VERSION="0.9.11"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -290,9 +290,20 @@ pin_of() { [ -f "$PINS" ] && awk -v k="$1" '$1==k{print $2}' "$PINS" | head -1; 
 # declared unreadable and failed closed — R-7's own scenario, broken by the fix
 # for G-8. Caught by R-7 before it shipped, which is what R-7 is for.
 unreadable_dirs() {
-  find -L "$1" -type d -print0 2>/dev/null | while IFS= read -r -d '' d; do
+  find -H "$1" -type d -print0 2>/dev/null | while IFS= read -r -d '' d; do   # -H: the folders the layers read (okf_md_files)
     { [ -r "$d" ] && [ -x "$d" ]; } || printf '%s\n' "$d"
   done | sort          # find's order varies run to run; a gate's output should not
+}
+
+# report_folder_links <bundle>: name the symlinked folders no layer enters (okf_md_files in l3-lib.sh, S8-N1), so
+# notes behind them are left out on the record, never silently. Silent when there are none.
+report_folder_links() {
+  local links n
+  links=$(okf_folder_links "$1")
+  [ -n "$links" ] || return 0
+  n=$(printf '%s\n' "$links" | grep -c .)
+  say "  symlinks         $n symlinked folder(s) not entered (an alias of a folder in the bundle, or outside it):"
+  printf '%s\n' "$links" | say_capped 10 "                   "
 }
 
 _stat_flavor=""
@@ -316,7 +327,7 @@ bundle_fingerprint() {
   # No `xargs -r`: that flag is GNU-only. The `-s` test on the file is the
   # portable equivalent, and keeps stat from being invoked with zero arguments.
   local list="$TMP/fingerprint.files"
-  find -L "$1" -name '*.md' -type f -print0 2>/dev/null > "$list"
+  okf_md_files "$1" > "$list"
   [ -s "$list" ] || return 0
   if [ -z "$_stat_flavor" ]; then
     if stat -f '%z' /dev/null >/dev/null 2>&1; then _stat_flavor=bsd; else _stat_flavor=gnu; fi
@@ -654,7 +665,7 @@ run_conformance() {
       else
         keep+=("$rel")
       fi
-    done < <(find -L "$bundle" -name '*.md' -type f -print0 2>/dev/null)
+    done < <(okf_md_files "$bundle")
     if [ "$ncrash" -eq 0 ]; then
       say "  L1 conformance   COULD NOT RUN (validator produced no output)"; return $EXIT_DEP
     fi
@@ -809,7 +820,7 @@ root = os.path.realpath(str(bundle))
 
 n = 0
 for p in sorted(bundle.rglob("*.md")):
-    if p.name in ("index.md", "log.md"):
+    if p.name in ("index.md", "log.md") or not p.is_file():   # a dangling link is no note (okf_md_files)
         continue
     m = meta(p)
     if m.get("status") != "deprecated":
@@ -884,7 +895,7 @@ PY
           OKFIGNORE_PATTERNS=("$pat"); okfignore_match "$rel" && def=$own
         done <<< "$pats"
         [ -n "$def" ] && printf '%s\t%s\n' "$rel" "$def"
-      done < <(find -L "$bundle" -name '*.md' -type f -print0 2>/dev/null) ) > "$TMP/owner-defaults.tsv"
+      done < <(okf_md_files "$bundle") ) > "$TMP/owner-defaults.tsv"
   fi
   # $TMP/owners.tsv (relative path, TAB, owner) is what L3 reads to show the owner on its findings.
   out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$BUNDLE/okf-base.yaml" "$TMP/owners.tsv" "$TMP/owner-defaults.tsv" <<'PYEOF'
@@ -906,7 +917,7 @@ bundle = pathlib.Path(sys.argv[1])
 defaults = dict(l.rstrip("\n").split("\t", 1) for l in open(sys.argv[4], encoding="utf-8", errors="replace") if "\t" in l)
 n, rows = 0, []
 for p in sorted(bundle.rglob("*.md")):
-    if p.name in ("index.md", "log.md"):
+    if p.name in ("index.md", "log.md") or not p.is_file():   # a dangling link is no note (okf_md_files)
         continue
     n += 1
     rel = str(p.relative_to(bundle))
@@ -975,7 +986,7 @@ l2_isolate() {
   local max="${OKF_L2_ISOLATE_MAX:-200}" f rel n=0 probe="$TMP/l2probe" mirror="$TMP/l2mirror" prc plimit surv=0 start=$SECONDS c skip
   local -a crashed=()
   case "$max" in ''|*[!0-9]*) max=200;; esac
-  while IFS= read -r -d '' f; do n=$((n+1)); done < <(find "$bundle" -name '*.md' -type f -print0 2>/dev/null)
+  while IFS= read -r -d '' f; do n=$((n+1)); done < <(okf_md_files "$bundle")
   [ "$n" -gt 0 ] && [ "$n" -le "$max" ] || return 1
   plimit=8; [ "$l2limit" -lt "$plimit" ] && plimit="$l2limit"
   L2_CRASHED=()
@@ -991,7 +1002,7 @@ l2_isolate() {
       0|1) case "${rel##*/}" in index.md|log.md) ;; *) surv=$((surv+1));; esac ;;   # concepts only
       *)   crashed+=("$rel") ;;
     esac
-  done < <(find "$bundle" -name '*.md' -type f -print0 2>/dev/null)
+  done < <(okf_md_files "$bundle")
   [ "${#crashed[@]}" -gt 0 ] && [ "$surv" -gt 0 ] || return 1
   # Pass 2: a full COPY of the bundle without the crashed notes (reserved files, manifest and assets
   # stay, so okflint sees the same tree), then one run on it.
@@ -1001,7 +1012,7 @@ l2_isolate() {
     for c in "${crashed[@]}"; do [ "$c" = "$rel" ] && { skip=1; break; }; done
     [ "$skip" -eq 1 ] && continue
     mkdir -p "$mirror/$(dirname "$rel")" && cp -p "$f" "$mirror/$rel" 2>/dev/null
-  done < <(find "$bundle" -name .git -prune -o -type f -print0 2>/dev/null)
+  done < <(find -H "$bundle" -name .git -prune -o \( -type f -o -type l \) -print0 2>/dev/null)   # -H, links: as okf_md_files
   run_limited "$l2limit" "$TMP/l2.out" sh -c 'cd "$1" && exec okflint validate . --manifest okf-base.yaml --json' _ "$mirror"; ec=$?
   cat "$TMP/l2.out" "$TMP/l2.out.err" > "$TMP/l2.txt" 2>/dev/null
   case "$ec" in
@@ -1259,7 +1270,7 @@ bundle = pathlib.Path(sys.argv[1])
 # conformance layer standing directly above it in the same report, and two
 # definitions of "concept" inside one tool are worse than no check at all.
 RESERVED = {"index.md", "log.md"}
-concepts = [p for p in bundle.rglob("*.md") if p.name not in RESERVED]
+concepts = [p for p in bundle.rglob("*.md") if p.name not in RESERVED and p.is_file()]
 
 def declared_type(p):
     try:
@@ -1398,7 +1409,7 @@ if _kl:
         keep = None
 
 for p in sorted(bundle.rglob("*.md")):
-    if p.name in RESERVED:
+    if p.name in RESERVED or not p.is_file():
         continue
     if keep is not None and str(p.relative_to(bundle)) not in keep:
         continue
@@ -1494,12 +1505,11 @@ run_staleness() {
   # concepts in subdirectories, so L3 was scanning ZERO of them and reporting
   # "nothing expired" from an empty set. Caught by E-9.
   #
-  # `find -L`, not plain `find`: without -L a SYMLINK to a .md never matches
-  # `-type f`, so L3 silently skipped symlinked concepts that L1 counted (python
-  # is_file() follows links). The two layers then disagreed about the bundle's
-  # contents and an expired symlinked concept read as "nothing expired".
-  # -L also drops broken symlinks, which is correct — they cannot be read anyway.
-  # Same class as lessons/readdir-symlink-dirent-trap.md. Caught by E-6b.
+  # okf_md_files (l3-lib.sh), not a bare `find -type f`: a SYMLINK to a .md never matches `-type f`, so L3
+  # silently skipped symlinked concepts that L1 counted (python is_file() follows links), and an expired
+  # symlinked concept read as "nothing expired". It also drops broken links (they cannot be read) and does
+  # not enter symlinked FOLDERS, as the validator does (#62). Same class as lessons/readdir-symlink-dirent-trap.md.
+  # Caught by E-6b.
   # `find -print0` piped straight to xargs -0. The previous `find | tr '\n' '\0'`
   # split on newlines, so a bundle path CONTAINING a newline was cut into
   # fragments and L3 silently scanned nothing — same class as E-2b, which had
@@ -1517,7 +1527,7 @@ run_staleness() {
   # PYTHONPATH. No consumer reads it today — G-2 was also harmless until okflint
   # silently changed parser. xargs passes its environment to awk, so ENVIRON
   # still sees it and R-7 (newline-safe root) is preserved. (G-12)
-  report=$(find -L "$bundle" -name '*.md' -type f -print0 2>/dev/null | OKF_L3_ROOT="$bundle/" xargs -0 awk -v today="$today" "$L3_AWK_LIB"'
+  report=$(okf_md_files "$bundle" | OKF_L3_ROOT="$bundle/" xargs -0 awk -v today="$today" "$L3_AWK_LIB"'
     BEGIN { root = ENVIRON["OKF_L3_ROOT"] }
     { sub(/\r$/, "") }   # CRLF notes: "---\r" never equalled "---" (LT-02)
     FNR==1 { b=FILENAME; n=index(b,root); if (n==1) b=substr(b,length(root)+1)
@@ -1788,6 +1798,7 @@ if ! doctor >/dev/null 2>&1; then doctor; echo "L1 cannot run — fix the above.
 if [ "$MODE" = duplicates ]; then run_duplicates "$BUNDLE"; exit $?; fi
 
 say "okf-check $VERSION — $BUNDLE"
+report_folder_links "$BUNDLE"
 worst=0
 # .okfignore: every layer sees a filtered COPY of the notes and config; the bundle
 # itself is never touched. No file: LAYER_BUNDLE is the bundle and nothing below changes.
@@ -1826,7 +1837,7 @@ FP_BEFORE=$(bundle_fingerprint "$BUNDLE")
 # produce it. State it; a lane that quietly stopped working is the defect this
 # whole tool exists to catch. (Z-3)
 FP_DEGRADED=0
-if [ -z "$FP_BEFORE" ] && [ -n "$(find -L "$BUNDLE" -name '*.md' -type f -print -quit 2>/dev/null)" ]; then
+if [ -z "$FP_BEFORE" ] && [ -n "$(okf_md_files "$BUNDLE" | tr -d '\0' | head -c 1)" ]; then
   FP_DEGRADED=1
 fi
 # PRECEDENCE, not max(). `worst=max(rc)` returned 2 ("could not run") for a

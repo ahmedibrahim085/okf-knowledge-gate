@@ -57,10 +57,18 @@ keep = None
 if os.environ.get("OKF_KEEP_LIST"):
     keep = {x for x in open(os.environ["OKF_KEEP_LIST"], encoding="utf-8", errors="replace").read().split("\0") if x}
 
-notes = []
+# One entry per real path (#62): a symlink alias is the same note as its target, so a third note that duplicates it is
+# one pair. The real file wins over an alias whatever the walk order (LT-56r).
+by_real = {}
 for p in sorted(root.rglob("*.md")):
     if p.name in ("index.md", "log.md") or (keep is not None and str(p.relative_to(root)) not in keep):
         continue
+    r = os.path.realpath(str(p))
+    if r not in by_real or (by_real[r].is_symlink() and not p.is_symlink()):
+        by_real[r] = p
+
+notes = []
+for p in sorted(by_real.values()):
     m = meta(p)
     gen = m.get("generated") if isinstance(m.get("generated"), dict) else {}
     sb = m.get("superseded_by") or []

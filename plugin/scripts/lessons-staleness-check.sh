@@ -37,12 +37,12 @@ _L3LIB="$(cd -P "$(dirname "$_self")" && pwd)/l3-lib.sh"
 
 # `find` not a bare glob: an empty dir must yield an empty loop, not a shell error.
 # One awk invocation handles every file; string compare is a correct date compare for ISO-8601.
-# `find -L`: a symlinked concept never matches `-type f` without it, so it would
-# be skipped silently. Found in okf-check by test E-6b and fixed here in the same
+# okf_md_files: a symlinked concept never matches a bare `-type f`, so it would be skipped silently; a symlinked
+# FOLDER is not entered (the validator's rule, #62). Found in okf-check by test E-6b and fixed here in the same
 # pass — "my new entry works now" is how 30 other missing entries stay hidden
 # (lessons/readdir-symlink-dirent-trap.md).
 # -print0, not `| tr '\n' '\0'`: a directory NAME holding a newline split the list and the hook printed nothing at all.
-report=$(find -L "$L" -name '*.md' -type f -print0 2>/dev/null | xargs -0 awk -v today="$TODAY" "$L3_AWK_LIB"'
+report=$(okf_md_files "$L" | xargs -0 awk -v today="$TODAY" "$L3_AWK_LIB"'
   { sub(/\r$/, "") }   # CRLF notes (LT-02b)
   FNR == 1 {
     base = FILENAME

@@ -222,7 +222,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.10
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.11
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -238,7 +238,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.10
+    rev: v0.9.11
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -325,6 +325,7 @@ probes. Upstream bug fixes we depend on are submitted as pull requests (see [Pin
 ```bash
 bash plugin/scripts/okf-check.test.sh     # the gate
 bash plugin/scripts/okf-verify.test.sh    # L4
+bash plugin/scripts/symlinks.test.sh      # every file walker treats symlinks alike
 bash plugin/scripts/plugin.test.sh        # packaging and install drift
 bash tools/demo/demo.test.sh              # the README demo is a recording of real runs
 plugin/scripts/okf-check --selftest
