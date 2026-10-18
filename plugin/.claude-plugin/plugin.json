@@ -2,7 +2,7 @@
   "$schema": "https://json.schemastore.org/claude-code-plugin-manifest.json",
   "name": "okf",
   "displayName": "OKF Knowledge Gate",
-  "version": "0.9.23",
+  "version": "0.9.24",
   "description": "One gate over the Open Knowledge Format toolchain: spec conformance (vendored checker), house rules (okflint manifest), and staleness — with a doctor that names missing dependencies and a selftest that re-proves every gate still fires.",
   "author": {
     "name": "ahmedmaged"

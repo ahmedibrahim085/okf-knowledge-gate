@@ -9,6 +9,13 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.24] - 2026-10-18
+
+OKF Knowledge Gate 0.9.24 stops `okf-export` from overwriting a note silently when two vault notes would get the same output name.
+
+### Fixed
+- **`okf-export` refuses two inputs that would be written to one output file.** On a case-sensitive disk a vault folder can hold both `Index.md` and `index.md`; both become the folder note `foo.md`, and the second write replaced the first with exit 0 and no message, so one note's content was lost. The export now stops before writing anything, with exit 2 and a message that names both files (`A and B would both be written to C; rename one of them in the vault`). The existing messages for an `index` or `log` that would be renamed onto an existing note are unchanged, and notes in different folders do not clash.
+
 ## [0.9.23] - 2026-10-18
 
 OKF Knowledge Gate 0.9.23 gives the L2 profile a verdict for a bundle that holds a dangling Markdown link.
@@ -556,7 +563,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.23...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.24...HEAD
+[0.9.24]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.23...v0.9.24
 [0.9.23]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.22...v0.9.23
 [0.9.22]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.21...v0.9.22
 [0.9.21]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.20...v0.9.21

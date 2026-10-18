@@ -116,6 +116,27 @@ def is_log(rel: Path) -> bool:
     return rel.name.casefold() == "log.md"
 
 
+def vault_out_rel(rel: Path, root_name: str) -> Path:
+    """Spec 3.1: index.md is reserved and MUST NOT be a concept, so a vault's index.md note becomes the
+    folder note dir/<dir>.md (the vault root's takes the vault folder's name). The folder is kept."""
+    if rel.name.casefold() == "index.md":   # casefold: on a case-insensitive disk Index.md IS index.md
+        return rel.parent / f"{rel.parent.name or root_name}.md"
+    if is_log(rel):
+        return rel.parent / "log.md"   # spec 3.1 names it in lower case; a case-sensitive disk tells Log.md apart
+    return rel
+
+
+def shared_outputs(files: list[Path], root_name: str) -> list[tuple[Path, Path, Path]]:
+    """(first, second, output) for each output path that two or more renamed inputs would be written to (#96):
+    Index.md and index.md in one folder both become <folder>.md. Only renamed files are compared: a renamed file
+    against a note that already has that name is the clash check in main(), and a.md next to A.md stay two files."""
+    groups: dict[Path, list[Path]] = {}
+    for rel in files:
+        if vault_out_rel(rel, root_name) != rel:
+            groups.setdefault(vault_out_rel(rel, root_name), []).append(rel)
+    return [(g[0], g[1], out) for out, g in groups.items() if len(g) > 1]
+
+
 def build_log(rel: Path, lines: list[str], problems: list[str]) -> str | None:
     """A spec 9 log from a vault log.md's dated lines: date groups, newest first, no frontmatter, the vault log's own
     `# Title` kept (else `# Log`). Whatever cannot go into the log goes to `problems`, so nothing is dropped silently:
@@ -266,14 +287,7 @@ def main() -> int:
             return [p for p in (Path(name), Path(name + ".md")) if p in fileset][:1]
         return by_name.get(name) or by_name.get(name + ".md") or []
 
-    def out_rel(rel: Path) -> Path:
-        """Spec 3.1: index.md is reserved and MUST NOT be a concept, so a vault's index.md note becomes the
-        folder note dir/<dir>.md (the vault root's takes the vault folder's name). The folder is kept."""
-        if rel.name.casefold() == "index.md":   # casefold: on a case-insensitive disk Index.md IS index.md
-            return rel.parent / f"{rel.parent.name or vault.name}.md"
-        if is_log(rel):
-            return rel.parent / "log.md"   # spec 3.1 names it in lower case; a case-sensitive disk tells Log.md apart
-        return rel
+    out_rel = functools.partial(vault_out_rel, root_name=vault.name)
 
     # S10-E2: a rename onto an existing note would overwrite it. Stop before anything is written.
     # Names are compared case-folded, the way a case-insensitive disk (macOS APFS, Windows) compares them.
@@ -287,7 +301,11 @@ def main() -> int:
             fail(f"{rel.as_posix()} is the folder note of a folder named index, which leaves it no other name; rename the folder in the vault")
         else:
             fail(f"{rel.as_posix()} would be renamed to {new.as_posix()}, which already exists; rename one of them in the vault")
-    if clashes:
+    # Two renamed inputs that share one output name would overwrite each other: Index.md and index.md (#96).
+    shared = shared_outputs(files, vault.name)
+    for first, second, new in shared:
+        fail(f"{first.as_posix()} and {second.as_posix()} would both be written to {new.as_posix()}; rename one of them in the vault")
+    if clashes or shared:
         return 2
 
     problems: list[str] = []

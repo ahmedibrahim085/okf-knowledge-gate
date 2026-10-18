@@ -596,6 +596,76 @@ done
 [ -z "$r29" ] && ok "X-29 an empty log, a title only and headings only are reported as no dated entry (exit 1), no log written" \
   || bad "X-29 no dated entry" "$r29"
 
+# --- S10-CL: two inputs that map to one output name (#96) ----------------------------------------
+# Index.md and index.md can share a folder only on a case-sensitive disk; both become <folder>.md, so the second
+# write used to replace the first in silence. The unit cases (CL-U*) hand the command's own path rule an in-memory
+# file list, so they run on every disk; the CL-C* cases build the real vault and SKIP where the disk cannot hold it.
+# shared <root-name> <vault-relative file>...: the (first, second, output) triples okf-export refuses, one per line.
+shared() {
+  "$REALPY" - "$EXPORT" "$@" <<'PY' 2>&1
+import importlib.machinery, importlib.util, sys
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
+loader.exec_module(mod)
+for a, b, out in mod.shared_outputs(sorted(Path(p) for p in sys.argv[3:]), sys.argv[2]):
+    print(f"{a.as_posix()}|{b.as_posix()}|{out.as_posix()}")
+PY
+}
+got=$(shared kb foo/Index.md foo/index.md)
+[ "$got" = "foo/Index.md|foo/index.md|foo/foo.md" ] \
+  && ok "S10-CL-U1 foo/Index.md and foo/index.md both map to foo/foo.md and are reported as a pair" \
+  || bad "S10-CL-U1 pair" "got: $(printf '%s' "$got" | tail -1)"
+got=$(shared kb Index.md index.md a.md)
+[ "$got" = "Index.md|index.md|kb.md" ] \
+  && ok "S10-CL-U2 root-level Index.md and index.md both map to the vault folder's name (kb.md)" \
+  || bad "S10-CL-U2 root pair" "got: $(printf '%s' "$got" | tail -1)"
+got=$(shared kb foo/INDEX.md foo/Index.md foo/index.md)
+[ "$got" = "foo/INDEX.md|foo/Index.md|foo/foo.md" ] \
+  && ok "S10-CL-U3 a three-way clash is one line that names the first two files" \
+  || bad "S10-CL-U3 three-way" "got: $(printf '%s' "$got" | tr '\n' ' ')"
+got=$(shared kb a/index.md A/index.md)
+[ -z "$got" ] \
+  && ok "S10-CL-U4 index.md in a/ and in A/ (a/a.md, A/A.md) do not clash" \
+  || bad "S10-CL-U4 different folders" "got: $(printf '%s' "$got" | tr '\n' ' ')"
+got=$(shared kb a.md A.md foo/index.md foo/foo2.md log.md)
+[ -z "$got" ] \
+  && ok "S10-CL-U5 a vault with no shared output name reports no pair (A.md and a.md stay two files, as before)" \
+  || bad "S10-CL-U5 no clash" "got: $(printf '%s' "$got" | tr '\n' ' ')"
+
+V="$TMP/cl/kb"; O="$TMP/cl/out"; P="$TMP/cl/probe"; mkdir -p "$P"
+printf x > "$P/case-probe"
+if [ -e "$P/CASE-PROBE" ]; then
+  printf '  SKIP  S10-CL-C1..C4 Index.md/index.md and Log.md/log.md in one folder: this disk is case-insensitive (run on the Debian gate)\n'
+else
+  note "$V" foo/Index.md "CAPITAL-I"; note "$V" foo/index.md "LOWER-i"
+  rc=$(run "$V" "$O")
+  { [ "$rc" = 2 ] && grep -qxF 'okf-export: foo/Index.md and foo/index.md would both be written to foo/foo.md; rename one of them in the vault' "$TMP/out.txt" \
+    && [ ! -e "$O" ]; } \
+    && ok "S10-CL-C1 foo/Index.md + foo/index.md stop the export (exit 2), name both and the shared output, write nothing" \
+    || bad "S10-CL-C1 index clash" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+
+  rm -rf "$TMP/cl"; mkdir -p "$P"; note "$V" Index.md "CAPITAL-I"; note "$V" index.md "LOWER-i"
+  rc=$(run "$V" "$O")
+  { [ "$rc" = 2 ] && grep -qxF 'okf-export: Index.md and index.md would both be written to kb.md; rename one of them in the vault' "$TMP/out.txt" \
+    && [ ! -e "$O" ]; } \
+    && ok "S10-CL-C2 root-level Index.md + index.md stop the export (exit 2), nothing written" \
+    || bad "S10-CL-C2 root clash" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+
+  rm -rf "$TMP/cl"; mkdir -p "$P"; lognote "$V" log.md "- 2026-05-01: one"; lognote "$V" Log.md "- 2026-05-02: two"
+  rc=$(run "$V" "$O")
+  { [ "$rc" = 2 ] && grep -qxF 'okf-export: Log.md would be renamed to log.md, which already exists; rename one of them in the vault' "$TMP/out.txt" \
+    && [ ! -e "$O" ]; } \
+    && ok "S10-CL-C3 log.md + Log.md keep their own message (exit 2), nothing written" \
+    || bad "S10-CL-C3 log clash" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+
+  rm -rf "$TMP/cl"; mkdir -p "$P"; note "$V" a/index.md "in a"; note "$V" A/index.md "in A"
+  rc=$(run "$V" "$O")
+  { [ "$rc" = 0 ] && grep -qx 'in a' "$O/a/a.md" && grep -qx 'in A' "$O/A/A.md"; } 2>/dev/null \
+    && ok "S10-CL-C4 index.md in a/ and in A/ export to a/a.md and A/A.md (exit 0)" \
+    || bad "S10-CL-C4 different folders" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
