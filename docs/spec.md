@@ -1166,6 +1166,19 @@ okf-check's own options live in ONE `okf_check:` block of `okf-base.yaml`; each 
 | LT-51c | S4-E1: no `okf_check:` block | text and `--json` output and exit code byte-identical to the same build with the okf_check step deleted | ✅ |
 | LT-52 | One table of `okf_check:` shapes (valid, wrong type, null, list, typo'd key, unknown entry key, empty path, invalid UTF-8, invalid YAML) to BOTH tools | both exit 0 on a valid block; both exit 2 on an invalid one, and `okf-check` shows `okf-verify`'s message | ✅ |
 
+### `--selftest` covers every layer (#59, 0.9.6)
+`--selftest` has a probe for each layer: L0 (the doctor, pointed at a validator path that does not exist, must say `MISSING`), L1, L2 profile, L2 index (an `index.md` that declares 5 notes for the 1-note baseline; the original `index.md` is put back), Trust, L3 staleness and L3 derived staleness (a note that records the baseline note as of 2000-01-01). Each new probe is proven by a plugin copy with that layer disabled: `--selftest` then reports `NOT FIRED` (the Gherkin "did not fire") and exits 5. Without `okflint` the L2 profile probes are SKIPPED with the reason, and the verdict line names the skipped layer instead of "every gate still fires"; the exit stays 0, as for a skipped layer in a check.
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-55a | S3-H1: L3 derived probe, healthy install | `L3 (derived staleness):` `FIRED`; exit 0 | ✅ |
+| LT-55b | S3-N1: L3 derived staleness disabled | its probe `NOT FIRED`; exit 5 | ✅ |
+| LT-55c | S3-H1: L2 index probe, healthy install | `L2 (index):` `FIRED`; exit 0 | ✅ |
+| LT-55d | the L2 index count check disabled | its probe `NOT FIRED`; exit 5 | ✅ |
+| LT-55e | S3-H1: L0 probe, healthy install | `L0 (doctor):` `FIRED`; exit 0 | ✅ |
+| LT-55f | the doctor's validator check disabled | its probe `NOT FIRED`; exit 5 | ✅ |
+| LT-55g | S3-E1: `okflint` absent | `L2 (house profile): SKIPPED — okflint absent`; the verdict names the skip and never says "every gate still fires"; exit 0 | ✅ |
+
 ## Non-goals
 
 - Installing or upgrading dependencies WITHOUT being asked (UC-3: *report* by default; *act* only on `--install-deps --yes` or the owner's `OKF_AUTO_INSTALL=1`)

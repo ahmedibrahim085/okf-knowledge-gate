@@ -9,6 +9,16 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-10-18
+
+OKF Knowledge Gate 0.9.6 makes `--selftest` prove more of the gate: it now plants a defect for three layers it never tested.
+
+### Added
+- **`okf-check --selftest` probes L0, the L2 index and L3 derived staleness.** Before, it planted one defect in each of L1, L2 (profile), Trust and L3 (staleness). It now also checks that the doctor notices a missing vendored validator (L0), that an `index.md` which counts the wrong number of notes is caught (L2 index), and that a note recording a source as of an old date is caught when that source has changed since (L3 derived staleness). A probe that does not fire exits 5, as before.
+
+### Fixed
+- **A `--selftest` that skipped a probe no longer says "every gate still fires".** Without `okflint` the L2 profile probes are SKIPPED, and the verdict line now names them as unverified instead of claiming every gate fired.
+
 ## [0.9.5] - 2026-10-18
 
 OKF Knowledge Gate 0.9.5 makes `okf-verify` check code citations written as a file, a line and a commit, the form most notes use for code.
@@ -400,7 +410,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.5...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.6...HEAD
+[0.9.6]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.2...v0.9.3

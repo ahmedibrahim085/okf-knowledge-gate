@@ -2965,6 +2965,53 @@ BOMB52=$("$REALPY" -c 'print("x0: &a0 [x,x,x,x,x,x,x,x,x]"); [print("x%d: &a%d [
 par alias-bomb    err "okf_check: {}\n$BOMB52\n"
 grep -qi 'alias' "$P52/alias-bomb.ver" && ok "LT-52 parity: the alias bomb is named as one" || bad "LT-52 parity: alias bomb message" "$(head -2 "$P52/alias-bomb.ver" | cut -c1-200)"
 
+# --- LT-55 (0.9.6, #59, cases S3-*): --selftest has a probe for L0, L2 index and L3 derived staleness ----------------
+# A probe is proven by its layer going dead: each case cripples one layer in a plugin copy, and --selftest must exit 5.
+# lt55_dead <name> <sed expression> — a plugin copy whose okf-check carries the expression; fails the test if it did
+# not change the file (a cripple that misses its target would make the RED meaningless).
+lt55_dead() {
+  local d="$TMP/lt55-$1"; rm -rf "$d"; mkdir -p "$d"; cp -R "$HERE/.." "$d/plugin" 2>/dev/null
+  sed -i.orig "$2" "$d/plugin/scripts/okf-check"
+  cmp -s "$d/plugin/scripts/okf-check" "$d/plugin/scripts/okf-check.orig" && { echo "cripple $1 changed nothing"; return 1; }
+  "$d/plugin/scripts/okf-check" --selftest >"$d.txt" 2>&1; echo "rc=$?"
+}
+"$CHECK" --selftest >"$TMP/lt55.txt" 2>&1; rcl=$?
+L55_DER=$(grep -A1 '^  L3 (derived staleness):' "$TMP/lt55.txt" | grep -c 'FIRED  *recorded source changed')
+{ [ "$rcl" -eq 0 ] && [ "$L55_DER" -eq 1 ]; } \
+  && ok "LT-55a S3-H1 --selftest has an L3 derived-staleness probe that fires on a healthy install" \
+  || bad "LT-55a S3-H1 L3 derived probe" "rc=$rcl $(grep -n 'L3' "$TMP/lt55.txt" | tr '\n' ' ')"
+r=$(lt55_dead derived 's/if mtime > rec:/if False:/')
+{ [ "$r" = "rc=5" ] && grep -A1 '^  L3 (derived staleness):' "$TMP/lt55-derived.txt" | grep -q 'NOT FIRED'; } \
+  && ok "LT-55b S3-N1 with L3 derived staleness disabled, its probe reports NOT FIRED and --selftest exits 5" \
+  || bad "LT-55b S3-N1 dead L3 derived" "$r $(grep -n 'L3\|SELFTEST' "$TMP/lt55-derived.txt" | tr '\n' ' ')"
+L55_IDX=$(grep -A1 '^  L2 (index):' "$TMP/lt55.txt" | grep -c 'FIRED  *index.md count wrong')
+{ [ "$rcl" -eq 0 ] && [ "$L55_IDX" -eq 1 ]; } \
+  && ok "LT-55c S3-H1 --selftest has an L2 index probe that fires on a healthy install" \
+  || bad "LT-55c S3-H1 L2 index probe" "rc=$rcl $(grep -n 'L2' "$TMP/lt55.txt" | tr '\n' ' ')"
+r=$(lt55_dead index 's/(good if n == actual else bad)/good/')
+{ [ "$r" = "rc=5" ] && grep -A1 '^  L2 (index):' "$TMP/lt55-index.txt" | grep -q 'NOT FIRED'; } \
+  && ok "LT-55d with the L2 index check disabled, its probe reports NOT FIRED and --selftest exits 5" \
+  || bad "LT-55d dead L2 index" "$r $(grep -n 'L2\|SELFTEST' "$TMP/lt55-index.txt" | tr '\n' ' ')"
+L55_L0=$(grep -A1 '^  L0 (doctor):' "$TMP/lt55.txt" | grep -c 'FIRED  *validator missing')
+{ [ "$rcl" -eq 0 ] && [ "$L55_L0" -eq 1 ]; } \
+  && ok "LT-55e S3-H1 --selftest has an L0 doctor probe that fires on a healthy install" \
+  || bad "LT-55e S3-H1 L0 probe" "rc=$rcl $(grep -n 'L0' "$TMP/lt55.txt" | tr '\n' ' ')"
+r=$(lt55_dead l0 's/if \[ -f "\$VALIDATOR" \]; then/if true; then/')
+{ [ "$r" = "rc=5" ] && grep -A1 '^  L0 (doctor):' "$TMP/lt55-l0.txt" | grep -q 'NOT FIRED'; } \
+  && ok "LT-55f with the L0 validator check disabled, its probe reports NOT FIRED and --selftest exits 5" \
+  || bad "LT-55f dead L0" "$r $(grep -n 'L0\|SELFTEST' "$TMP/lt55-l0.txt" | tr '\n' ' ')"
+# S3-E1: okflint absent. The okflint probes are SKIPPED with the reason, and the verdict line must not call them fired.
+SB55="$TMP/sb52"; mksandbox "$SB55" $BASETOOLS python3 cp mv
+if ! PATH="$SB55" command -v okflint >/dev/null 2>&1; then
+  PATH="$SB55" "$SB55/bash" "$CHECK" --selftest >"$TMP/lt55g.txt" 2>&1; rcl=$?
+  { [ "$rcl" -eq 0 ] && grep -q 'L2 (house profile): SKIPPED — okflint absent' "$TMP/lt55g.txt" \
+      && ! grep -q 'every gate still fires' "$TMP/lt55g.txt" && grep -q 'SELFTEST PASS.*SKIPPED.*L2 (house profile)' "$TMP/lt55g.txt"; } \
+    && ok "LT-55g S3-E1 okflint absent: the L2 profile probes are SKIPPED with the reason and the verdict names the skip, not 'every gate'" \
+    || bad "LT-55g S3-E1 okflint absent" "rc=$rcl $(grep -n 'SKIPPED\|SELFTEST' "$TMP/lt55g.txt" | tr '\n' ' ')"
+else
+  skip "LT-55g S3-E1 the sandbox still finds okflint"
+fi
+
 echo
 if [ "$SKIPPED" -gt 0 ]; then
   echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"

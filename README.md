@@ -21,8 +21,9 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
   on every finding.
 - **One verdict you can gate on.** `okf-check` runs every layer. Exit 1 means "not valid", exit 2 means "could not run",
   and a skipped layer is printed as SKIPPED and never shown as PASS (the exit code stays 0, and the verdict line reports
-  a skipped layer). `--selftest` plants one defect in each of L1, L2 (profile), Trust and L3 (staleness) and fails if a
-  gate misses it.
+  a skipped layer). `--selftest` plants one defect in each of L0 (doctor), L1, L2 (profile), L2 (index), Trust,
+  L3 (staleness) and L3 (derived staleness) and fails if a gate misses it. Without `okflint` the L2 profile probes are
+  SKIPPED, and the verdict line names them.
 - **The same check in three places.** Claude Code (hooks, plus a skill an agent reads), a GitHub Action, and a pre-commit
   hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)).
 - **Nothing is installed unasked.** The validator and PyYAML are vendored. `okflint` is optional, and
@@ -188,7 +189,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.5
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.6
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -204,7 +205,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.5
+    rev: v0.9.6
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
