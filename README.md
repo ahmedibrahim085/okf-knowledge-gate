@@ -126,7 +126,7 @@ $ okf-check notes
 
 A Trust warning counts as an advisory in the last line, so the run still passes (exit 0) unless you pass `--strict-trust`.
 
-`okf-verify` checks two kinds of claim. A cited commit SHA is looked up in each `--repo` folder and in each repository the bundle declares once in its `okf-base.yaml` under `okf_check.verify.repos` (each entry has a `path`: relative to the bundle, absolute, or starting with `~`; `--repo` adds to them, and a repository named twice is searched once). A declared path that is missing or is not a git repository is reported as UNRESOLVED with that reason; it does not change the exit code unless you pass `--strict`. An `okf-base.yaml` that cannot be read, is not valid YAML, or whose `okf_check.verify.repos` is not a list of `{path: <string>}` stops the run with one error line and exit 2. Absolute file paths
+`okf-verify` checks three kinds of claim: a cited commit SHA, a code citation (`path:line @sha`) and an absolute file path. A cited commit SHA is looked up in each `--repo` folder and in each repository the bundle declares once in its `okf-base.yaml` under `okf_check.verify.repos` (each entry has a `path`: relative to the bundle, absolute, or starting with `~`; `--repo` adds to them, and a repository named twice is searched once). A declared path that is missing or is not a git repository is reported as UNRESOLVED with that reason; it does not change the exit code unless you pass `--strict`. An `okf-base.yaml` that cannot be read, is not valid YAML, or whose `okf_check.verify.repos` is not a list of `{path: <string>}` stops the run with one error line and exit 2. A code citation written `path:line @sha`, `path:first-last @sha` or `path:line at sha` (for example `` `src/a.py:10 @d084956` ``) is ONE claim: the commit is looked up as above, then the path is looked up in that commit's files. The path is repo-relative and may be only its end (`a.py` for `src/a.py`). It is CONFIRMED when the file exists at that commit, REFUTED when the commit is found and the file is not in it (the detail says the path part failed), and UNRESOLVED when the commit is in no searched repository or the end of the path matches more than one file. The line (or the end of the range) must also exist in that file at that commit: a line past the end is REFUTED and the detail gives the file's line count; line 0 is REFUTED (lines start at 1); an empty file has 0 lines; a reversed range such as `20-10` is read as the lines up to the larger number; a binary file or a symlink is UNRESOLVED because its lines cannot be checked; a line number of more than 9 digits is REFUTED as out of range. A drive-letter path with backslashes (`C:\x\y.py:3`), a URL or a version number is not a citation. A path with a space in a directory name (`my dir/w.py:1 @sha`) is read from the space on, so it is UNRESOLVED when that is the end of a longer file name, never REFUTED. Absolute file paths
 in backticks or quotes (and paths that start with `~`) are checked on disk, but only inside the bundle or a `--repo` folder: a path elsewhere on the machine is UNRESOLVED, so a bundle you did not write cannot use the check to learn which files exist on your machine. Add `--host-paths` to look those up too. Relative paths are not read. In a shallow clone (the `actions/checkout` default), commits older than the clone are missing: use `fetch-depth: 0`.
 
 A near-miss actor is a wrongly written actor such as `Human:dana`. OKF reads it as an agent, so a person's review is
@@ -188,7 +188,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.4
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.5
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -204,7 +204,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.4
+    rev: v0.9.5
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

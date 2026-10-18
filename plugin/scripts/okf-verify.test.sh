@@ -771,6 +771,168 @@ if [ "$(id -u)" != "0" ]; then
 else
   skip "RV-18 a declared path under an unreadable directory — running as root, chmod 000 does not stop the read (skip, not a pass)"
 fi
+# --- 0.9.5 #56: path:line @sha citations (sha + path; the line is #57) ------------------------------------------------
+# One claim per citation: `<path>:<line>[-<line>] @<sha>` or `... at <sha>`. The sha is resolved in the searched repos, then the path is
+# looked up in that commit's tree. Fixture: a repository whose FIRST commit lacks the cited file, so "exists at that commit" differs from "exists now".
+CREPO="$TMP/crepo"; mkdir -p "$CREPO"; git -C "$CREPO" init -q 2>/dev/null
+git -C "$CREPO" config user.email t@t; git -C "$CREPO" config user.name t
+printf 'readme\n' > "$CREPO/README"; git -C "$CREPO" add README
+git -C "$CREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "docs: first commit, no source yet"
+C1=$(git -C "$CREPO" rev-parse --short HEAD)
+mkdir -p "$CREPO/src" "$CREPO/x" "$CREPO/y"
+seq 1 20 > "$CREPO/src/a.py"; printf 'p\n' > "$CREPO/x/dup.py"; printf 'q\n' > "$CREPO/y/dup.py"
+git -C "$CREPO" add src x y
+git -C "$CREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: add the source files"
+C2=$(git -C "$CREPO" rev-parse --short HEAD)
+cite() { # <dir> <citation text> — a one-note bundle with that citation
+  note5 "$1" "Evidence: $2"; }
+verdict_line() { grep -E '^  (ok  |REFUTED|unresolved)' "$TMP/out.txt" | head -1; }
+
+# S2-H2 / S2-H1 forms: `@sha` with the full path, `at sha` with a line range and a suffix path
+cite "$TMP/c1" "\`src/a.py:10 @$C2\`"
+rc=$(run "$TMP/c1" --repo "$CREPO")
+vok "RV-8 (S2-H2) 'path:line @sha' with the full path is CONFIRMED"
+grep -q "$C2" "$TMP/out.txt" && grep -q 'src/a.py' "$TMP/out.txt" && ok "RV-8 (S2-H2) the detail shows the sha and the path" || bad "RV-8 detail" "$(cat "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
+cite "$TMP/c2" "see a.py:10-15 at $C2 for the loop"
+rc=$(run "$TMP/c2" --repo "$CREPO")
+vok "RV-8 (S2-H2) 'a.py:10-15 at sha' (line range, suffix path) is CONFIRMED"
+[ "$(grep -cE '^  (ok  |REFUTED|unresolved)' "$TMP/out.txt")" = "1" ] && ok "RV-8 (S2-H2) a citation is ONE claim, not a sha claim plus a path claim" || bad "RV-8 one claim" "$(grep -E '^  (ok  |REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' '|')"
+
+cite "$TMP/c2b" "a.py:10 @\`$C2\`"
+rc=$(run "$TMP/c2b" --repo "$CREPO")
+[ "$(grep -cE '^  (ok  |REFUTED|unresolved)' "$TMP/out.txt")" = "1" ] && ok "RV-8 (S2-H2) a backticked sha inside the citation is not ALSO counted as a bare sha claim" || bad "RV-8 backticked sha" "$(grep -E '^  (ok  |REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' '|')"
+
+# S2-N1: the path does not exist at that commit -> REFUTED, and the detail says the path part failed
+cite "$TMP/c3" "\`src/nope.py:3 @$C2\`"
+rc=$(run "$TMP/c3" --repo "$CREPO")
+vrefuted "RV-9 (S2-N1) a path missing at that commit is REFUTED"
+grep -q 'path part failed' "$TMP/out.txt" && ok "RV-9 (S2-N1) the detail says the path part failed" || bad "RV-9 detail" "$(grep -A1 REFUTED "$TMP/out.txt" | tr '\n' ' ')"
+[ "$rc" = "1" ] && ok "RV-9 (S2-N1) a refuted citation is a non-zero exit" || bad "RV-9 exit" "exit $rc"
+# "at that commit": the file exists NOW but not in the cited (first) commit
+cite "$TMP/c3b" "\`src/a.py:3 @$C1\`"
+rc=$(run "$TMP/c3b" --repo "$CREPO")
+vrefuted "RV-9 (S2-N1) a file that exists at HEAD but not at the cited commit is REFUTED"
+
+# S1 x S2 seam: a citation resolves against a repository declared in okf-base.yaml, with no --repo flag
+cite "$TMP/seam1" "\`src/a.py:10 @$C2\`"; decl "$TMP/seam1" "$CREPO"
+rc=$(run "$TMP/seam1")
+vok "RV-19 (S1 x S2) a path:line @sha citation is CONFIRMED against a repository declared in okf-base.yaml (no --repo)"
+cite "$TMP/seam2" "\`src/nope.py:3 @$C2\`"; decl "$TMP/seam2" "$CREPO"
+rc=$(run "$TMP/seam2")
+vrefuted "RV-19 (S1 x S2) ... and REFUTED the same way when the path is missing at that commit"
+
+# S2-N3: the sha is in no searched repository -> UNRESOLVED, never REFUTED
+cite "$TMP/c4" "\`src/a.py:10 @deadbe3\`"
+rc=$(run "$TMP/c4" --repo "$CREPO")
+vunresolved "RV-10 (S2-N3) a sha in no searched repository is UNRESOLVED"
+grep -qE '^  REFUTED ' "$TMP/out.txt" && bad "RV-10 (S2-N3) must not be REFUTED" "a REFUTED line was emitted" || ok "RV-10 (S2-N3) ... and is never REFUTED"
+[ "$rc" = "0" ] && ok "RV-10 (S2-N3) UNRESOLVED alone does not fail the run" || bad "RV-10 exit" "exit $rc"
+
+# a suffix that matches two files is ambiguous: neither confirmed nor refuted
+cite "$TMP/c5" "\`dup.py:1 @$C2\`"
+rc=$(run "$TMP/c5" --repo "$CREPO")
+vunresolved "RV-11 a suffix path matching two files at that commit is UNRESOLVED (ambiguous), not guessed"
+grep -q 'ambiguous' "$TMP/out.txt" && ok "RV-11 ... and the detail says ambiguous" || bad "RV-11 detail" "$(grep -A1 unresolved "$TMP/out.txt" | tr '\n' ' ')"
+
+# --- 0.9.5 #57: the cited line (or the end of the range) must exist in the file AT THAT COMMIT --------------------------
+# A third commit adds an empty file, a binary file and a file without a final newline, so the edge cases have a real object to hit.
+printf '' > "$CREPO/empty.txt"; printf 'a\0b\1\2\n' > "$CREPO/bin.dat"; printf 'one\ntwo' > "$CREPO/nonl.txt"
+git -C "$CREPO" add empty.txt bin.dat nonl.txt
+git -C "$CREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: an empty, a binary and an unterminated file"
+C3=$(git -C "$CREPO" rev-parse --short HEAD)
+
+# S2-H1: a line inside the file is CONFIRMED and the detail shows the sha, the path and the line
+cite "$TMP/l1" "\`src/a.py:10 @$C2\`"
+rc=$(run "$TMP/l1" --repo "$CREPO")
+vok "RV-12 (S2-H1) a line inside the file (20 lines) is CONFIRMED"
+# a CONFIRMED claim's detail is in the --json output (the text report prints a detail only for claims that are not confirmed)
+rc=$(run "$TMP/l1" --repo "$CREPO" --json)
+grep -qE '"detail": "sha '"$C2"' resolves in crepo; path src/a.py has 20 lines at that commit; line 10 is within it"' "$TMP/out.txt" \
+  && ok "RV-12 (S2-H1) the detail shows the sha, the path, the line and the line count" || bad "RV-12 detail" "$(grep '"detail"' "$TMP/out.txt" | tr '\n' ' ')"
+
+# S2-N2: a line, or the end of a range, past the end of the file is REFUTED with the file's line count
+for c in "src/a.py:25" "src/a.py:18-25"; do
+  cite "$TMP/l2" "\`$c @$C2\`"
+  rc=$(run "$TMP/l2" --repo "$CREPO")
+  vrefuted "RV-13 (S2-N2) '$c' (file has 20 lines) is REFUTED"
+  grep -q '20 lines' "$TMP/out.txt" && ok "RV-13 (S2-N2) '$c': the detail shows the line count" || bad "RV-13 '$c' detail" "$(grep -A1 REFUTED "$TMP/out.txt" | tr '\n' ' ')"
+done
+[ "$rc" = "1" ] && ok "RV-13 (S2-N2) a line past the end is a non-zero exit" || bad "RV-13 exit" "exit $rc"
+
+# S2-E2: the boundary. A range ending on the last line holds; one more does not. Lines start at 1.
+cite "$TMP/l3" "\`src/a.py:15-20 @$C2\`"; rc=$(run "$TMP/l3" --repo "$CREPO")
+vok "RV-14 (S2-E2) a range whose end is the last line is CONFIRMED"
+cite "$TMP/l3b" "\`src/a.py:15-21 @$C2\`"; rc=$(run "$TMP/l3b" --repo "$CREPO")
+vrefuted "RV-14 (S2-E2) a range ending one past the last line is REFUTED"
+cite "$TMP/l3c" "\`src/a.py:0 @$C2\`"; rc=$(run "$TMP/l3c" --repo "$CREPO")
+vrefuted "RV-14 line 0 does not exist (lines start at 1): REFUTED, not CONFIRMED"
+cite "$TMP/l3d" "\`nonl.txt:2 @$C3\`"; rc=$(run "$TMP/l3d" --repo "$CREPO")
+vok "RV-14 the last line of a file with no final newline counts"
+cite "$TMP/l3e" "\`nonl.txt:3 @$C3\`"; rc=$(run "$TMP/l3e" --repo "$CREPO")
+vrefuted "RV-14 ... and one past it does not"
+
+# S2-E1: an empty file and a binary file get a stated verdict, not a crash
+cite "$TMP/l4" "\`empty.txt:1 @$C3\`"; rc=$(run "$TMP/l4" --repo "$CREPO")
+{ [ "$rc" = "1" ] && vrefuted "RV-15 (S2-E1) a line in an empty file is REFUTED (0 lines)" && grep -q '0 lines' "$TMP/out.txt"; } || bad "RV-15 empty file" "exit $rc: $(head -4 "$TMP/out.txt" | tr '\n' ' ')"
+cite "$TMP/l5" "\`bin.dat:1 @$C3\`"; rc=$(run "$TMP/l5" --repo "$CREPO")
+vunresolved "RV-15 (S2-E1) a line in a binary file is UNRESOLVED (lines cannot be checked), not a crash"
+grep -q 'binary' "$TMP/out.txt" && ok "RV-15 (S2-E1) ... and the detail says binary" || bad "RV-15 binary detail" "$(grep -A1 unresolved "$TMP/out.txt" | tr '\n' ' ')"
+[ "$rc" = "0" ] && ok "RV-15 (S2-E1) UNRESOLVED alone does not fail the run" || bad "RV-15 exit" "exit $rc"
+
+# --- 0.9.5 review fixes (#57) ------------------------------------------------------------------------------------------------
+# F1: a symlink at the cited commit holds the LINK TEXT as its blob. Counting it gave `link.py:5` -> REFUTED "has 1 lines" and `link.py:1` -> a false CONFIRMED.
+ln -s src/a.py "$CREPO/link.py"; git -C "$CREPO" add link.py
+git -C "$CREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: a symlink to the source file"
+C4=$(git -C "$CREPO" rev-parse --short HEAD)
+for ln in 5 1; do
+  cite "$TMP/sy$ln" "\`link.py:$ln @$C4\`"; rc=$(run "$TMP/sy$ln" --repo "$CREPO")
+  { [ "$rc" = "0" ] && grep -qE '^  unresolved ' "$TMP/out.txt" && grep -q 'symlink' "$TMP/out.txt" && ! grep -qE '^  (REFUTED|ok  ) ' "$TMP/out.txt"; } \
+    && ok "RV-20 (S2-N4) a line in a symlink ('link.py:$ln') is UNRESOLVED (symlink), not REFUTED and not CONFIRMED" \
+    || bad "RV-20 symlink line $ln" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-250)"
+done
+
+# F2: the path of a citation must start at a boundary. `my dir/w.py:1 @sha` was cut to `dir/w.py` and looked up as a suffix, and `C:\x\y.py:3 @sha` to `y.py`:
+# both REFUTED a claim nobody made. A Windows path, a URL and a version number are not citations. A path cut at a SPACE cannot be told from prose by
+# looking at the characters, so a cut that matches the END of a longer file name (not at a "/") is UNRESOLVED, never REFUTED.
+mkdir -p "$CREPO/my dir"; printf 'w\n' > "$CREPO/my dir/w.py"; printf 'd\n' > "$CREPO/data.py"; git -C "$CREPO" add -A
+git -C "$CREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: a directory with a space"
+C5=$(git -C "$CREPO" rev-parse --short HEAD)
+cite "$TMP/sp1" "my dir/w.py:1 @$C5"; rc=$(run "$TMP/sp1" --repo "$CREPO")
+{ [ "$rc" = "0" ] && grep -qE '^  unresolved ' "$TMP/out.txt" && ! grep -qE '^  (REFUTED|ok  ) ' "$TMP/out.txt"; } \
+  && ok "RV-21 (S2-E3) 'my dir/w.py:1 @sha' (a space inside the path) is UNRESOLVED, not a false REFUTED of 'dir/w.py'" \
+  || bad "RV-21 space in the directory" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-250)"
+# only a cut AT A SPACE is UNRESOLVED: a missing file whose name merely ends the same way (ta.py vs data.py) is still a real REFUTED
+cite "$TMP/sp2" "ta.py:1 @$C5"; rc=$(run "$TMP/sp2" --repo "$CREPO")
+vrefuted "RV-21 (S2-E3) 'ta.py' is REFUTED even though data.py ends with it (only a cut at a space is UNRESOLVED)"
+for c in 'C:\x\y.py:3' 'http://host.example/a.py:80' 'v1.2:3'; do
+  case "$c" in 'v1.2:3') tail_="@ 5pm";; *) tail_="@$C5";; esac
+  cite "$TMP/nc" "See $c $tail_ here."; rc=$(run "$TMP/nc" --repo "$CREPO")
+  { [ "$rc" = "0" ] && grep -q 'no checkable' "$TMP/out.txt" && ! grep -qE '^  (REFUTED|unresolved|ok  ) ' "$TMP/out.txt"; } \
+    && ok "RV-21 (S2-E3) '$c $tail_' is not a citation: no claim, no verdict" \
+    || bad "RV-21 not a citation: $c" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-250)"
+done
+
+# F4: a line number of thousands of digits made int() raise (Python >= 3.9.14, 3.10.7, 3.11+: the integer string conversion limit), which aborted the WHOLE
+# run: exit 1, no output. A line number over 9 digits is REFUTED "line number out of range" without being converted, and the other claims still print.
+BIGN=$("$REALPY" -c 'print("9" * 5000)')
+note5 "$TMP/big" "See src/a.py:$BIGN @$C2 and src/a.py:3 @$C2 and src/a.py:1-$BIGN @$C2."
+rc=$(run "$TMP/big" --repo "$CREPO")
+{ [ "$rc" = "1" ] && grep -qE '^  REFUTED ' "$TMP/out.txt" && grep -q 'line number out of range' "$TMP/out.txt" && grep -qE '^  ok  .*src/a.py:3 ' "$TMP/out.txt" && ! grep -q 'Traceback' "$TMP/out.txt"; } \
+  && ok "RV-22 (S2-N5) a 5000-digit line number (alone or ending a range) is REFUTED 'out of range', and the other citation still prints" \
+  || bad "RV-22 huge line number" "exit $rc: $(grep -E '^  (ok|REFUTED|unresolved)|Error|Traceback' "$TMP/out.txt" | cut -c1-120 | tr '\n' '|' | cut -c1-300)"
+# the same, through every newer Python on this machine (the limit is not in the 3.9 that macOS ships)
+for py in python3.11 python3.12 python3.13; do
+  command -v "$py" >/dev/null 2>&1 || continue
+  "$py" "$VERIFY" "$TMP/big" --repo "$CREPO" >"$TMP/out.txt" 2>&1; rc=$?
+  { [ "$rc" = "1" ] && grep -q 'line number out of range' "$TMP/out.txt" && ! grep -q 'Traceback' "$TMP/out.txt"; } \
+    && ok "RV-22 (S2-N5) under $py the huge line number does not abort the run" || bad "RV-22 under $py" "exit $rc: $(tail -2 "$TMP/out.txt" | cut -c1-200 | tr '\n' ' ')"
+done
+
+# S2-E4: line 0 is REFUTED (RV-14); a reversed range such as 20-10 is read as the lines up to the LARGER number (stated in the README), so it holds when that is within the file
+cite "$TMP/rv1" "\`src/a.py:20-10 @$C2\`"; rc=$(run "$TMP/rv1" --repo "$CREPO")
+vok "RV-23 (S2-E4) a reversed range '20-10' is read as up to line 20 (the larger number): CONFIRMED for a 20-line file"
+cite "$TMP/rv2" "\`src/a.py:25-10 @$C2\`"; rc=$(run "$TMP/rv2" --repo "$CREPO")
+vrefuted "RV-23 (S2-E4) ... and REFUTED when the larger number is past the end"
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

@@ -925,9 +925,22 @@ here"*. Conformance is a question about form; this is a question about fact.
 | RV-5 | Declared `~/src/x` and `../svc` | `~` is the home folder; the relative path is read from the bundle folder, not the working directory | ✅ |
 | RV-6 | Same repo declared and passed with `--repo` | searched once | ✅ |
 | RV-7 | `okf-base.yaml` unreadable, not valid YAML, or `okf_check.verify.repos` not a list of `{path: string}` | one error line naming the file and the problem, exit 2, no verdicts; no `okf_check` key is not an error | ✅ |
+| RV-8 | `path:line @sha`, `path:a-b at sha`, suffix path (S2-H2) | one claim, CONFIRMED when the path exists in that commit; the detail shows sha and path; a backticked sha inside the citation is not also a bare-sha claim | ✅ |
+| RV-9 | Path missing at the cited commit, including a file that exists only at HEAD (S2-N1) | REFUTED, detail `path part failed`, non-zero exit | ✅ |
+| RV-10 | Cited sha in no searched repository (S2-N3) | UNRESOLVED, never REFUTED, exit 0 | ✅ |
+| RV-11 | Suffix path matches two files at that commit (S2-E5) | UNRESOLVED, detail `ambiguous` | ✅ |
+| RV-12 | Cited line inside the file at that commit (S2-H1) | CONFIRMED; the `--json` detail shows sha, path, line and the line count | ✅ |
+| RV-13 | Line, or end of a range, past the end of the file (S2-N2) | REFUTED, detail gives the file's line count, non-zero exit | ✅ |
+| RV-14 | Range ending on the last line (S2-E2); one past it; line 0; last line without a final newline | CONFIRMED; REFUTED; REFUTED; counted | ✅ |
+| RV-15 | Cited file empty or binary (S2-E1) | empty: REFUTED (0 lines); binary: UNRESOLVED, detail `binary`; never a crash | ✅ |
+| RV-20 | Cited path is a symlink at that commit (S2-N4) | UNRESOLVED, detail `symlink`; never REFUTED, never CONFIRMED | ✅ |
+| RV-21 | `my dir/w.py:1 @sha` (path cut at a space); `C:\x\y.py:3`, a URL, `v1.2:3 @ 5pm` (S2-E3) | the space case is UNRESOLVED (never REFUTED; a missing `ta.py` beside `data.py` is still REFUTED); the others are no claim and get no verdict | ✅ |
+| RV-22 | Line number of 5000 digits, alone or ending a range (S2-N5) | REFUTED `line number out of range`, exit 1, the other citations still print, also under Python 3.11-3.13 | ✅ |
+| RV-23 | Reversed range `20-10` (S2-E4) | read as up to the larger number: CONFIRMED when within the file, REFUTED when past the end | ✅ |
 | RV-16 | An unknown key under `okf_check`, `verify` or a repository entry; a null `okf_check`/`verify`; `repos` as a list of strings; an empty `path`; invalid UTF-8 | exit 2, one line naming the key (S1-N3, schema shared with `okf-check`) | ✅ |
 | RV-17 | `okf-verify <bundle> --check-config` | valid or absent block: exit 0, no output, no verdicts; invalid: one error line, exit 2 | ✅ |
 | RV-18 | A declared path that cannot be resolved (`~nosuchuser/x`; a path under an unreadable directory) | UNRESOLVED `cannot resolve: ...` in text and `--json`, exit 0, no traceback, no REFUTED; the other repositories are still searched | ✅ |
+| RV-19 | A `path:line @sha` citation, repository declared in `okf-base.yaml`, no `--repo` (S1 x S2 seam) | CONFIRMED when the path exists at that commit; REFUTED when it is missing | ✅ |
 
 **V-10 and V-11 came from live-firing, not from imagination.** The first run on
 the real bundle REFUTED `/tmp/net-spy.log` — a `const LOG = …` literal inside an

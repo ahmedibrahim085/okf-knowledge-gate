@@ -9,6 +9,14 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-10-18
+
+OKF Knowledge Gate 0.9.5 makes `okf-verify` check code citations written as a file, a line and a commit, the form most notes use for code.
+
+### Added
+- **`okf-verify` reads `path:line @sha` as one claim.** `` `src/a.py:10 @d084956` ``, `path:first-last @sha` and `path:line at sha` are looked up as a single claim. The commit is searched in every repository (`--repo` and the ones the bundle declares), then the path is looked up in that commit's files. It may be only the end of the path (`a.py` for `src/a.py`). The verdict is CONFIRMED when the file exists at that commit; REFUTED when the commit is found and the file is not in it (the detail says the path part failed); UNRESOLVED when the commit is in no searched repository, or when the end of the path matches more than one file.
+- **The cited line must exist.** A line, or the end of a range, past the end of the file is REFUTED and the detail gives the file's line count; line 0 is REFUTED; a range ending on the last line is CONFIRMED; an empty file has no line (REFUTED) and a binary file is UNRESOLVED with the reason `binary`, never a crash. `--json` shows the sha, path, line and line count of each citation.
+
 ## [0.9.4] - 2026-10-18
 
 OKF Knowledge Gate 0.9.4 lets a bundle name its source repositories once, and gives `okf-check`'s own options a home that is checked, so a typo cannot switch an option off.
@@ -392,7 +400,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.4...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.5...HEAD
+[0.9.5]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.1...v0.9.2

@@ -79,6 +79,11 @@ SHA_CTX = re.compile(
 # prose into a cited path. That path is then absent, and the run manufactures a
 # REFUTED: the one verdict this tool exists to never invent. (D-12)
 PATH_RE = re.compile(r"([`\"'])((?:~|/)[A-Za-z0-9._/ -]*[A-Za-z0-9._-]\.[A-Za-z0-9]{1,6})\1")
+# `path:line[-line] @sha` and `path:line[-line] at sha` -- one claim: this file, at this commit. The path is repo-relative
+# (an absolute path is a PATH_RE claim); the lookbehind keeps a match from starting mid-token, so a Windows path (`C:\x\y.py:3`)
+# or a URL is not cut into a citation of its last piece. (#56) A path cut at a SPACE cannot be told from prose here: check_citation
+# answers UNRESOLVED when the cut is the end of a longer file name.
+CITE_RE = re.compile(r"(?<![\w./\\-])([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?`?\s+(?:@|at\s+)`?([0-9a-f]{7,40})\b`?", re.I)
 QUOTED = re.compile(r"[\"“]([^\"”\n]{12,120})[\"”]")
 RESERVED = {"index.md", "log.md"}
 FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})")
@@ -242,6 +247,88 @@ def check_sha(sha: str, repos: list[Path], subjects: list[str]):
     note = (f"; {', '.join(shallow)} is a shallow clone, so older commits are missing "
             f"(git fetch --unshallow, or actions/checkout with fetch-depth: 0)") if shallow else ""
     return UNRESOLVED, f"not found in the searched repos ({searched}); other repos not searched{note}"
+
+
+def blob_lines(repo: Path, sha: str, path: str):
+    """Line count of `path` at `sha`: (count, "") or (None, why). Bytes, not text: a source file need not be UTF-8.
+
+    A NUL in the first 8000 bytes is git's own test for a binary file; its "lines" are not a thing to check. (#57)
+    """
+    # A symlink's blob is the LINK TEXT: counting it reports "1 lines" for a link to a 20-line file. The tree entry's mode says which it is.
+    rc, entry = git(repo, "ls-tree", sha, "--", path)
+    if rc == GIT_UNAVAILABLE:
+        return None, entry
+    if entry.split(" ", 1)[0] == "120000":
+        return None, f"{path} is a symlink, so its lines cannot be checked"
+    try:
+        p = subprocess.run(["git", "-C", str(repo), "cat-file", "blob", f"{sha}:{path}"],
+                           capture_output=True, timeout=15)
+    except subprocess.TimeoutExpired:
+        return None, "git timed out"
+    except (OSError, subprocess.SubprocessError):
+        return None, "git could not be executed"
+    if p.returncode != 0:
+        return None, f"{path} at {sha} is not a regular file"
+    data = p.stdout
+    if b"\0" in data[:8000]:
+        return None, f"{path} is a binary file, so its lines cannot be checked"
+    return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0), ""
+
+
+def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects: list[str]):
+    """`path:lines @sha`: the sha must resolve, then the path must exist in THAT commit's tree.
+
+    REFUTED only when the commit was found and its tree lacks the path: then we looked in the right place. A sha that
+    resolves nowhere stays UNRESOLVED, as for a bare SHA claim. A line (or the end of a range) past the end of the
+    file at that commit is REFUTED too: same commit, same file, so the claim is known false. (#56, #57)
+    """
+    v, d = check_sha(sha, repos, subjects)
+    if v != CONFIRMED:
+        return v, f"sha part: {d}"
+    found, absent, cut = [], [], []
+    for r in repos:
+        rc, out = git(r, "cat-file", "-e", f"{sha}^{{commit}}")
+        if rc == GIT_UNAVAILABLE:
+            return UNRESOLVED, f"could not query {r.name}: {out}"
+        if rc != 0:
+            continue
+        rc, _ = git(r, "cat-file", "-e", f"{sha}:{path}")
+        if rc == 0:
+            found.append((r, path))
+            continue
+        rc, out = git(r, "ls-tree", "-r", "--name-only", sha)
+        if rc != 0:
+            return UNRESOLVED, f"could not list {sha} in {r.name}: {out}"
+        hits = [n for n in out.splitlines() if n.endswith("/" + path)]
+        found.extend((r, n) for n in hits)
+        if not hits:
+            # `my dir/w.py` cited with its space reads as `dir/w.py`: the end of a longer name, not at a "/". Not a missing file.
+            longer = [n for n in out.splitlines() if n.endswith(" " + path)]
+            (cut.extend(longer) if longer else absent.append(r.name))
+    if len({n for _, n in found}) > 1:
+        names = sorted({n for _, n in found})
+        return UNRESOLVED, (f"path part is ambiguous: {len(names)} files at {sha} end with {path} "
+                            f"({', '.join(names[:3])}{', ...' if len(names) > 3 else ''})")
+    if found:
+        r, n = found[0]
+        count, why = blob_lines(r, sha, n)
+        if count is None:
+            return UNRESOLVED, f"sha {sha} and path {n} exist in {r.name}, but line {lines} was not checked: {why}"
+        lo, _, hi = lines.partition("-")
+        # int() of a thousands-of-digits string raises on current Pythons and aborted the whole run; no file has 10^9 lines.
+        if len(lo) > 9 or len(hi) > 9:
+            return REFUTED, f"line part failed: line number out of range ({n} has {count} lines at {sha})"
+        first, last = int(lo), max(int(lo), int(hi or lo))
+        if first < 1 or last > count:
+            return REFUTED, (f"line part failed: {n} has {count} lines at {sha}, line {lines} "
+                             f"{'does not exist (lines start at 1)' if first < 1 else 'is past the end'}")
+        return CONFIRMED, f"sha {sha} resolves in {r.name}; path {n} has {count} lines at that commit; line {lines} is within it"
+    if cut:
+        return UNRESOLVED, (f"{path} is the end of {cut[0]} at {sha}, not a whole path: the cited path may be cut at a space "
+                            f"in a directory name, so it was not checked")
+    if not absent:  # the sha resolved a moment ago and now nowhere: a failed look is not a missing path
+        return UNRESOLVED, f"{sha} no longer resolves in the searched repos"
+    return REFUTED, f"path part failed: {path} does not exist at {sha} in {', '.join(absent)}"
 
 
 def case_exact(p: Path) -> bool:
@@ -479,8 +566,26 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False):
                             "detail": ("an unclosed code fence swallowed the rest of this "
                                        "concept — any claim after it was NOT checked")})
         subjects = QUOTED.findall(body)
+        # A citation is ONE claim: blank it out before the SHA and path scans so its sha is not also counted on its own.
+        cites = []
+        def take(m):
+            cites.append(m)
+            return " " * len(m.group(0))
+        body = CITE_RE.sub(take, body)
         found = 0
         seen: set[tuple[str, str]] = set()
+
+        for m in cites:
+            path, lo, hi, sha = m.group(1), m.group(2), m.group(3), m.group(4).lower()
+            lines = f"{lo}-{hi}" if hi else lo
+            claim = f"{path}:{lines} @{sha}"
+            if ("cite", claim) in seen:
+                continue
+            seen.add(("cite", claim))
+            found += 1
+            v, d = check_citation(path, lines, sha, repos, subjects)
+            results.append({"concept": rel, "kind": "citation", "claim": claim,
+                            "verdict": v, "detail": d})
 
         for m in SHA_CTX.finditer(body):
             # group(1) is the BARE backticked form; groups 2 and 3 carry an
