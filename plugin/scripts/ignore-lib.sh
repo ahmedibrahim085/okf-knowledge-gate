@@ -78,29 +78,56 @@ okfignore_list() {
 }
 
 # okfignore_mirror <bundle> <dest>: copy the non-ignored notes and config (*.md, *.yaml, *.yml,
-# *.json) into <dest>. Prints "<kept> <excluded-notes> <excluded-files>" (the first two count concept notes: *.md other than
-# index.md and log.md). Same file set L1 sees without .okfignore: symlinked directories are NOT
-# entered (find -H, as okf_md_files and the validator, #62), so a note is neither lost nor listed by one layer only. Exit 1 (naming the file on stderr) when a copy fails, so a note is never dropped
+# *.json) into <dest> and link every other non-ignored file to its original (a link to an image,
+# SVG or PDF must still resolve inside the mirror, #93). Prints "<kept> <excluded-notes> <excluded-files>" (the first two count concept notes: *.md other than
+# index.md and log.md; the third counts ignored notes and config, not the linked files). Same file set L1 sees without .okfignore: symlinked directories are NOT
+# entered (find -H, as okf_md_files and the validator, #62), so a note is neither lost nor listed by one layer only. Exit 1 (naming the file on stderr) when a copy or link fails, so a note is never dropped
 # silently. Nothing is deleted outside <dest>.
 okfignore_mirror() {
-  local bundle="${1%/}" dest="$2" f rel kept=0 excl=0 exall=0 isnote rc
+  local bundle="${1%/}" dest="$2" f rel kept=0 excl=0 exall=0 isnote iscfg rc abs dir mdir="" ldir="" l
+  local -a pend=() src=()
   okfignore_load "$bundle"; rc=$?; [ "$rc" -eq 2 ] && return 2
   [ -n "$dest" ] && [ "$dest" != / ] || return 2
+  abs=$(cd -P "$bundle" && pwd) || return 2
   rm -rf "$dest"; mkdir -p "$dest"
+  # Links are made one `ln` per run of files in the same folder, not one per file: a bundle with thousands of images
+  # would otherwise double its process spawns (#93). A failed batch is retried file by file to name the culprit.
+  _okfignore_flush() {
+    [ "${#pend[@]}" -gt 0 ] || return 0
+    # A loop, not a prefix substitution: bash 5.2 reads an & in the replacement as the matched text, so a bundle under
+    # /x/R&D/kb got links to /x/RD/kb. -f on the retry: a batch that failed half way has already made some links.
+    for l in "${pend[@]}"; do src+=("$abs/$l"); done
+    if ! ln -s "${src[@]}" "$dest${ldir:+/$ldir}/" 2>/dev/null; then
+      for l in "${pend[@]}"; do ln -sf "$abs/$l" "$dest${ldir:+/$ldir}/" 2>/dev/null || { echo "okfignore: cannot link $l" >&2; return 1; }; done
+    fi
+    pend=(); src=()
+  }
   while IFS= read -r -d '' f; do
     [ -e "$f" ] || continue          # dangling symlink: L1 skips it too
     rel=${f#"$bundle"/}
+    iscfg=1
+    case "${rel##*/}" in *.md|*.yaml|*.yml|*.json) ;; *) iscfg=0; [ -d "$f" ] && continue;; esac   # a link to a folder is not entered (#62)
     isnote=0
     case "$rel" in *.md) case "${rel##*/}" in index.md|log.md) ;; *) isnote=1;; esac;; esac
     if okfignore_match "$rel"; then
-      exall=$((exall+1))
-      [ "$isnote" -eq 1 ] && excl=$((excl+1))
+      # The count keeps its meaning (okf-verify prints the same one): notes and config only, not the files linked below.
+      if [ "$iscfg" -eq 1 ]; then
+        exall=$((exall+1))
+        [ "$isnote" -eq 1 ] && excl=$((excl+1))
+      fi
       continue
     fi
-    case "$rel" in */*) mkdir -p "$dest/${rel%/*}" || return 1;; esac
-    cp -p "$f" "$dest/$rel" 2>/dev/null || { echo "okfignore: cannot copy $rel" >&2; return 1; }
-    [ "$isnote" -eq 1 ] && kept=$((kept+1))
-  done < <(find -H "$bundle" -name .git -prune -o \( -type f -o -type l \) \( -name '*.md' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) -print0 2>/dev/null)
+    dir=""; case "$rel" in */*) dir=${rel%/*};; esac
+    if [ -n "$dir" ] && [ "$dir" != "$mdir" ]; then mkdir -p "$dest/$dir" || return 1; mdir=$dir; fi
+    case "${rel##*/}" in
+      *.md|*.yaml|*.yml|*.json)
+        cp -p "$f" "$dest/$rel" 2>/dev/null || { echo "okfignore: cannot copy $rel" >&2; return 1; }
+        [ "$isnote" -eq 1 ] && kept=$((kept+1));;
+      *) if [ "$dir" != "$ldir" ] || [ "${#pend[@]}" -ge 200 ]; then _okfignore_flush || return 1; ldir=$dir; fi
+         pend+=("$rel");;
+    esac
+  done < <(find -H "$bundle" -name .git -prune -o \( -type f -o -type l \) -print0 2>/dev/null)
+  _okfignore_flush || return 1
   printf '%s %s %s\n' "$kept" "$excl" "$exall"
 }
 

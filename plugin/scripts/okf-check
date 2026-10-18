@@ -52,7 +52,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.20"
+VERSION="0.9.21"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -1666,6 +1666,22 @@ selftest() {
     say "  L2 (house profile):"
     probe "missing stale_after -> F102"  "F102" run_profile "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\n---\nbody\n'
     probe "status outside vocab -> F105" "F105" run_profile "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: current\nstale_after: "2099-01-01"\n---\nbody\n'
+    # #93: L2 runs on the .okfignore mirror, which must still hold the non-markdown files a note links to. The control
+    # (a link to a missing file must give L002) keeps the probe from passing because the L002 check went dead.
+    _mirror_probe() {
+      local src="$TMP/selftest-ign" mir="$TMP/selftest-ign-mirror" img l2n ctl
+      rm -rf "$src"; mkdir -p "$src/archive" "$src/img"
+      cp -p "$1/index.md" "$1/log.md" "$1/okf-base.yaml" "$src/"
+      printf 'png' > "$src/img/pic.png"; printf 'old\n' > "$src/archive/old.md"; printf 'archive/\n' > "$src/.okfignore"
+      for img in pic missing; do
+        printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\n\n![x](img/%s.png)\n' "$img" > "$src/n.md"
+        okfignore_mirror "$src" "$mir" >/dev/null 2>&1 || return 1
+        run_profile "$mir" >/dev/null 2>&1
+        if [ "$img" = pic ]; then l2n=$(grep -Ec '"code": *"L002"' "$TMP/l2.txt"); else ctl=$(grep -Ec '"code": *"L002"' "$TMP/l2.txt"); fi
+      done
+      [ "${l2n:-1}" -eq 0 ] && [ "${ctl:-0}" -gt 0 ] && echo "linked file kept in the mirror"
+    }
+    probe "ignored folder and a linked image" "linked file kept in the mirror" _mirror_probe "" ""
   else
     say "  L2 (house profile): SKIPPED — okflint absent, so its gates are UNVERIFIED here"
     skipped="$skipped, L2 (house profile)"

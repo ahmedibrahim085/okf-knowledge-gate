@@ -9,6 +9,13 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.21] - 2026-10-18
+
+OKF Knowledge Gate 0.9.21 stops the L2 profile from reporting broken links to files that exist when an `.okfignore` is present.
+
+### Fixed
+- **A link to an existing image, SVG or PDF no longer gives a false `L002` under `.okfignore`** (public issue 12). With an `.okfignore` that excluded something, the copy that L2 reads carried only notes and config files, so every link to another existing file looked broken: one bundle showed 916 false `L002` findings against none from plain `okflint`. The copy now also links the existing, non-ignored files of the bundle. A link into an ignored folder, and a link to a file that does not exist, still give `L002`. A bundle path that contains `&` works on bash 5 as well as bash 3.2. `--selftest` has a new probe for this case: an ignored folder plus an image link must give no `L002`.
+
 ## [0.9.20] - 2026-10-18
 
 OKF Knowledge Gate 0.9.20 starts to cut the time a release spends in the slowest test suite.
@@ -532,7 +539,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.20...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.21...HEAD
+[0.9.21]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.20...v0.9.21
 [0.9.20]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.19...v0.9.20
 [0.9.19]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.18...v0.9.19
 [0.9.18]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.17...v0.9.18
