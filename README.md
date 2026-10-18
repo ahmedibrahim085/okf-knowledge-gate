@@ -22,7 +22,7 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 - **One verdict you can gate on.** `okf-check` runs every layer. Exit 1 means "not valid", exit 2 means "could not run",
   and a skipped layer is printed as SKIPPED and never shown as PASS (the exit code stays 0, and the verdict line reports
   a skipped layer). `--selftest` plants one defect in each of L0 (doctor), L1, L2 (profile), L2 (index), Trust,
-  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule, `--duplicates` and `--duplicates-body` and fails if a gate misses it. Without `okflint` the L2 profile probes are
+  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule, `wikilink_root`, `--duplicates` and `--duplicates-body` and fails if a gate misses it. Without `okflint` the L2 profile probes are
   SKIPPED, and the verdict line names them.
 - **The same check in three places.** Claude Code (hooks, plus a skill an agent reads), a GitHub Action, and a pre-commit
   hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)).
@@ -176,8 +176,8 @@ file by itself.
 `okf-verify` check it against one schema, `plugin/config/okf-check-block.json`: a key it does not know, or a value of the
 wrong shape, exits 2 and names the key, so a typo cannot switch an option off without a word. Known keys: `verify`
 (read by `okf-verify`; `repos` is a list of `path:` entries), `deprecated_requires`, `require_owner`, `owners`,
-`duplicates` and `edit_hook` (`true` turns the edit hook on for this bundle; a boolean, so a string such as `"on"`
-is refused).
+`duplicates`, `wikilink_root` and `edit_hook` (`true` turns the edit hook on for this bundle; a boolean, so a string
+such as `"on"` is refused).
 
 ```yaml
 okf_check:
@@ -204,6 +204,20 @@ okf_check:
   owners:
     "decisions/**": team:architecture
     "decisions/security/**": human:dana
+```
+
+`wikilink_root: <folder>`: a bundle inside a larger note vault (Obsidian, Foam) links notes by their path
+from the vault root, `[[projects/p/README]]`, and `okflint` reports each such link as L001 although the note exists.
+With the key set, an L001 for a path wikilink is also dropped (and counted in the "resolved by okf-check" line) when
+`<folder>/<path>.md` exists. `<folder>` is relative to the bundle: for the bundle `vault/projects/p/bundle` the vault
+root is `../../..`. A target that is missing under the folder still gives L001, and without the key nothing changes.
+A symlinked folder is not entered. The key is refused (exit 2, naming the key) when it is not a string, is an absolute
+path, does not exist, is not a folder, is not the bundle or one of its parent folders, or is the file system root, the
+home folder or a folder above it.
+
+```yaml
+okf_check:
+  wikilink_root: ../../..
 ```
 
 **Duplicates:** `okf-check <bundle> --duplicates` lists pairs of notes that may record the same knowledge: the same
@@ -244,7 +258,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.24
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.25
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -260,7 +274,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.24
+    rev: v0.9.25
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

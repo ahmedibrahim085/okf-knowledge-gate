@@ -52,7 +52,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.24"
+VERSION="0.9.25"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -846,7 +846,8 @@ run_config() {
   local out
   [ -f "$1/okf-base.yaml" ] && [ -n "$PY" ] || return 0
   out=$(py_with_vendor "$ROOT/scripts/okf-verify" --check-config "$1" 2>&1) && return 0
-  out=$(printf '%s' "$out" | tail -n 1 | sed 's/^error: .*okf-base\.yaml //')
+  # The shortest prefix: a value that itself names okf-base.yaml must stay in the message.
+  out=$(printf '%s' "$out" | tail -n 1); out=${out#error: }; out=${out#*okf-base.yaml }
   say "  Config           COULD NOT RUN — okf-base.yaml: $out"
   record error "okf-base.yaml: $out"
   return $EXIT_DEP
@@ -1103,6 +1104,27 @@ l2_isolate() {
   return 1
 }
 
+# l2_wikilink_root <bundle>: okf_check.wikilink_root of the bundle's okf-base.yaml as an absolute path, else nothing. The
+# value is read through okf-verify's load_block, the same schema check as run_config, so a value that failed it (exit 2
+# there) is not used here.
+l2_wikilink_root() {
+  grep -qs 'wikilink_root' "$1/okf-base.yaml" || return 0
+  OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$1" <<'PYEOF' 2>/dev/null
+import importlib.util, os, sys
+from importlib.machinery import SourceFileLoader
+from pathlib import Path
+try:
+    loader = SourceFileLoader("okf_verify", os.path.join(os.environ["OKF_SCRIPTS_DIR"], "okf-verify"))
+    verify = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_verify", loader))
+    loader.exec_module(verify)
+    rel = verify.load_block(Path(sys.argv[1])).get("wikilink_root")
+    if rel:
+        print(os.path.realpath(os.path.join(sys.argv[1], rel)))
+except Exception:
+    pass
+PYEOF
+}
+
 L2_CRASHED=()
 # run_profile: the L2 core, plus the crashed-note report and its exit status.
 run_profile() {
@@ -1205,7 +1227,7 @@ __l2_core() {
   # Parse the structured report. If okflint signalled findings (exit 1) but we
   # cannot parse them, that is COULD NOT RUN — never a pass.
   local counts errs warns
-  counts=$("$PY" - "$TMP/l2.txt" "$bundle" "$dlst" <<'PY' 2>/dev/null
+  counts=$("$PY" - "$TMP/l2.txt" "$bundle" "$dlst" "$(l2_wikilink_root "$_src")" <<'PY' 2>/dev/null
 import json, os, re, sys
 raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 
@@ -1237,6 +1259,7 @@ def sev(x):
 # so how a wikilink resolves is a house convention, and this one matches Obsidian: a path from the bundle root, or from
 # the note's own folder, with or without .md. An L001 whose target is such a file is dropped and COUNTED, never hidden.
 _root = os.path.realpath(sys.argv[2])
+_wl_root = sys.argv[4]
 def _resolves(x):
     if not (isinstance(x, dict) and x.get("code") == "L001"):
         return False
@@ -1250,6 +1273,21 @@ def _resolves(x):
             p = os.path.realpath(os.path.join(base, cand))
             if (p == _root or p.startswith(_root + os.sep)) and os.path.isfile(p) and p.endswith(".md"):
                 return True
+    if _wl_root:
+        for cand in (target, target + ".md"):
+            lex = os.path.normpath(os.path.join(_wl_root, cand))
+            # A folder link is not entered (#62, as find -H elsewhere): no step of the path below the root may be a symlink
+            # to a folder, and a note that is itself a link must stay inside the root.
+            steps = os.path.relpath(os.path.dirname(lex), _wl_root).split(os.sep)
+            walk = _wl_root
+            for st in ([] if steps == ["."] else steps):
+                walk = os.path.join(walk, st)
+                if os.path.islink(walk):
+                    break
+            else:
+                p = os.path.realpath(lex)
+                if p.startswith(_wl_root + os.sep) and os.path.isfile(p) and p.endswith(".md"):
+                    return True
     return False
 dropped = [x for x in doc if _resolves(x)]
 dropped_err = sum(1 for x in dropped if sev(x) == "error")
@@ -1750,6 +1788,22 @@ selftest() {
       [ "${l2n:-1}" -eq 0 ] && [ "${ctl:-0}" -gt 0 ] && echo "linked file kept in the mirror"
     }
     probe "ignored folder and a linked image" "linked file kept in the mirror" _mirror_probe "" ""
+    # #103: a bundle inside a larger vault with okf_check.wikilink_root must resolve a vault-root link to an existing note
+    # and still report one to a missing note (the control: a probe that only drops every L001 would pass the first half).
+    _wikilink_root_probe() {
+      local vault="$TMP/selftest-wr" bun="$TMP/selftest-wr/p/bundle" tgt hit miss
+      rm -rf "$vault"; mkdir -p "$bun"
+      printf '# R\n' > "$vault/p/README.md"
+      cp -p "$1/index.md" "$1/log.md" "$bun/"
+      { cat "$1/okf-base.yaml"; printf 'okf_check:\n  wikilink_root: ../..\n'; } > "$bun/okf-base.yaml"
+      for tgt in README MISSING; do
+        printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\n\n[[p/%s]]\n' "$tgt" > "$bun/n.md"
+        if [ "$tgt" = README ]; then hit=$(run_profile "$bun" 2>&1); else miss=$(run_profile "$bun" 2>&1); fi
+      done
+      printf '%s' "$hit" | grep -q 'resolved by okf-check' && ! printf '%s' "$hit" | grep -q 'L001 x' \
+        && printf '%s' "$miss" | grep -q 'L001 x1' && echo "wikilink_root resolves an existing target only"
+    }
+    probe "wikilink_root resolves an existing target only" "wikilink_root resolves an existing target only" _wikilink_root_probe "" ""
   else
     say "  L2 (house profile): SKIPPED — okflint absent, so its gates are UNVERIFIED here"
     skipped="$skipped, L2 (house profile)"

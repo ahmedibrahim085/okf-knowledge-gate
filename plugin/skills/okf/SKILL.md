@@ -65,6 +65,10 @@ as an agent) into exit 1; it changes severity only, never what is found.
   `okf-check --init-house-rules <bundle>` to write a starter `<bundle>/okf-base.yaml` (it never overwrites;
   nothing else writes it). `okf-check --init-ignore <bundle>` does the same for `.okfignore`. Only run an init
   command when the owner asks. Set requirements the bundle already meets before adding new ones.
+- L2 reports `L001 broken wikilink` for a link written from a vault root (`[[projects/p/README]]`) when the bundle
+  sits inside a larger note vault. Setting `okf_check: {wikilink_root: ../../..}` in `okf-base.yaml` (a folder relative
+  to the bundle: the bundle itself or a parent) makes okf-check look for such a target there. Set it only when the
+  owner asks, and never to hide a link whose target is really missing: that still gives L001.
 
 ## What this never does
 
@@ -122,7 +126,7 @@ empty or inside the vault). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.24`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.25`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

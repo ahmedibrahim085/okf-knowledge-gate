@@ -9,6 +9,13 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.25] - 2026-10-18
+
+OKF Knowledge Gate 0.9.25 lets a bundle that sits inside a larger note vault resolve root-style wikilinks.
+
+### Added
+- **`okf_check.wikilink_root`** (public issue 13). Obsidian-style tools resolve a wikilink such as `[[projects/p/README]]` from the vault root; L2 resolved it from the bundle and reported a false `L001`. The new setting names the vault root, as a folder relative to the bundle: for a bundle at `vault/projects/p/bundle` the root is `../../..`. With it set, an `L001` for a path wikilink is dropped, and counted in the report, when the target exists under that root; a target that is missing there still gives `L001`. Without the setting nothing changes. The root must be the bundle or one of its parent folders; a value that is not a string, is absolute, is missing, is a file, is a sibling folder, is `/` or the home folder, or carries leading or trailing spaces is refused with exit 2 by `okf-check` and `okf-verify --check-config` with the same message. A symlinked folder below the root is not entered, and a symlinked note must stay inside the root. `--selftest` has a new probe: an existing target resolves, a missing one still gives `L001`.
+
 ## [0.9.24] - 2026-10-18
 
 OKF Knowledge Gate 0.9.24 stops `okf-export` from overwriting a note silently when two vault notes would get the same output name.
@@ -563,7 +570,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.24...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.25...HEAD
+[0.9.25]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.24...v0.9.25
 [0.9.24]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.23...v0.9.24
 [0.9.23]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.22...v0.9.23
 [0.9.22]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.21...v0.9.22

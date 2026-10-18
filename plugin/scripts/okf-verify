@@ -428,7 +428,7 @@ class BaseConfigError(Exception):
     """The okf_check block of okf-base.yaml cannot be used."""
 
 
-def check_node(value, node: dict, where: str) -> None:
+def check_node(value, node: dict, where: str, bundle: Path | None = None) -> None:
     """Check `value` against one node of config/okf-check-block.json (the schema both okf-check and okf-verify obey)."""
     if "keys" in node:
         if not isinstance(value, dict):
@@ -438,7 +438,7 @@ def check_node(value, node: dict, where: str) -> None:
             if str(k) not in node["keys"]:
                 raise BaseConfigError(f"{where}.{k} is not a known key (known: {', '.join(known)})")
         for k, v in value.items():
-            check_node(v, node["keys"][str(k)], f"{where}.{k}")
+            check_node(v, node["keys"][str(k)], f"{where}.{k}", bundle)
             # {requires: {sibling: value}}: this key only makes sense when a sibling key has that value (#68).
             for sib, want in node["keys"][str(k)].get("requires", {}).items():
                 if value.get(sib) != want:
@@ -455,11 +455,36 @@ def check_node(value, node: dict, where: str) -> None:
             # would be inert, so it is refused rather than ignored (0.9.8 review G-2)
             if node.get("key_no_prefix") and k.startswith(node["key_no_prefix"]):
                 raise BaseConfigError(f"{where}.{k}: a pattern that starts with {node['key_no_prefix']} (negation) is not supported")
-            check_node(v, node["map"], f"{where}.{k}")
+            check_node(v, node["map"], f"{where}.{k}", bundle)
     elif node.get("type") == "number":
         # {type: number, min, max}: a number within the bounds (inclusive). `default` is read by the option's user.
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not node["min"] <= value <= node["max"]:
             raise BaseConfigError(f"{where} must be a number from {node['min']} to {node['max']}")
+    elif node.get("type") == "folder":
+        # {type: folder}: a path relative to the bundle that names an existing folder (wikilink_root, #103).
+        if not isinstance(value, str) or not value:
+            raise BaseConfigError(f"{where} must be a non-empty string")
+        if value != value.strip():
+            # realpath would turn " .." into a missing step and the option would do nothing in silence
+            raise BaseConfigError(f"{where}: {json.dumps(value)} must not start or end with a space")
+        if bundle is None:
+            raise BaseConfigError(f"{where} cannot be checked without the bundle folder")
+        if os.path.isabs(value):
+            raise BaseConfigError(f"{where} must be a path relative to the bundle, not an absolute path: {value}")
+        target = os.path.realpath(os.path.join(bundle, value))
+        if not os.path.exists(target):
+            raise BaseConfigError(f"{where}: {value} does not exist")
+        if not os.path.isdir(target):
+            raise BaseConfigError(f"{where}: {value} is not a folder")
+        # The vault root holds the bundle: a folder that is not the bundle or one of its parents would let a link resolve
+        # against an unrelated project, and the file system root or the home folder (or a folder above it) is not a
+        # vault but "everything", so a typo such as ../../../../.. would silently accept any link.
+        here = os.path.realpath(bundle)
+        if here != target and not here.startswith(target.rstrip(os.sep) + os.sep):
+            raise BaseConfigError(f"{where}: {value} must be the bundle folder or one of its parent folders")
+        home = os.path.realpath(os.path.expanduser("~"))
+        if target == os.sep or home == target or home.startswith(target + os.sep):
+            raise BaseConfigError(f"{where}: {value} is too broad: the file system root, the home folder and the folders above it are refused")
     elif node.get("type") == "boolean":
         if not isinstance(value, bool):
             raise BaseConfigError(f"{where} must be true or false")
@@ -467,7 +492,7 @@ def check_node(value, node: dict, where: str) -> None:
         if not isinstance(value, list):
             raise BaseConfigError(f"{where} must be a list")
         for i, v in enumerate(value):
-            check_node(v, node["list"], f"{where}[{i}]")
+            check_node(v, node["list"], f"{where}[{i}]", bundle)
     elif "enum" in node:
         if not isinstance(value, str) or value not in node["enum"]:
             # JSON, not a Python repr: a YAML user wrote true/null/"x ", not True/None (review F-D)
@@ -513,7 +538,7 @@ def load_block(bundle: Path) -> dict:
         raise BaseConfigError("the top level must be a mapping")
     if "okf_check" not in data:
         return {}
-    check_node(data["okf_check"], schema, "okf_check")
+    check_node(data["okf_check"], schema, "okf_check", bundle)
     return data["okf_check"]
 
 
