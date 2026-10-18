@@ -9,6 +9,16 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.22] - 2026-10-18
+
+OKF Knowledge Gate 0.9.22 lets a CI job or an agent see which notes the L2 advisory findings point at.
+
+### Added
+- **`okf-check --json` lists the L2 advisories in a new `l2_advisories` key** (public issue 2, second half). Each entry reads `RULE file - message`, the same shape as `l2_findings`, and the list is as long as `l2_warnings`. Past 200 entries the list stops with one line that says how many more there are; `l2_warnings` stays the true total. `l2_findings` keeps meaning house-rule errors only.
+
+### Fixed
+- **Messages no longer name the temporary copy.** A finding such as a missing `log.md` used to say `reserved file missing in <temporary folder>/okfmirror`; it now names the bundle.
+
 ## [0.9.21] - 2026-10-18
 
 OKF Knowledge Gate 0.9.21 stops the L2 profile from reporting broken links to files that exist when an `.okfignore` is present.
@@ -539,7 +549,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.21...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.22...HEAD
+[0.9.22]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.21...v0.9.22
 [0.9.21]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.20...v0.9.21
 [0.9.20]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.19...v0.9.20
 [0.9.19]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.18...v0.9.19

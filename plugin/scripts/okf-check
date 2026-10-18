@@ -52,7 +52,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.21"
+VERSION="0.9.22"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -174,9 +174,20 @@ emit_json() {
   _t="[]"; [ -s "$TMP/trust.json" ] && _t=$(cat "$TMP/trust.json"); [ "${TRUST_RAN:-1}" -eq 0 ] && _t=null
   if [ -n "$PY" ]; then
     _b=$(printf '%s' "$BUNDLE" | "$PY" -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))')
-    _f=$("$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" <<'PY'
-import json, sys
-out = {"errors": [], "stale": [], "l2_findings": [], "skipped": [], "lifecycle": [], "l2_warnings": None, "l2_by_rule": {}}
+    _f=$("$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
+import json, os, sys
+# Layers that read a filtered copy (.okfignore, crash isolation) hand okflint the copy's path, and some of its messages
+# print it (R201: "reserved file missing in <root>"). The report names the bundle the user pointed at; the copy is
+# also spelled by its real path (macOS /var -> /private/var), so both spellings go.
+roots = set()
+for r in sys.argv[5:]:
+    if r:
+        roots.update((r, os.path.realpath(r)))
+def unmirror(t):
+    for r in sorted(roots, key=len, reverse=True):
+        t = t.replace(r, sys.argv[4])
+    return t
+out = {"errors": [], "stale": [], "l2_findings": [], "skipped": [], "lifecycle": [], "l2_warnings": None, "l2_by_rule": {}, "l2_advisories": []}
 key = {"error": "errors", "stale": "stale", "l2": "l2_findings", "skipped": "skipped", "lifecycle": "lifecycle"}
 # The L2 advisory totals the text prints ("138 warning(s), by rule: S202 x136, L002 x2"); null when L2 did not run (public issue #2).
 if sys.argv[3] == "ran":
@@ -187,6 +198,14 @@ if sys.argv[3] == "ran":
             if r.startswith("C|"):
                 _, code, n = r.split("|")
                 out["l2_by_rule"][code] = int(n)
+            elif r.startswith("W|"):
+                out["l2_advisories"].append(r[2:])
+        # A cut is announced with its count, like the text report's "and N more" lines (G-11); l2_warnings keeps the total.
+        # 200: a CI job reads this key whole, and the other detail dumps cut at 3 to 12 lines.
+        cap = 200
+        if len(out["l2_advisories"]) > cap:
+            n = len(out["l2_advisories"]) - cap
+            out["l2_advisories"] = out["l2_advisories"][:cap] + ["... and %d more (l2_warnings has the total)" % n]
     except (OSError, IndexError, ValueError):
         pass
 try:
@@ -197,12 +216,15 @@ for line in lines:
     kind, _, text = line.partition("\t")
     if kind in key:
         out[key[kind]].append(text)
+for k, v in out.items():
+    if isinstance(v, list):
+        out[k] = [unmirror(t) for t in v]
 print(json.dumps(out)[1:-1])
 PY
 )
   else
     _b="\"${BUNDLE//\"/\\\"}\""
-    _f='"errors":[],"stale":[],"l2_findings":[],"skipped":[],"lifecycle":[],"l2_warnings":null,"l2_by_rule":{}'
+    _f='"errors":[],"stale":[],"l2_findings":[],"skipped":[],"lifecycle":[],"l2_warnings":null,"l2_by_rule":{},"l2_advisories":[]'
   fi
   printf '{"bundle":%s,"exit":%d,"l1_errors":%s,"l1_warnings":%s,"concepts":%s,"change_detection":"%s"%s,"warnings":%s,"trust_findings":%s,"l2_profile":"%s",%s}\n' \
     "$_b" "$code" "${L1_ERR:-null}" "${L1_WARN:-null}" "${L1_CONCEPTS:-null}" "$_cd" "$_ign" "$_w" "$_t" "${L2_PROFILE:-ran}" "$_f"
@@ -1212,6 +1234,10 @@ for x in errors + unknown:
 from collections import Counter
 for code, n in sorted(Counter(str(x.get("code", "?")) for x in others).items(), key=lambda kv: (-kv[1], kv[0])):
     print("C|%s|%d" % (code.replace("|", "/"), n))
+# The advisories themselves, same text format as the E rows, for `l2_advisories` in --json (public #2). One row per
+# finding, so the text is flattened: a newline in a file name or message must not forge a C| or E| row.
+for x in others:
+    print("W|" + re.sub(r"[\r\n\t]", " ", "%s %s \u2014 %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", ""))))
 PY
   ) || counts=""
   if [ -z "$counts" ]; then
