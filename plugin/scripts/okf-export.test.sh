@@ -30,6 +30,8 @@ note() {
   printf -- '---\ntype: Note\ntitle: %s\ndescription: The %s note.\ntags: [fixture]\ngenerated:\n  by: process:fixture\n  at: 2026-01-01\n---\n%s\n' \
     "$name" "$name" "$3" > "$1/$2"
 }
+# lognote <vault> <name> <body>: a vault log note as written, no frontmatter (a spec 9 log has none; 0.9.16 review item 2).
+lognote() { mkdir -p "$(dirname "$1/$2")"; printf '%s\n' "$3" > "$1/$2"; }
 # run <vault> <out>: run the export; the exit code is printed, the report lands in $TMP/out.txt.
 run() { "$EXPORT" "$@" >"$TMP/out.txt" 2>&1; printf '%s' "$?"; }
 
@@ -224,6 +226,53 @@ rc=$(PYTHONPATH="$TMP/decoy" run "$V" "$O")
   && ok "S10-H2d a decoy yaml on PYTHONPATH is not imported: the vendored PyYAML wins and the index is the same" \
   || bad "S10-H2d vendored yaml" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
 
+# --- S10-H3: dated history lines produce a log ---------------------------------------------------
+# Spec 3.1 reserves log.md, so the vault's own log.md note is the history (lead decision on #65).
+# Both dated forms, written out of order; spec 9 wants date groups, newest first, no frontmatter. The vault log's own
+# title is kept (0.9.16 review item 5).
+V="$TMP/h3/kb"; O="$TMP/h3/out"
+note "$V" a.md "# A"
+lognote "$V" log.md "# History
+- 2026-05-15: Started.
+## 2026-05-22
+* **Update**: Added [[a]].
+- 2026-05-15: Second, same day."
+rc=$(run "$V" "$O")
+printf -- '# History\n\n## 2026-05-22\n* **Update**: Added [a](a.md).\n\n## 2026-05-15\n* Started.\n* Second, same day.\n' > "$TMP/want_log"
+{ [ "$rc" = 0 ] && cmp -s "$TMP/want_log" "$O/log.md" && ! grep -q 'log' "$O/index.md"; } 2>/dev/null \
+  && ok "S10-H3a a vault log.md becomes a spec 9 log: date groups newest first, items and headings both read, links converted, not indexed" \
+  || bad "S10-H3a log" "rc=$rc log: $(cat "$O/log.md" 2>&1 | tr '\n' '|') index: $(grep -n log "$O/index.md" 2>&1 | head -1) report: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+"$CHECK" --json "$O" > "$TMP/check.json" 2>/dev/null
+counts=$(tail -1 "$TMP/check.json" | "$REALPY" -c 'import json,sys; d=json.load(sys.stdin); print(d["l1_errors"], d["l1_warnings"], d["concepts"])' 2>&1)
+[ "$counts" = "0 0 1" ] \
+  && ok "S10-H3 acceptance: okf-check <out> with the generated log reports 0 L1 errors, 0 warnings, 1 concept (the log is not a concept)" \
+  || bad "S10-H3 acceptance" "l1 errors/warnings/concepts: $counts; $("$CHECK" "$O" 2>&1 | grep -iE 'warn|error|log' | head -4 | tr '\n' ' ')"
+
+# No history, no log: a vault without log.md gets none.
+O="$TMP/h3/out-none"; mkdir -p "$TMP/h3/nolog"; note "$TMP/h3/nolog" a.md "# A"
+rc=$(run "$TMP/h3/nolog" "$O")
+{ [ "$rc" = 0 ] && [ -f "$O/index.md" ] && [ ! -e "$O/log.md" ]; } \
+  && ok "S10-H3b a vault with no log.md gets no log (and still gets its index)" \
+  || bad "S10-H3b no log" "rc=$rc out: $(cd "$O" 2>/dev/null && ls | tr '\n' ' ')"
+
+# A date that is not ISO YYYY-MM-DD or not a real day, and a line under no date, are listed; the
+# lines under a rejected date heading are covered by its report; good entries still make the log.
+V="$TMP/n3/kb"; O="$TMP/n3/out"
+lognote "$V" log.md "# History
+stray text
+## 2026/05/22
+* under a bad heading
+- 2026-02-30: not a day
+- 2026-05-01: kept"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 1 ] && grep -qxF 'log.md:2: line belongs to no date: stray text' "$TMP/out.txt" \
+  && grep -qxF 'log.md:3: heading 2026/05/22 is not an ISO YYYY-MM-DD date (1 line under it left out)' "$TMP/out.txt" \
+  && grep -qxF 'log.md:5: date 2026-02-30 is not an ISO YYYY-MM-DD day' "$TMP/out.txt" \
+  && [ "$(wc -l < "$TMP/out.txt" | tr -d ' ')" = 3 ] \
+  && [ "$(cat "$O/log.md")" = "$(printf '# History\n\n## 2026-05-01\n* kept')" ]; } 2>/dev/null \
+  && ok "S10-N3 a non-ISO date, an impossible day and an undated line are listed as file:line (exit 1); the valid entry still makes the log" \
+  || bad "S10-N3 malformed" "rc=$rc report: $(cat "$TMP/out.txt" | tr '\n' '|') log: $(cat "$O/log.md" 2>&1 | tr '\n' '|')"
+
 # --- S10-E2: a rename collision stops the export -------------------------------------------------
 V="$TMP/e2/kb"; O="$TMP/e2/out"
 note "$V" sub/index.md "Sub home."
@@ -334,6 +383,22 @@ rc=$(run "$V" "$O")
 { [ "$rc" = 0 ] && grep -qF 'See [h > Top](h.md#top).' "$O/l.md"; } 2>/dev/null \
   && ok "X-9 a heading in a BOM note without frontmatter is found" \
   || bad "X-9 BOM heading" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
+# And for the log problems (#65): an undated line is quoted in full.
+V="$TMP/ctl3/kb"; O="$TMP/ctl3/out"
+lognote "$V" log.md "$(printf '# History\nstray\033[2Jtext\n- 2026-05-01: kept')"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 1 ] && grep -qF 'line belongs to no date: stray?[2Jtext' "$TMP/out.txt" \
+  && ! LC_ALL=C grep -q "$(printf '[\001-\010\016-\037\177]')" "$TMP/out.txt"; } \
+  && ok "X-16 control characters in a quoted log line are replaced by ? in the problem line (exit 1)" \
+  || bad "X-16 control characters, log" "rc=$rc report: $(head -2 "$TMP/out.txt" | od -c | head -4 | tr '\n' ' ')"
+# X-17 (#65 on 0.9.14): a log note is read as written (0.9.14 keeps a BOM and CRLF), so its BOM must not make its title
+# line an undated line, and a CRLF entry is still an entry.
+V="$TMP/x17/kb"; O="$TMP/x17/out"
+mkdir -p "$V"; printf '\357\273\277# History\r\n- 2026-05-01: kept\r\n' > "$V/log.md"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 0 ] && [ ! -s "$TMP/out.txt" ] && grep -qx '## 2026-05-01' "$O/log.md" && grep -qx '\* kept' "$O/log.md"; } 2>/dev/null \
+  && ok "X-17 a log note with a BOM and CRLF line ends becomes the spec 9 log with no problem (exit 0)" \
+  || bad "X-17 BOM and CRLF log" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') log: $(od -c "$O/log.md" 2>&1 | head -3 | tr '\n' ' ')"
 
 # --- 0.9.15 review ---------------------------------------------------------------------------------------------
 # X-12 (blocker): the rename clash check compares names the way the file system does. On a case-insensitive disk (macOS
@@ -370,6 +435,166 @@ rc=$(run "$V" "$O")
 { [ "$rc" = 2 ] && grep -q 'rename the folder' "$TMP/out.txt"; } \
   && ok "X-15 a folder named index is refused with a message that says to rename the folder" \
   || bad "X-15 folder named index" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
+
+# --- #65 on 0.9.15: the log file follows the same name and text rules ---------------------------------------
+# X-18: log.md is reserved whatever its case (a case-insensitive disk reads Log.md as log.md). Log.md becomes the spec 9
+# log written as log.md, and the index does not list it as a concept.
+V="$TMP/x18/kb"; O="$TMP/x18/out"
+note "$V" a.md "# A"
+lognote "$V" Log.md "# History
+- 2026-05-01: kept"
+rc=$(run "$V" "$O")
+names=$(cd "$O" 2>/dev/null && "$REALPY" -c 'import os; print(" ".join(sorted(os.listdir("."))))')
+{ [ "$rc" = 0 ] && [ "$names" = "a.md index.md log.md" ] && grep -qx '## 2026-05-01' "$O/log.md" \
+  && ! grep -qi 'log' "$O/index.md"; } 2>/dev/null \
+  && ok "X-18 a vault note named Log.md becomes the spec 9 log, written as log.md and not listed in the index" \
+  || bad "X-18 Log.md" "rc=$rc out: $names report: $(head -2 "$TMP/out.txt" | tr '\n' '|') index: $(grep -n '^\*' "$O/index.md" 2>&1 | tr '\n' '|')"
+# X-19: on a case-sensitive disk a vault can hold log.md and Log.md; both become log.md, so the export stops (exit 2)
+# before writing anything, as for an index rename clash. A case-insensitive disk cannot hold both: SKIP there.
+V="$TMP/x19/kb"; O="$TMP/x19/out"; P="$TMP/x19/probe"; mkdir -p "$V" "$P"
+printf x > "$P/case-probe"; if [ -e "$P/CASE-PROBE" ]; then
+  printf '  SKIP  X-19 log.md and Log.md in one folder: this disk is case-insensitive (runs on the Debian gate)\n'
+else
+  lognote "$V" log.md "- 2026-05-01: one"; lognote "$V" Log.md "- 2026-05-02: two"
+  rc=$(run "$V" "$O")
+  { [ "$rc" = 2 ] && grep -q 'Log.md' "$TMP/out.txt" && grep -q 'log.md' "$TMP/out.txt" && [ ! -e "$O/log.md" ]; } \
+    && ok "X-19 log.md and Log.md in one folder stop the export (exit 2) before anything is written" \
+    || bad "X-19 log name clash" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(ls "$O" 2>&1 | tr '\n' ' ')"
+fi
+# X-20: the spec 9 log is read by people and agents: control characters in a log entry become "?", as in problem lines.
+V="$TMP/x20/kb"; O="$TMP/x20/out"
+lognote "$V" log.md "$(printf '# History\n- 2026-05-01: a\033b\n## 2026-05-02\nc\007d')"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 0 ] && grep -qxF '* a?b' "$O/log.md" && grep -qxF 'c?d' "$O/log.md" \
+  && ! LC_ALL=C grep -q "$(printf '[\001-\010\016-\037\177]')" "$O/log.md"; } 2>/dev/null \
+  && ok "X-20 control characters in log entries become ? in the spec 9 log" \
+  || bad "X-20 log control characters" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') log: $(od -c "$O/log.md" 2>&1 | head -4 | tr '\n' ' ')"
+# X-21: a date in brackets is not a date line (Obsidian writes a daily-note link as [[2026-05-03]]): it is reported as a
+# line under no date, not dropped; brackets inside an entry's text are kept as written.
+V="$TMP/x21/kb"; O="$TMP/x21/out"
+lognote "$V" log.md "- [2026-05-03]: bracketed
+- 2026-05-01: see [x] and [y](z)"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 1 ] && grep -qF 'log.md:1: line belongs to no date: - [2026-05-03]: bracketed' "$TMP/out.txt" \
+  && grep -qxF '* see [x] and [y](z)' "$O/log.md"; } 2>/dev/null \
+  && ok "X-21 a bracketed date is reported as a line under no date (exit 1); brackets in an entry are kept" \
+  || bad "X-21 brackets" "rc=$rc report: $(head -3 "$TMP/out.txt" | tr '\n' '|') log: $(cat "$O/log.md" 2>&1 | tr '\n' '|')"
+
+# --- 0.9.16 review round 1: the log reader (lead's design, items 1-8) ------------------------------------------
+# logrun <vault> <out>: the export, then the spec 9 log it wrote (or "<no log>") in $TMP/log.txt.
+logrun() { rc=$(run "$1" "$2"); cat "$2/log.md" > "$TMP/log.txt" 2>/dev/null || echo '<no log>' > "$TMP/log.txt"; }
+l1() { "$CHECK" --json "$1" 2>/dev/null | tail -1 | "$REALPY" -c 'import json,sys; d=json.load(sys.stdin); print(d["l1_errors"], d["l1_warnings"])' 2>&1; }
+# X-22 (item 1, HIGH): a level-2 heading that is not an ISO date is reported and its lines are left out, not filed under
+# the previous date; a level-3 heading stays entry text; the log passes the validator's check_log.
+V="$TMP/x22/kb"; O="$TMP/x22/out"; note "$V" a.md "# A"
+lognote "$V" log.md "# History
+## 2026-05-01
+* first
+## Notes
+note line
+### Sub
+## 2026-05-22T10:00
+after
+## 2026-05-02
+### Sub heading
+text"
+logrun "$V" "$O"
+printf '# History\n\n## 2026-05-02\n### Sub heading\ntext\n\n## 2026-05-01\n* first\n' > "$TMP/want"
+{ [ "$rc" = 1 ] && grep -qF 'log.md:4: heading Notes is not an ISO YYYY-MM-DD date' "$TMP/out.txt" \
+  && grep -qF 'log.md:7: heading 2026-05-22T10:00 is not an ISO YYYY-MM-DD date' "$TMP/out.txt" \
+  && cmp -s "$TMP/want" "$TMP/log.txt" && [ "$(l1 "$O")" = "0 0" ]; } 2>/dev/null \
+  && ok "X-22 a non-date ## heading is reported and its lines left out, ### stays text, and the log passes check_log (0 L1 errors, 0 warnings)" \
+  || bad "X-22 non-date level-2 heading" "rc=$rc report: $(tr '\n' '|' < "$TMP/out.txt") log: $(tr '\n' '|' < "$TMP/log.txt") l1: $(l1 "$O")"
+# X-23 (item 2, HIGH): frontmatter in the vault log is reported, and the rest of the log is still exported.
+V="$TMP/x23/kb"; O="$TMP/x23/out"
+note "$V" log.md "- 2026-05-01: kept"
+logrun "$V" "$O"
+{ [ "$rc" = 1 ] && grep -qxF 'log.md:1: frontmatter dropped, a spec log has none' "$TMP/out.txt" \
+  && [ "$(cat "$TMP/log.txt")" = "$(printf '# Log\n\n## 2026-05-01\n* kept')" ]; } 2>/dev/null \
+  && ok "X-23 frontmatter in the vault log is reported (exit 1) and the dated entries are still exported" \
+  || bad "X-23 log frontmatter" "rc=$rc report: $(tr '\n' '|' < "$TMP/out.txt") log: $(tr '\n' '|' < "$TMP/log.txt")"
+# X-24 (item 3, HIGH): an indented line after a dated item continues that item, on the item's day, until the next
+# item, heading or unindented line; with no heading above it, it is not "a line under no date".
+V="$TMP/x24/kb"; O="$TMP/x24/out"
+lognote "$V" log.md "- 2026-05-04: top
+  more
+## 2026-05-01
+- 2026-05-03: item
+  continuation
+    deeper
+back at heading day"
+logrun "$V" "$O"
+printf '# Log\n\n## 2026-05-04\n* top\n  more\n\n## 2026-05-03\n* item\n  continuation\n    deeper\n\n## 2026-05-01\nback at heading day\n' > "$TMP/want"
+{ [ "$rc" = 0 ] && [ ! -s "$TMP/out.txt" ] && cmp -s "$TMP/want" "$TMP/log.txt"; } 2>/dev/null \
+  && ok "X-24 an indented continuation stays with its dated item's day (exit 0)" \
+  || bad "X-24 item continuation" "rc=$rc report: $(tr '\n' '|' < "$TMP/out.txt") log: $(tr '\n' '|' < "$TMP/log.txt")"
+# X-25 (item 4, MEDIUM): the whole date-like token is read, so a malformed date is reported, never split into a date
+# and text.
+V="$TMP/x25/kb"; O="$TMP/x25/out"
+lognote "$V" log.md "- 2026-05-221: x
+- 2026-05-22T10:00 y
+- 2026-05-01-extra
+- 2026-05-02: ok"
+logrun "$V" "$O"
+{ [ "$rc" = 1 ] && grep -qxF 'log.md:1: date 2026-05-221 is not an ISO YYYY-MM-DD day' "$TMP/out.txt" \
+  && grep -qxF 'log.md:2: date 2026-05-22T10 is not an ISO YYYY-MM-DD day' "$TMP/out.txt" \
+  && grep -qxF 'log.md:3: date 2026-05-01-extra is not an ISO YYYY-MM-DD day' "$TMP/out.txt" \
+  && [ "$(cat "$TMP/log.txt")" = "$(printf '# Log\n\n## 2026-05-02\n* ok')" ]; } 2>/dev/null \
+  && ok "X-25 a malformed item date (2026-05-221, 2026-05-22T10:00, 2026-05-01-extra) is reported whole, not split" \
+  || bad "X-25 malformed item date" "rc=$rc report: $(tr '\n' '|' < "$TMP/out.txt") log: $(tr '\n' '|' < "$TMP/log.txt")"
+# X-26 (item 5, MEDIUM): the vault log's own title is kept, so a link to it ([[#History]]) still has its target.
+V="$TMP/x26/kb"; O="$TMP/x26/out"; note "$V" a.md "# A"
+lognote "$V" log.md "# History
+## 2026-05-01
+* see [[#History]]"
+logrun "$V" "$O"
+{ [ "$rc" = 0 ] && [ "$(head -1 "$TMP/log.txt")" = '# History' ] && grep -qxF '* see [History](#history)' "$TMP/log.txt" \
+  && [ "$(l1 "$O")" = "0 0" ]; } 2>/dev/null \
+  && ok "X-26 the vault log's # title is the log's title, so [[#History]] keeps its target; the validator accepts it" \
+  || bad "X-26 log title" "rc=$rc report: $(tr '\n' '|' < "$TMP/out.txt") log: $(tr '\n' '|' < "$TMP/log.txt") l1: $(l1 "$O")"
+# X-27 (item 6, MEDIUM): a blank line inside a day is kept (one, however many were written), so a second paragraph is
+# not joined onto a list item; blank lines at the end of a day are dropped.
+V="$TMP/x27/kb"; O="$TMP/x27/out"
+lognote "$V" log.md "## 2026-05-01
+- 2026-05-01: item
+
+second paragraph
+
+
+third
+
+"
+logrun "$V" "$O"
+printf '# Log\n\n## 2026-05-01\n* item\n\nsecond paragraph\n\nthird\n' > "$TMP/want"
+{ [ "$rc" = 0 ] && cmp -s "$TMP/want" "$TMP/log.txt"; } 2>/dev/null \
+  && ok "X-27 one blank line between kept lines of a day is kept, extra and trailing blank lines are not" \
+  || bad "X-27 blank lines" "rc=$rc report: $(tr '\n' '|' < "$TMP/out.txt") log: $(od -c "$TMP/log.txt" | head -5 | tr '\n' ' ')"
+# X-28 (item 7, LOW): the report for a rejected date heading says how many lines under it were left out.
+V="$TMP/x28/kb"; O="$TMP/x28/out"
+lognote "$V" log.md "## Misc
+* one
+## 2026/05/22
+* a
+* b
+
+## 2026-05-01
+* kept"
+logrun "$V" "$O"
+{ [ "$rc" = 1 ] && grep -qxF 'log.md:1: heading Misc is not an ISO YYYY-MM-DD date (1 line under it left out)' "$TMP/out.txt" \
+  && grep -qxF 'log.md:3: heading 2026/05/22 is not an ISO YYYY-MM-DD date (2 lines under it left out)' "$TMP/out.txt"; } 2>/dev/null \
+  && ok "X-28 a rejected heading's report counts the lines left out under it (1 line, 2 lines)" \
+  || bad "X-28 left-out count" "rc=$rc report: $(tr '\n' '|' < "$TMP/out.txt")"
+# X-29 (item 8, LOW): a log with no dated entry is reported (exit 1), so a [[log]] link pointing at nothing is not silent.
+r29=""
+for body in "" "# History" "# History
+## 2026-05-01"; do
+  V="$TMP/x29/kb"; O="$TMP/x29/out"; rm -rf "$TMP/x29"; lognote "$V" log.md "$body"
+  logrun "$V" "$O"
+  { [ "$rc" = 1 ] && grep -qxF 'log.md:1: no dated entry, no log written' "$TMP/out.txt" && [ ! -e "$O/log.md" ]; } \
+    || r29="$r29 [$(printf '%s' "$body" | tr '\n' '/'): rc=$rc $(tr '\n' '|' < "$TMP/out.txt")]"
+done
+[ -z "$r29" ] && ok "X-29 an empty log, a title only and headings only are reported as no dated entry (exit 1), no log written" \
+  || bad "X-29 no dated entry" "$r29"
 
 echo
 echo "  $PASS passed, $FAIL failed"

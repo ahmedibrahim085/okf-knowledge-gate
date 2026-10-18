@@ -9,6 +9,13 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.16] - 2026-10-18
+
+OKF Knowledge Gate 0.9.16 makes `okf-export` write the bundle's `log.md` from the vault's own history note.
+
+### Added
+- **`okf-export` writes a spec `log.md`.** A vault `log.md` note (spec section 3.1 reserves that name) is read as the history: dated lines, either a date heading (`## 2026-05-22`) whose lines are that day's entries or a list item that starts with a date (`- 2026-05-22: text`), in any order. The export groups them by date, newest first, in a `log.md` in the same folder, with no frontmatter. A vault without a `log.md` note gets no log. Everything that cannot be filed is listed as `file:line` with exit 1 and nothing is dropped silently: a date that is not an ISO `YYYY-MM-DD` day (`2026-02-30`, `2026/05/22`, `2026-05-22T10:00`), a `##` heading that is not a date, a line that belongs to no date, the log's own frontmatter (a spec log has none), and a log with no dated entry (no log is written). The vault's own `# Title` is kept as the log's title, an indented continuation line stays with its dated item, and blank lines between the lines of a day are kept. The name is matched case-folded (`Log.md` on a case-insensitive disk), two logs in one folder stop the export with exit 2, the generated indexes leave the log out, and control characters in log entries become `?`.
+
 ## [0.9.15] - 2026-10-18
 
 OKF Knowledge Gate 0.9.15 makes `okf-export` write the index files a bundle needs.
@@ -490,7 +497,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.15...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.16...HEAD
+[0.9.16]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.15...v0.9.16
 [0.9.15]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.14...v0.9.15
 [0.9.14]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.13...v0.9.14
 [0.9.13]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.12...v0.9.13

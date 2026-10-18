@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import datetime
 import functools
 import os
 import re
@@ -88,6 +89,106 @@ def heading_slugs(path: Path) -> set[str]:
     except UnicodeDecodeError:
         return set()   # the target is reported on its own as not valid UTF-8; a heading in it cannot be found
     return {slug(m.group(1)) for _, line, code in body_lines(lines) if not code and (m := ATX.match(line))}
+
+
+# Spec 9 log input, read from a vault log.md: a level-2 heading (`## 2026-05-22`) whose lines are that day's entries,
+# or a dated list item (`- 2026-05-22: text`). Every `## ` heading must be an ISO date, as the validator's check_log
+# requires; headings of level 3-6 are entry text. DATEISH also catches near-misses (2026/05/22, 2026-5-2), and an item
+# date is the whole token up to a space or ':' (2026-05-221, 2026-05-01-extra), so a bad date is reported, never split.
+DATEISH = r"\d{4}[-/.]\d{1,2}[-/.]\d{1,2}"
+LEVEL2 = re.compile(r"^##[ \t]+(.*?)[ \t]*$")
+DATED_ITEM = re.compile(rf"^[ \t]*[-*+][ \t]+({DATEISH}[^\s:]*)[ \t]*:?[ \t]*(.*)$")
+TITLE = re.compile(r"^#[ \t]+(.*?)[ \t]*$")
+
+
+def iso_day(text: str) -> str | None:
+    """Spec 9: date headings MUST use ISO 8601 YYYY-MM-DD; it must also be a real day."""
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", text):
+        return None
+    try:
+        return datetime.date.fromisoformat(text).isoformat()
+    except ValueError:
+        return None
+
+
+def is_log(rel: Path) -> bool:
+    """Spec 3.1 reserves log.md; compared case-folded, as a case-insensitive disk (macOS APFS, Windows) compares it (X-18)."""
+    return rel.name.casefold() == "log.md"
+
+
+def build_log(rel: Path, lines: list[str], problems: list[str]) -> str | None:
+    """A spec 9 log from a vault log.md's dated lines: date groups, newest first, no frontmatter, the vault log's own
+    `# Title` kept (else `# Log`). Whatever cannot go into the log goes to `problems`, so nothing is dropped silently:
+    frontmatter, a bad date, a `## ` heading that is not a date (with the count of lines left out under it), a line
+    under no date, a log with no dated entry (then None: no log is written)."""
+    lines = [lines[0].lstrip("\ufeff"), *lines[1:]] if lines else lines   # a BOM is not part of the title line (X-17)
+    name = rel.as_posix()
+    if frontmatter_len(lines):
+        problems.append(f"{name}:1: frontmatter dropped, a spec log has none")
+    groups: dict[str, list[str]] = {}
+    current: str | None = None     # the day of the last ## heading; "" under a rejected heading
+    item_day: str | None = None    # the day of the last dated item, which an indented line continues; "" if rejected
+    title: str | None = None
+    blank = False                  # a blank line since the last kept line: one is kept between two lines of a day
+    rejected: list | None = None   # [index in problems, lines left out] of the rejected heading being read
+
+    def close_rejected() -> None:
+        if rejected:
+            n = rejected[1]
+            problems[rejected[0]] += f" ({n} line{'' if n == 1 else 's'} under it left out)"
+
+    def keep(day: str, text: str) -> None:
+        nonlocal blank
+        group = groups.setdefault(day, [])
+        if blank and group:
+            group.append("")
+        group.append(CONTROL.sub("?", text))   # the log is read by people and agents (X-20)
+        blank = False
+
+    for i, line, code in body_lines(lines):
+        text, where = line.rstrip("\r\n"), f"{name}:{i + 1}"
+        if not code:
+            if not text.strip():
+                blank = True
+                continue
+            heading = LEVEL2.match(text)
+            if heading:
+                close_rejected()
+                rejected, item_day, blank = None, None, False
+                current = iso_day(heading.group(1)) or ""
+                if not current:
+                    problems.append(f"{where}: heading {heading.group(1)} is not an ISO YYYY-MM-DD date")
+                    rejected = [len(problems) - 1, 0]
+                continue
+            item = DATED_ITEM.match(text)
+            if item:
+                item_day = iso_day(item.group(1)) or ""
+                if item_day:
+                    keep(item_day, f"* {item.group(2)}")
+                else:
+                    problems.append(f"{where}: date {item.group(1)} is not an ISO YYYY-MM-DD day")
+                continue
+            if title is None and current is None and item_day is None and TITLE.match(text):
+                title = TITLE.match(text).group(1)   # the vault log's own title, which a [[#Title]] link may name
+                continue
+        if item_day is not None and text[:1] in (" ", "\t"):
+            if item_day:
+                keep(item_day, text)   # an indented line continues the dated item above it (item 3)
+            continue
+        item_day = None
+        if current is None:
+            problems.append(f"{where}: line belongs to no date: {text.strip()}")
+        elif current:
+            keep(current, text)
+        else:
+            rejected[1] += 1
+    close_rejected()
+    days = sorted(groups, reverse=True)
+    if not days:
+        problems.append(f"{name}:1: no dated entry, no log written")
+        return None
+    head = f"# {CONTROL.sub('?', title) if title else 'Log'}\n"
+    return head + "".join(f"\n## {d}\n" + "".join(f"{e}\n" for e in groups[d]) for d in days)
 
 
 def link_text(text: str) -> str:
@@ -170,12 +271,17 @@ def main() -> int:
         folder note dir/<dir>.md (the vault root's takes the vault folder's name). The folder is kept."""
         if rel.name.casefold() == "index.md":   # casefold: on a case-insensitive disk Index.md IS index.md
             return rel.parent / f"{rel.parent.name or vault.name}.md"
+        if is_log(rel):
+            return rel.parent / "log.md"   # spec 3.1 names it in lower case; a case-sensitive disk tells Log.md apart
         return rel
 
     # S10-E2: a rename onto an existing note would overwrite it. Stop before anything is written.
     # Names are compared case-folded, the way a case-insensitive disk (macOS APFS, Windows) compares them.
     folded = {p.as_posix().casefold() for p in files}
     clashes = [(rel, out_rel(rel)) for rel in files if rel.name.casefold() == "index.md" and out_rel(rel).as_posix().casefold() in folded]
+    # The same for the log (X-19): log.md and Log.md can share a folder only on a case-sensitive disk; both become log.md.
+    clashes += [(rel, out_rel(rel)) for rel in files if is_log(rel) and rel != out_rel(rel)
+                and any(p != rel and p.as_posix().casefold() == out_rel(rel).as_posix().casefold() for p in files)]
     for rel, new in clashes:
         if new == rel:
             fail(f"{rel.as_posix()} is the folder note of a folder named index, which leaves it no other name; rename the folder in the vault")
@@ -229,8 +335,13 @@ def main() -> int:
                 parts += [WIKILINK.sub(link, line[pos:span.start()]), span.group(0)]
                 pos = span.end()
             lines[i] = "".join(parts) + WIKILINK.sub(link, line[pos:])
+        if is_log(rel):   # spec 3.1: reserved, so never a concept; it becomes the spec 9 log
+            log = build_log(rel, lines, problems)
+            if log is not None:
+                dest.write_text(log, encoding="utf-8")
+            continue
         dest.write_bytes("".join(lines).encode("utf-8"))   # bytes: no newline translation on the way out either
-    write_indexes(out, [out_rel(rel) for rel in files if rel.suffix == ".md"])
+    write_indexes(out, [out_rel(rel) for rel in files if rel.suffix == ".md" and not is_log(rel)])
     for p in problems:
         print(CONTROL.sub("?", p))
     return 1 if problems else 0
