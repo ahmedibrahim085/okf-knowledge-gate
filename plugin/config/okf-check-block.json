@@ -1,0 +1,16 @@
+{
+  "_comment": "The schema of the okf_check: block in okf-base.yaml. okf-verify enforces it (okf-verify --check-config) and okf-check calls that, so the two tools cannot disagree. A node is {keys: {name: node}} (a mapping with exactly those keys), {list: node} (a list whose items are node) or {type: string} (a non-empty string). To add an option, add its key under the top-level keys.",
+  "keys": {
+    "verify": {
+      "keys": {
+        "repos": {
+          "list": {
+            "keys": {
+              "path": {"type": "string"}
+            }
+          }
+        }
+      }
+    }
+  }
+}

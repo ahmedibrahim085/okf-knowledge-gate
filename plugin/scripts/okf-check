@@ -50,7 +50,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.3"
+VERSION="0.9.4"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -754,6 +754,23 @@ run_trust() {
   printf '%s\n' "$out" | sed -n 's/^[WA]|//p' | say_capped 50 "                   "
   say "                   okf-check cannot prove who a person is. A human: entry is a claim in the file."
   return 0
+}
+
+# ------------------------------------------------------- okf_check: options block (#66)
+# okf-check's own options live in ONE `okf_check:` block of okf-base.yaml. okflint ignores keys it does not know
+# (okflint 0.5.0 manifest.py reads named keys only; the L2 count with and without the block is equal, LT-51b), so the
+# block is not stripped. A block of the wrong shape or a key nobody knows is a typo that would switch an option off in
+# silence: exit 2. The rules live ONCE, in config/okf-check-block.json, and okf-verify enforces them; this calls it
+# (`okf-verify --check-config`), so the two tools cannot disagree (LT-52 is the parity table). No okf-base.yaml or
+# no block: nothing is printed (LT-51c).
+run_config() {
+  local out
+  [ -f "$1/okf-base.yaml" ] && [ -n "$PY" ] || return 0
+  out=$(py_with_vendor "$ROOT/scripts/okf-verify" --check-config "$1" 2>&1) && return 0
+  out=$(printf '%s' "$out" | tail -n 1 | sed 's/^error: .*okf-base\.yaml //')
+  say "  Config           COULD NOT RUN — okf-base.yaml: $out"
+  record error "okf-base.yaml: $out"
+  return $EXIT_DEP
 }
 
 # ------------------------------------------------------- L2 house profile
@@ -1563,6 +1580,7 @@ worse() { [ "$(rank "$1")" -gt "$(rank "$worst")" ] && worst="$1"; return 0; }
 OTHER_FAIL=0
 worse_other() { [ "$1" -ne 0 ] && OTHER_FAIL=1; worse "$1"; }
 
+run_config "$BUNDLE"; worse_other $?
 run_conformance "$LAYER_BUNDLE"; worse_other $?
 run_trust       "$LAYER_BUNDLE"; worse_other $?
 # --strict-trust: severity only. A C4 finding or an L1 near-miss actor warning becomes blocking (exit 1).

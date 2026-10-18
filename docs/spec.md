@@ -918,6 +918,16 @@ here"*. Conformance is a question about form; this is a question about fact.
 | V-9 | `--json` | parseable | ✅ |
 | V-10 | Path inside a **fenced code block** | not a claim — ignored | ✅ |
 | V-11 | Ephemeral path (`/tmp`, `/var/folders`) | never REFUTED | ✅ |
+| RV-1 | `okf-base.yaml` declares `okf_check.verify.repos` with one valid git repo, no `--repo` | a SHA in that repo is CONFIRMED | ✅ |
+| RV-2 | One declared repo plus `--repo other` | SHAs are searched in both | ✅ |
+| RV-3 | Declared path does not exist | UNRESOLVED, reason `declared repository not found` plus the path; exit code unchanged by the declaration alone | ✅ |
+| RV-4 | Declared folder is not a git repo | UNRESOLVED, reason `not a git repository` plus the path | ✅ |
+| RV-5 | Declared `~/src/x` and `../svc` | `~` is the home folder; the relative path is read from the bundle folder, not the working directory | ✅ |
+| RV-6 | Same repo declared and passed with `--repo` | searched once | ✅ |
+| RV-7 | `okf-base.yaml` unreadable, not valid YAML, or `okf_check.verify.repos` not a list of `{path: string}` | one error line naming the file and the problem, exit 2, no verdicts; no `okf_check` key is not an error | ✅ |
+| RV-16 | An unknown key under `okf_check`, `verify` or a repository entry; a null `okf_check`/`verify`; `repos` as a list of strings; an empty `path`; invalid UTF-8 | exit 2, one line naming the key (S1-N3, schema shared with `okf-check`) | ✅ |
+| RV-17 | `okf-verify <bundle> --check-config` | valid or absent block: exit 0, no output, no verdicts; invalid: one error line, exit 2 | ✅ |
+| RV-18 | A declared path that cannot be resolved (`~nosuchuser/x`; a path under an unreadable directory) | UNRESOLVED `cannot resolve: ...` in text and `--json`, exit 0, no traceback, no REFUTED; the other repositories are still searched | ✅ |
 
 **V-10 and V-11 came from live-firing, not from imagination.** The first run on
 the real bundle REFUTED `/tmp/net-spy.log` — a `const LOG = …` literal inside an
@@ -1132,6 +1142,16 @@ A small note whose YAML aliases nest describes billions of items; `str()` on suc
 | LT-50 | `--doctor` search binary | `--doctor` says whether the optional `okf` search binary is present (the doc-reuse closest-notes hint) and what is off without it | ✅ |
 | LT-47 | GitHub Action | warns on 0 concepts and on each skipped layer; `require-house-rules: true` exits 3 when L2 was skipped; other values exit 64 | ✅ |
 | LT-46 | L2 wikilinks | an L001 whose path-qualified target exists is dropped and counted | ✅ |
+
+### The `okf_check:` options block (#66, 0.9.4)
+okf-check's own options live in ONE `okf_check:` block of `okf-base.yaml`; each option is off by default. `okflint` 0.5.0 reads only the manifest keys it knows, so the block is not stripped before L2: the L2 warning count with and without it is equal, and LT-51b pins that against the real `okflint`. A block of the wrong shape or a key nobody knows is reported on a `Config` line and in `errors[]`, and the run exits 2: a typo would otherwise switch an option off in silence. The rules live ONCE, as data, in `plugin/config/okf-check-block.json` (each option's ticket adds its key there); `okf-verify` enforces them and `okf-check` calls `okf-verify --check-config`, so the two tools cannot disagree. LT-52 feeds one table of block shapes to both tools and asserts they agree. No block: no `Config` line, and text and `--json` output are byte-identical to the build before this change (measured against 5709b2e).
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-51a | S4-N1: an unknown key inside `okf_check:` | exit 2; the output names `okf_check.<key>` | ✅ |
+| LT-51b | S4-H1: a valid `okf_check:` block, real `okflint` | `l2_profile`, `l2_warnings` and `l2_by_rule` equal the run without the block (SKIPPED when `okflint` is absent) | ✅ |
+| LT-51c | S4-E1: no `okf_check:` block | text and `--json` output and exit code byte-identical to the same build with the okf_check step deleted | ✅ |
+| LT-52 | One table of `okf_check:` shapes (valid, wrong type, null, list, typo'd key, unknown entry key, empty path, invalid UTF-8, invalid YAML) to BOTH tools | both exit 0 on a valid block; both exit 2 on an invalid one, and `okf-check` shows `okf-verify`'s message | ✅ |
 
 ## Non-goals
 

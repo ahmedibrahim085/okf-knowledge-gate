@@ -2882,6 +2882,89 @@ printf '%s' "$out" | grep -Eq 'okf search +absent' && ok "LT-50a --doctor report
 out=$(env OKF_SEARCH_BIN="$O50/okf" "$CHECK" --doctor 2>&1)
 printf '%s' "$out" | grep -Eq 'okf search +present' && ok "LT-50b --doctor names the search binary when it is configured" || bad "LT-50b doctor present" "$(printf '%s' "$out" | grep -n 'okf search' | head -1)"
 
+# --- LT-51 (0.9.4, #66, cases S4-*): okf-check's own options live in one okf_check: block of okf-base.yaml -----------
+L51="$TMP/l51"; mkbundle "$L51"
+sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$L51/okf-base.yaml"
+printf 'okf_check:\n  verify:\n    repos:\n      - path: .\n  colour: red\n' >> "$L51/okf-base.yaml"
+"$CHECK" "$L51" >"$L51.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 2 ] && grep -q 'okf_check\.colour' "$L51.txt"; } \
+  && ok "LT-51a S4-N1 an unknown key inside okf_check exits 2 and names the key" \
+  || bad "LT-51a S4-N1 unknown okf_check key" "rc=$rcl $(grep -n 'okf_check\|Config' "$L51.txt" | head -2 | tr '\n' ' ')"
+# S4-H1 pins okflint's behaviour: it ignores the block today, so it is not stripped. An okflint that starts to count it
+# turns this RED, and then the block must be stripped before okflint runs.
+mkbundle "$L51/a"; mkbundle "$L51/b"
+sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$L51/a/okf-base.yaml"
+cp "$L51/a/okf-base.yaml" "$L51/b/okf-base.yaml"; printf 'okf_check:\n  verify:\n    repos:\n      - path: .\n' >> "$L51/b/okf-base.yaml"
+if command -v okflint >/dev/null 2>&1; then
+  "$CHECK" "$L51/a" --json >"$L51/a.json" 2>&1; rca=$?
+  "$CHECK" "$L51/b" --json >"$L51/b.json" 2>&1; rcb=$?
+  wa=$(jq44 "$L51/a.json" '(d["l2_profile"], d["l2_warnings"], sorted(d["l2_by_rule"].items()))')
+  wb=$(jq44 "$L51/b.json" '(d["l2_profile"], d["l2_warnings"], sorted(d["l2_by_rule"].items()))')
+  { [ "$rca" -eq "$rcb" ] && [ "$wa" = "$wb" ] && case "$wa" in "('ran', "[0-9]*) true;; *) false;; esac; } \
+    && ok "LT-51b S4-H1 a valid okf_check block leaves the L2 advisory count unchanged ($wa)" \
+    || bad "LT-51b S4-H1 L2 count with the block" "without: rc=$rca $wa; with: rc=$rcb $wb"
+else
+  skip "LT-51b S4-H1 L2 count with an okf_check block — okflint absent" "uv tool install okflint"
+fi
+# S4-E1: no block = the 0.9.2 behaviour, byte for byte. The baseline is this very build with the okf_check step deleted (a copy of the
+# plugin with the run_config call removed), so it needs no git history. Text and --json, same bundle path, same exit code.
+B51="$TMP/l51base"; mkdir -p "$B51"; cp -R "$HERE/.." "$B51/plugin" 2>/dev/null
+if grep -q '^run_config "\$BUNDLE"' "$B51/plugin/scripts/okf-check"; then
+  sed -i.bak '/^run_config "\$BUNDLE"/d' "$B51/plugin/scripts/okf-check"
+  "$CHECK" "$L51/a" >"$L51/new.txt" 2>&1; rcn=$?;      "$B51/plugin/scripts/okf-check" "$L51/a" >"$L51/old.txt" 2>&1; rco=$?
+  "$CHECK" "$L51/a" --json >"$L51/new.json" 2>&1; rjn=$?; "$B51/plugin/scripts/okf-check" "$L51/a" --json >"$L51/old.json" 2>&1; rjo=$?
+  { [ "$rcn" -eq 0 ] && [ "$rcn" -eq "$rco" ] && [ "$rjn" -eq "$rjo" ] && cmp -s "$L51/new.txt" "$L51/old.txt" && cmp -s "$L51/new.json" "$L51/old.json"; } \
+    && ok "LT-51c S4-E1 with no okf_check block the text and --json output and the exit code are byte-identical to the build without the okf_check step" \
+    || bad "LT-51c S4-E1 no block" "rc new/old=$rcn/$rco json $rjn/$rjo; $(diff "$L51/new.txt" "$L51/old.txt" | head -3 | tr '\n' ' ')"
+else
+  bad "LT-51c S4-E1 no block" "the run_config call line was not found in okf-check, so there is no baseline to compare with"
+fi
+
+# LT-52 (0.9.4 review round 1): okf-check and okf-verify read ONE schema for the okf_check block, and this table proves they agree.
+# A rule re-implemented in a second tool ships with a parity test: every row goes to BOTH tools. A valid block: both exit 0. An invalid one:
+# both exit 2, and okf-check shows the message okf-verify prints (the validator is okf-verify's --check-config, so the wording cannot drift).
+VERIFY="$HERE/okf-verify"
+P52="$TMP/p52"; mkdir -p "$P52"
+par() { # <label> <ok|err> <printf-format of the lines appended to okf-base.yaml>
+  local d="$P52/$1"; mkbundle "$d"
+  sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$d/okf-base.yaml"
+  printf "$3" >> "$d/okf-base.yaml"
+  "$CHECK" "$d" >"$d.chk" 2>&1; local c=$?
+  "$REALPY" "$VERIFY" "$d" >"$d.ver" 2>&1; local v=$?
+  local want=0; [ "$2" = err ] && want=2
+  if [ "$c" -ne "$want" ] || [ "$v" -ne "$want" ]; then
+    bad "LT-52 parity: $1" "want both exit $want; okf-check=$c okf-verify=$v: $(grep -h 'Config\|error:' "$d.chk" "$d.ver" | head -2 | tr '\n' ' ')"; return
+  fi
+  if [ "$2" = err ]; then
+    local msg; msg=$(sed -n 's/^error: .*okf-base\.yaml //p' "$d.ver" | head -1)
+    if [ -n "$msg" ] && grep -qF -- "$msg" "$d.chk"; then ok "LT-52 parity: $1 -> both exit 2, same message"; else bad "LT-52 parity: $1" "okf-check did not show okf-verify's message '$msg': $(grep -h 'Config' "$d.chk" | head -1)"; fi
+  else
+    ok "LT-52 parity: $1 -> both exit 0"
+  fi
+}
+par noblock       ok  ''
+par empty-map     ok  'okf_check: {}\n'
+par path-dot      ok  'okf_check:\n  verify:\n    repos:\n      - path: .\n'
+par two-paths     ok  'okf_check:\n  verify:\n    repos:\n      - path: .\n      - path: ../x\n'
+par readme-flow   err 'okf_check:\n  verify:\n    repos: [.]\n'
+par repos-string  err 'okf_check:\n  verify:\n    repos: "x"\n'
+par verify-int    err 'okf_check:\n  verify: 5\n'
+par block-list    err 'okf_check: [a]\n'
+par block-scalar  err 'okf_check: foo\n'
+par block-null    err 'okf_check:\n'
+par verify-null   err 'okf_check:\n  verify:\n'
+par path-int      err 'okf_check:\n  verify:\n    repos:\n      - path: 3\n'
+par path-empty    err 'okf_check:\n  verify:\n    repos:\n      - path: ""\n'
+par typo-repo     err 'okf_check:\n  verify:\n    repo:\n      - path: .\n'
+par entry-extra   err 'okf_check:\n  verify:\n    repos:\n      - path: .\n        nmae: x\n'
+par top-unknown   err 'okf_check:\n  colour: red\n'
+par bad-utf8      err 'okf_check:\n  verify:\n    repos:\n      - path: \377\n'
+par bad-yaml      err 'okf_check: [\n'
+# an alias bomb in okf-base.yaml: both tools go through the bounded loader (LT-35a forbids a bare yaml.safe_load), so it is a YAML error, not a hang
+BOMB52=$("$REALPY" -c 'print("x0: &a0 [x,x,x,x,x,x,x,x,x]"); [print("x%d: &a%d [%s]" % (i, i, ",".join(["*a%d" % (i - 1)] * 9))) for i in range(1, 8)]')
+par alias-bomb    err "okf_check: {}\n$BOMB52\n"
+grep -qi 'alias' "$P52/alias-bomb.ver" && ok "LT-52 parity: the alias bomb is named as one" || bad "LT-52 parity: alias bomb message" "$(head -2 "$P52/alias-bomb.ver" | cut -c1-200)"
+
 echo
 if [ "$SKIPPED" -gt 0 ]; then
   echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"

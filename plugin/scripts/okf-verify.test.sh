@@ -629,6 +629,149 @@ note5 "$TMP/f5c" "Fixed in commit $OLD_SHA."
 rc=$(run "$TMP/f5c" --repo "$SH")
 grep -qi 'shallow' "$TMP/out.txt" && ok "V-F5c a SHA absent from a shallow clone says the clone is shallow (git fetch --unshallow)" || bad "V-F5c shallow" "$(grep -n 'unresolved' "$TMP/out.txt" | head -1 | cut -c1-200)"
 
+# --- 0.9.4 #53: source repositories declared once in okf-base.yaml (okf_check.verify.repos) ---------------------------
+# Git here is isolated from the host: a temp HOME and no system config, and no credential helper (rules/no-host-secret-stores-in-tests.md).
+S1H="$TMP/s1home"; mkdir -p "$S1H"
+export GIT_CONFIG_NOSYSTEM=1
+decl() { # <bundle> <path>... — write <bundle>/okf-base.yaml declaring those repositories
+  local b="$1"; shift
+  { printf 'okf_check:\n  verify:\n    repos:\n'; for p in "$@"; do printf '      - path: %s\n' "$p"; done; } > "$b/okf-base.yaml"
+}
+# a second repository with its own commit, so "searched in both" can be told apart from "searched in one"
+REPO2="$TMP/repo2"; mkdir -p "$REPO2"; git -C "$REPO2" init -q 2>/dev/null
+git -C "$REPO2" config user.email t@t; git -C "$REPO2" config user.name t
+printf 'y\n' > "$REPO2/g.txt"; git -C "$REPO2" add g.txt
+git -C "$REPO2" -c commit.gpgsign=false -c credential.helper= commit -qm "fix: a commit in the second repository"
+SHA2=$(git -C "$REPO2" rev-parse --short HEAD)
+
+# S1-H1: a declared repository is searched with no --repo flag
+note5 "$TMP/s1h1" "Fixed in commit $REAL_SHA."; decl "$TMP/s1h1" "$REPO"
+rc=$(run "$TMP/s1h1")
+vok "RV-1 (S1-H1) a SHA in a repository declared in okf-base.yaml is CONFIRMED with no --repo"
+
+# S1-H2: --repo adds to the declared list
+note5 "$TMP/s1h2" "Fixed in commit $REAL_SHA and in commit $SHA2."; decl "$TMP/s1h2" "$REPO"
+rc=$(run "$TMP/s1h2" --repo "$REPO2")
+[ "$(grep -cE '^  ok  ' "$TMP/out.txt")" = "2" ] && ok "RV-2 (S1-H2) --repo adds to the declared repositories: both SHAs are CONFIRMED" \
+  || bad "RV-2 (S1-H2) declared + --repo" "$(grep -E '^  (ok|unresolved)' "$TMP/out.txt" | tr '\n' ' ')"
+
+# S1-N1: a declared path that does not exist is named, with its reason, and does not change the exit code
+note5 "$TMP/s1n1" "Fixed in commit $REAL_SHA."; decl "$TMP/s1n1" "$TMP/no-such-repo-dir" "$REPO"
+rc=$(run "$TMP/s1n1")
+grep -qE 'declared repository not found: .*/no-such-repo-dir$' "$TMP/out.txt" && grep -qE '^  unresolved .*\[repo\]' "$TMP/out.txt" \
+  && ok "RV-3 (S1-N1) a declared path that does not exist is UNRESOLVED and the reason says 'declared repository not found'" \
+  || bad "RV-3 (S1-N1) missing declared path" "$(head -8 "$TMP/out.txt" | tr '\n' ' ')"
+[ "$rc" = "0" ] && ok "RV-3 (S1-N1) the declaration alone does not change the exit code" || bad "RV-3 (S1-N1) exit code" "exit $rc"
+vok "RV-3 (S1-N1) a valid declared repository next to the missing one is still searched"
+
+# S1-N2: a declared folder that is not a git repository
+mkdir -p "$TMP/s1-plain"
+note5 "$TMP/s1n2" "Fixed in commit $REAL_SHA."; decl "$TMP/s1n2" "$TMP/s1-plain"
+rc=$(run "$TMP/s1n2")
+grep -qE 'not a git repository: .*/s1-plain$' "$TMP/out.txt" && grep -qE '^  unresolved .*\[repo\]' "$TMP/out.txt" \
+  && ok "RV-4 (S1-N2) a declared folder that is not a git repository is UNRESOLVED with 'not a git repository'" \
+  || bad "RV-4 (S1-N2) non-git declared folder" "$(head -8 "$TMP/out.txt" | tr '\n' ' ')"
+
+# S1-E1: ~ is the home folder, a relative path is read from the bundle folder (not from the working directory)
+mkdir -p "$S1H/src"; git clone -q "$REPO" "$S1H/src/x" 2>/dev/null
+note5 "$TMP/s1e1" "Fixed in commit $REAL_SHA."; decl "$TMP/s1e1" "~/src/x"
+rc=$(HOME="$S1H" run "$TMP/s1e1")
+vok "RV-5 (S1-E1) a declared '~/src/x' expands to the home folder"
+mkdir -p "$TMP/s1rel"; git clone -q "$REPO" "$TMP/s1rel/svc" 2>/dev/null
+note5 "$TMP/s1rel/b" "Fixed in commit $REAL_SHA."; decl "$TMP/s1rel/b" "../svc"
+rc=$(cd / && run "$TMP/s1rel/b")
+vok "RV-5 (S1-E1) a declared '../svc' is read from the bundle folder, whatever the working directory"
+
+# S1-E2: the same repository declared and passed is searched once
+note5 "$TMP/s1e2" "Fixed in commit $REAL_SHA."; decl "$TMP/s1e2" "$REPO"
+rc=$(run "$TMP/s1e2" --repo "$REPO/.")
+n=$(grep -oE 'repos searched: .*' "$TMP/out.txt" | tr ',' '\n' | grep -c "$(basename "$REPO")")
+[ "$n" = "1" ] && ok "RV-6 (S1-E2) a repository declared and passed with --repo is searched once" \
+  || bad "RV-6 (S1-E2) searched once" "$(grep 'repos searched' "$TMP/out.txt")"
+
+# S1-N3: an okf-base.yaml that cannot be read, or whose declaration is not a list of {path: str}, stops the run (exit 2) with ONE line
+# naming the file and the problem. Ignoring it would read as "no repositories declared" and the SHAs would say "no repository searched".
+badbase() { # <id> <label> <yaml text> — a one-note bundle with that okf-base.yaml; run it; expect exit 2, one line, naming the file
+  note5 "$TMP/s1n3-$1" "Fixed in commit $REAL_SHA."; printf '%s\n' "$3" > "$TMP/s1n3-$1/okf-base.yaml"
+  rc=$(run "$TMP/s1n3-$1")
+  if [ "$rc" = "2" ] && [ "$(wc -l < "$TMP/out.txt" | tr -d ' ')" = "1" ] && grep -q 'okf-base.yaml' "$TMP/out.txt" && ! grep -qE '^  (ok|unresolved|REFUTED)' "$TMP/out.txt"; then
+    ok "RV-7 (S1-N3) $2: exit 2, one line, names okf-base.yaml"
+  else
+    bad "RV-7 (S1-N3) $2" "exit $rc, $(wc -l < "$TMP/out.txt" | tr -d ' ') line(s): $(head -3 "$TMP/out.txt" | tr '\n' ' ')"
+  fi
+}
+badbase a "YAML that does not parse" 'okf_check: ['
+badbase b "repos that is a string, not a list" $'okf_check:\n  verify:\n    repos: ../svc'
+badbase c "an entry with no path" $'okf_check:\n  verify:\n    repos:\n      - name: svc'
+badbase d "a path that is not a string" $'okf_check:\n  verify:\n    repos:\n      - path: 42'
+badbase e "okf_check that is not a mapping" 'okf_check: yes'
+badbase f "a top level that is not a mapping" '- just
+- a list'
+if [ "$(id -u)" != "0" ]; then
+  note5 "$TMP/s1n3-g" "Fixed in commit $REAL_SHA."; decl "$TMP/s1n3-g" "$REPO"; chmod 000 "$TMP/s1n3-g/okf-base.yaml"
+  rc=$(run "$TMP/s1n3-g"); chmod 644 "$TMP/s1n3-g/okf-base.yaml"
+  [ "$rc" = "2" ] && grep -q 'okf-base.yaml' "$TMP/out.txt" && ok "RV-7 (S1-N3) an unreadable okf-base.yaml: exit 2, names the file" || bad "RV-7 (S1-N3) unreadable okf-base.yaml" "exit $rc: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+else
+  skip "RV-7 (S1-N3) unreadable okf-base.yaml — running as root, chmod 000 does not stop the read (skip, not a pass)"
+fi
+# an okf-base.yaml that declares nothing, or has no okf_check key, is fine: L2 owns that file and most bundles never mention okf_check
+note5 "$TMP/s1n3-h" "Fixed in commit $REAL_SHA."; printf 'okf_version: "0.2"\nbase:\n  name: X\n' > "$TMP/s1n3-h/okf-base.yaml"
+rc=$(run "$TMP/s1n3-h" --repo "$REPO")
+[ "$rc" = "0" ] && vok "RV-7 (S1-N3) an okf-base.yaml with no okf_check key is not an error" || bad "RV-7 (S1-N3) okf-base.yaml without okf_check" "exit $rc"
+
+# --- 0.9.4 review round 1 (#66 + #53): ONE schema for the okf_check block, enforced by both tools ----------------------
+# An unknown key is an error: a typo such as `verify.repo` otherwise ran with "repos searched: NONE" and exit 0 -- a declared
+# repository list silently switched off. okf-check enforces the same rules (okf-check.test.sh LT-52 is the parity table).
+badbase g "a typo'd key under verify (repo for repos)" $'okf_check:\n  verify:\n    repo:\n      - path: .'
+grep -q 'okf_check.verify.repo' "$TMP/out.txt" && ok "RV-16 the error names the unknown key okf_check.verify.repo" || bad "RV-16 names the key" "$(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+badbase i "an unknown key inside a repository entry" $'okf_check:\n  verify:\n    repos:\n      - path: .\n        nmae: x'
+grep -q 'nmae' "$TMP/out.txt" && ok "RV-16 ... and names the unknown entry key" || bad "RV-16 names the entry key" "$(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+badbase j "an unknown key directly under okf_check" $'okf_check:\n  colour: red'
+badbase k "okf_check that is empty (null)" 'okf_check:'
+badbase l "verify that is empty (null)" $'okf_check:\n  verify:'
+badbase m "repos as a list of strings" $'okf_check:\n  verify:\n    repos: [.]'
+badbase n "a path that is an empty string" $'okf_check:\n  verify:\n    repos:\n      - path: ""'
+# invalid UTF-8 is an error here as in okf-check (it used to be read with errors="replace" there)
+note5 "$TMP/s1n3-o" "Fixed in commit $REAL_SHA."; printf 'okf_check:\n  verify:\n    repos:\n      - path: \377\n' > "$TMP/s1n3-o/okf-base.yaml"
+rc=$(run "$TMP/s1n3-o"); [ "$rc" = "2" ] && grep -q 'okf-base.yaml' "$TMP/out.txt" && ok "RV-16 invalid UTF-8 in okf-base.yaml: exit 2, names the file" || bad "RV-16 invalid UTF-8" "exit $rc: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+# valid shapes stay valid
+note5 "$TMP/s1n3-p" "Fixed in commit $REAL_SHA."; printf 'okf_check: {}\n' > "$TMP/s1n3-p/okf-base.yaml"
+rc=$(run "$TMP/s1n3-p" --repo "$REPO"); [ "$rc" = "0" ] && ok "RV-16 an empty okf_check mapping is valid" || bad "RV-16 empty mapping" "exit $rc"
+
+# --check-config: the shared validator, called by okf-check. Silent and exit 0 when the block is fine; one error line and exit 2 otherwise.
+note5 "$TMP/cc1" "Fixed in commit $REAL_SHA."; decl "$TMP/cc1" "$REPO"
+rc=$(run "$TMP/cc1" --check-config)
+{ [ "$rc" = "0" ] && [ ! -s "$TMP/out.txt" ]; } && ok "RV-17 --check-config on a valid block: exit 0, no output, no verdicts" || bad "RV-17 --check-config valid" "exit $rc: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+note5 "$TMP/cc2" "x"; rc=$(run "$TMP/cc2" --check-config)
+{ [ "$rc" = "0" ] && [ ! -s "$TMP/out.txt" ]; } && ok "RV-17 --check-config with no okf-base.yaml: exit 0, no output" || bad "RV-17 --check-config no manifest" "exit $rc"
+note5 "$TMP/cc3" "x"; printf 'okf_check:\n  verify:\n    repo: []\n' > "$TMP/cc3/okf-base.yaml"
+rc=$(run "$TMP/cc3" --check-config)
+{ [ "$rc" = "2" ] && [ "$(wc -l < "$TMP/out.txt" | tr -d ' ')" = "1" ] && grep -q 'okf_check.verify.repo' "$TMP/out.txt"; } && ok "RV-17 --check-config on a bad block: one error line, exit 2" || bad "RV-17 --check-config invalid" "exit $rc: $(head -3 "$TMP/out.txt" | tr '\n' ' ')"
+
+# --- 0.9.4 review round 2 (#53): a declared path that cannot be resolved is UNRESOLVED, never a crash ---------------------
+# `~nosuchuser/x` made expanduser() raise RuntimeError and an unreadable parent made exists() raise PermissionError: a traceback and exit 1,
+# and exit 1 means "a claim was REFUTED". The entry is reported with the reason "cannot resolve" and the run goes on (exit 0, no REFUTED).
+unres() { # <label> <bundle> — the run for <bundle> (already made) must report that declared repo as UNRESOLVED 'cannot resolve', in text and in --json
+  local lbl="$1" b="$2" rc1 rc2
+  rc2=$(run "$b" --repo "$REPO" --json)
+  { [ "$rc2" = "0" ] && ! grep -q 'Traceback' "$TMP/out.txt" && grep -q '"kind": "repo"' "$TMP/out.txt" && grep -q 'cannot resolve' "$TMP/out.txt" && ! grep -q '"verdict": "REFUTED"' "$TMP/out.txt"; } \
+    && ok "RV-18 $lbl, --json: UNRESOLVED 'cannot resolve', exit 0" || bad "RV-18 $lbl --json" "exit $rc2: $(head -6 "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
+  rc1=$(run "$b" --repo "$REPO")
+  { [ "$rc1" = "0" ] && ! grep -q 'Traceback' "$TMP/out.txt" && grep -qE '^  unresolved .*\[repo\]' "$TMP/out.txt" && grep -q 'cannot resolve' "$TMP/out.txt" && ! grep -qE '^  REFUTED ' "$TMP/out.txt"; } \
+    && ok "RV-18 $lbl: UNRESOLVED 'cannot resolve', exit 0, no traceback" || bad "RV-18 $lbl" "exit $rc1: $(head -6 "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
+  vok "RV-18 $lbl: the other (--repo) repository is still searched"
+}
+note5 "$TMP/u1" "Fixed in commit $REAL_SHA."; decl "$TMP/u1" "~nosuchuser_zz/x"
+HOME="$S1H" unres "a '~user' that does not exist" "$TMP/u1"
+if [ "$(id -u)" != "0" ]; then
+  mkdir -p "$TMP/u2lock/sub"; chmod 000 "$TMP/u2lock"
+  note5 "$TMP/u2" "Fixed in commit $REAL_SHA."; decl "$TMP/u2" "$TMP/u2lock/sub"
+  unres "a declared path under an unreadable directory" "$TMP/u2"
+  chmod 755 "$TMP/u2lock"
+else
+  skip "RV-18 a declared path under an unreadable directory — running as root, chmod 000 does not stop the read (skip, not a pass)"
+fi
+
 echo
 if [ "$SKIPPED" -gt 0 ]; then
   echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"

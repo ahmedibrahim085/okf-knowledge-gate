@@ -126,7 +126,7 @@ $ okf-check notes
 
 A Trust warning counts as an advisory in the last line, so the run still passes (exit 0) unless you pass `--strict-trust`.
 
-`okf-verify` checks two kinds of claim. A cited commit SHA is looked up in each `--repo` folder. Absolute file paths
+`okf-verify` checks two kinds of claim. A cited commit SHA is looked up in each `--repo` folder and in each repository the bundle declares once in its `okf-base.yaml` under `okf_check.verify.repos` (each entry has a `path`: relative to the bundle, absolute, or starting with `~`; `--repo` adds to them, and a repository named twice is searched once). A declared path that is missing or is not a git repository is reported as UNRESOLVED with that reason; it does not change the exit code unless you pass `--strict`. An `okf-base.yaml` that cannot be read, is not valid YAML, or whose `okf_check.verify.repos` is not a list of `{path: <string>}` stops the run with one error line and exit 2. Absolute file paths
 in backticks or quotes (and paths that start with `~`) are checked on disk, but only inside the bundle or a `--repo` folder: a path elsewhere on the machine is UNRESOLVED, so a bundle you did not write cannot use the check to learn which files exist on your machine. Add `--host-paths` to look those up too. Relative paths are not read. In a shallow clone (the `actions/checkout` default), commits older than the clone are missing: use `fetch-depth: 0`.
 
 A near-miss actor is a wrongly written actor such as `Human:dana`. OKF reads it as an agent, so a person's review is
@@ -148,6 +148,19 @@ Read the exit code, do not just test for zero:
 **Leave paths out:** put globs in `<bundle>/.okfignore` (`archive/`, `.trash/`; a leading `**/` matches at any depth,
 the root included). Every layer skips them and the run says how many files it excluded. The plugin never creates the
 file by itself.
+
+**okf-check's own options** live in one `okf_check:` block of `okf-base.yaml`. Every option is off until you set it.
+`okflint` ignores the block (measured: the L2 warning count is the same with and without it), and both `okf-check` and
+`okf-verify` check it against one schema, `plugin/config/okf-check-block.json`: a key it does not know, or a value of the
+wrong shape, exits 2 and names the key, so a typo cannot switch an option off without a word. Known keys: `verify`
+(read by `okf-verify`; `repos` is a list of `path:` entries).
+
+```yaml
+okf_check:
+  verify:
+    repos:
+      - path: .
+```
 
 **Environment variables** (all optional):
 
@@ -175,7 +188,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.3
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.4
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -191,7 +204,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.3
+    rev: v0.9.4
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

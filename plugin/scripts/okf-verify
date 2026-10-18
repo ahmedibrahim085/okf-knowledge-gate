@@ -39,6 +39,13 @@ Which is why SHAs and paths are treated ASYMMETRICALLY:
 
 Usage:
     okf-verify <bundle> [--repo DIR]... [--json] [--strict]
+    okf-verify <bundle> --check-config    only validate the okf_check block of okf-base.yaml
+    Source repositories can be declared once in <bundle>/okf-base.yaml:
+        okf_check:
+          verify:
+            repos:
+              - path: ../svc      # relative to the bundle, absolute, or ~/...
+    --repo adds to them.
     --strict  also fail on UNRESOLVED (for a corpus that must stay checkable)
 """
 from __future__ import annotations
@@ -330,6 +337,101 @@ def check_path(raw: str, bundle: Path, roots: list[Path] | None = None, host_pat
     return UNRESOLVED, f"parent {p.parent} does not exist either — different machine or layout"
 
 
+class BaseConfigError(Exception):
+    """The okf_check block of okf-base.yaml cannot be used."""
+
+
+def check_node(value, node: dict, where: str) -> None:
+    """Check `value` against one node of config/okf-check-block.json (the schema both okf-check and okf-verify obey)."""
+    if "keys" in node:
+        if not isinstance(value, dict):
+            raise BaseConfigError(f"{where} must be a mapping")
+        known = sorted(node["keys"])
+        for k in value:
+            if str(k) not in node["keys"]:
+                raise BaseConfigError(f"{where}.{k} is not a known key (known: {', '.join(known)})")
+        for k, v in value.items():
+            check_node(v, node["keys"][str(k)], f"{where}.{k}")
+    elif "list" in node:
+        if not isinstance(value, list):
+            raise BaseConfigError(f"{where} must be a list")
+        for i, v in enumerate(value):
+            check_node(v, node["list"], f"{where}[{i}]")
+    elif not isinstance(value, str) or not value:
+        raise BaseConfigError(f"{where} must be a non-empty string")
+
+
+def load_block(bundle: Path) -> dict:
+    """The validated okf_check block of <bundle>/okf-base.yaml ({} when there is none).
+
+    A file that cannot be read, a block of the wrong shape and a key nobody knows all raise BaseConfigError:
+    ignoring any of them reads as "nothing was declared". A typo such as `verify.repo` ran with "repos searched:
+    NONE" and exit 0. okf-check validates the same block by calling `okf-verify --check-config`. (#53, #66)
+    """
+    base = bundle / "okf-base.yaml"
+    if not base.is_file():
+        return {}
+    # PyYAML and the bounded loader ship beside the scripts in the plugin. The loader refuses a YAML alias bomb (a
+    # small file whose aliases nest into billions of items) as an ordinary YAML error, as it does for L1 and the trust helper.
+    vendor = Path(__file__).resolve().parent.parent / "vendor"
+    sys.path[:0] = [str(vendor)] if "yaml" in sys.modules else [str(vendor / "pyyaml"), str(vendor)]
+    import yaml
+    from okf_validate import load_frontmatter
+    schema_file = Path(__file__).resolve().parent.parent / "config" / "okf-check-block.json"
+    try:
+        schema = json.loads(schema_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as e:
+        raise BaseConfigError(f"cannot be checked: the schema {schema_file} is unreadable ({type(e).__name__})")
+    try:
+        data = load_frontmatter(base.read_text(encoding="utf-8"))
+    except OSError as e:
+        raise BaseConfigError(f"cannot read: {e.strerror or type(e).__name__}")
+    except UnicodeDecodeError:
+        raise BaseConfigError("is not valid UTF-8")
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        where = f"line {mark.line + 1}: " if mark else ""
+        raise BaseConfigError(f"is not valid YAML ({where}{getattr(e, 'problem', None) or str(e).splitlines()[0]})")
+    if data is None:
+        return {}
+    if not isinstance(data, dict):
+        raise BaseConfigError("the top level must be a mapping")
+    if "okf_check" not in data:
+        return {}
+    check_node(data["okf_check"], schema, "okf_check")
+    return data["okf_check"]
+
+
+def declared_repos(bundle: Path) -> tuple[list[Path], list[dict]]:
+    """Repositories the bundle declares in okf-base.yaml (okf_check.verify.repos).
+
+    A declared path that cannot be used is reported, never dropped: a silently
+    dropped repository would turn every SHA cited from it into "no repository
+    searched" and hide the real cause. (#53)
+    """
+    node = load_block(bundle).get("verify", {}).get("repos", [])
+    usable, problems = [], []
+    for e in node:
+        raw = e["path"]
+        # `~nosuchuser` makes expanduser() raise and an unreadable parent makes exists() raise. A crash here is exit 1,
+        # which means "a claim was REFUTED"; the entry is UNRESOLVED instead: nobody could look.
+        try:
+            p = Path(raw).expanduser()
+            p = p if p.is_absolute() else bundle / p
+            if not p.exists():
+                detail = f"declared repository not found: {p}"
+            elif not (p / ".git").exists():
+                detail = f"not a git repository: {p}"
+            else:
+                usable.append(p)
+                continue
+        except (RuntimeError, KeyError, OSError) as err:
+            detail = f"cannot resolve: {raw} ({err})"
+        problems.append({"concept": "okf-base.yaml", "kind": "repo", "claim": raw,
+                         "verdict": UNRESOLVED, "detail": detail})  # claim is cut at 48 chars; the detail is not
+    return usable, problems
+
+
 def not_ignored(bundle: Path):
     """The set of notes .okfignore leaves in, from the one shared matcher (ignore-lib.sh), so L4
     and okf-check cannot disagree. None = no .okfignore, or the matcher could not run (then
@@ -436,12 +538,22 @@ def main() -> int:
     ap.add_argument("--host-paths", action="store_true",
                     help="also look up cited absolute paths outside the bundle and the --repo folders")
     ap.add_argument("--json", action="store_true")
+    ap.add_argument("--check-config", action="store_true",
+                    help="only check the okf_check block of okf-base.yaml (okf-check calls this): silent and exit 0 when fine, else one error line and exit 2")
     ap.add_argument("--strict", action="store_true", help="also fail on UNRESOLVED")
     a = ap.parse_args()
 
     if not a.bundle.is_dir():
         print(f"error: {a.bundle} is not a directory", file=sys.stderr)
         return 2
+
+    if a.check_config:
+        try:
+            load_block(a.bundle)
+        except BaseConfigError as e:
+            print(f"error: {a.bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
+            return 2
+        return 0
 
     # `rglob` skips a directory it cannot read, without a word. A concept whose
     # claim was REFUTED simply vanished and the run printed "no refuted claims"
@@ -464,8 +576,17 @@ def main() -> int:
         print("  a partial scan is not 'no refuted claims'", file=sys.stderr)
         return 2
 
-    repos = [r for r in a.repo if (r / ".git").exists()]
-    skipped = [str(r) for r in a.repo if r not in repos]
+    try:
+        declared, declared_problems = declared_repos(a.bundle)
+    except BaseConfigError as e:
+        print(f"error: {a.bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
+        return 2
+    repos, seen_repos = [], set()
+    for r in [*declared, *(r for r in a.repo if (r / ".git").exists())]:
+        if r.resolve() not in seen_repos:  # declared and passed with --repo: searched once
+            seen_repos.add(r.resolve())
+            repos.append(r)
+    skipped = [str(r) for r in a.repo if not (r / ".git").exists()]
     keep = not_ignored(a.bundle)
     if keep is not None:
         total = sum(1 for f in a.bundle.rglob("*.md") if f.is_file() and f.name not in RESERVED)
@@ -475,6 +596,7 @@ def main() -> int:
             print("error: .okfignore excludes every note - nothing was verified (not a pass)", file=sys.stderr)
             return 2
     results, no_claims = verify(a.bundle, repos, a.host_paths)
+    results = [*declared_problems, *results]
 
     counts = {v: sum(1 for r in results if r["verdict"] == v)
               for v in (CONFIRMED, REFUTED, UNRESOLVED)}

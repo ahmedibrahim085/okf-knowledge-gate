@@ -9,6 +9,21 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-18
+
+OKF Knowledge Gate 0.9.4 lets a bundle name its source repositories once, and gives `okf-check`'s own options a home that is checked, so a typo cannot switch an option off.
+
+### Added
+- **`okf-verify` reads the repositories a bundle declares.** `okf-base.yaml` may list them under `okf_check.verify.repos` (each entry has a `path`: relative to the bundle, absolute, or starting with `~`). `okf-verify <bundle>` searches them for cited commits, `--repo` adds more, and a repository named twice is searched once. A declared path that is missing, or is a folder but not a git repository, is reported as UNRESOLVED with that reason.
+- **One `okf_check:` block holds `okf-check`'s own options.** It is validated against one schema, `plugin/config/okf-check-block.json`, by `okf-verify` (`okf-verify --check-config <bundle>`), and `okf-check` calls that, so the two tools cannot disagree. A key the schema does not know, or a value of the wrong shape, exits 2 and names the key. `okflint` ignores the block (measured: the L2 warning count is the same with and without it). Without the block, output is unchanged.
+
+### Fixed
+- **A declared repository that cannot be resolved no longer crashes `okf-verify`.** A path such as `~nosuchuser/x`, or one under an unreadable folder, raised a traceback and exit 1, which reads as "a claim was refuted". It is now UNRESOLVED with the reason ("cannot resolve: <path>"), exit 0, and the other repositories are still searched.
+- **The pre-push gate no longer writes into the repository it runs in.** In a linked worktree git hands a hook `GIT_DIR`; the suites the gate launched then built their fixture repositories inside the real one (fixture commits, `core.bare = true`, a replaced `pre-commit` hook). The installed hook and the gate now clear the git environment before running anything, and the gate refuses a tree that lost `tools/export-public.sh` instead of passing it as another project's tree. Development tooling only; the published plugin is unaffected.
+
+### Changed
+- **`okf-verify` stops with exit 2 on a malformed `okf-base.yaml`.** An unreadable file, invalid YAML, a top level that is not a mapping, or a `verify.repos` entry that is not `{path: <string>}` was ignored before. A declaration that is ignored in silence reads as "no repositories declared". This also applies to a bundle with no `okf_check` block; `okf-check` already failed such files.
+
 ## [0.9.3] - 2026-10-17
 
 OKF Knowledge Gate 0.9.3 changes no plugin behaviour. It scripts the release checks that were run by hand, so a slip fails before it reaches a release. These tools live in the development repository and are not part of the published plugin.
@@ -377,7 +392,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.3...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.4...HEAD
+[0.9.4]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.3...v0.9.4
 [0.9.3]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.2...v0.9.3
 [0.9.2]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.1...v0.9.2
 [0.9.1]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.0...v0.9.1
