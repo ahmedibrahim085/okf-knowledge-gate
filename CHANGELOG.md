@@ -9,6 +9,13 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.18] - 2026-10-18
+
+OKF Knowledge Gate 0.9.18 moves the version bump of a release out of a session helper and into the repository.
+
+### Added
+- **`tools/bump-version.sh OLD NEW [--dry-run]`.** It changes the seven version sites of a release (the plugin manifest, the marketplace entry, the `VERSION` line of `okf-check`, and the pins in the README, the pre-commit hook file and the skill) in one step. It checks that every site reads OLD before it writes anything, refuses an unwritable site, a bad version, and a pin that only starts with OLD, and keeps file modes, CRLF, BOM and a missing final newline. It uses no `sed -i`, so it runs the same on macOS and Linux. `--dry-run` lists the sites and writes nothing.
+
 ## [0.9.17] - 2026-10-18
 
 OKF Knowledge Gate 0.9.17 closes a hole in the repository's own test gate: a test suite that exits early no longer passes.
@@ -504,7 +511,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.17...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.18...HEAD
+[0.9.18]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.17...v0.9.18
 [0.9.17]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.16...v0.9.17
 [0.9.16]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.15...v0.9.16
 [0.9.15]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.14...v0.9.15
