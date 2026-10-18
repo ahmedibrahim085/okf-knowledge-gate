@@ -244,7 +244,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.18
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.19
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -260,7 +260,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.18
+    rev: v0.9.19
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

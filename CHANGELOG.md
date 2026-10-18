@@ -9,6 +9,16 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.19] - 2026-10-18
+
+OKF Knowledge Gate 0.9.19 moves the public publish step into the repository and makes its order impossible to get wrong.
+
+### Added
+- **`tools/publish-public.sh <exported-tree> <vX.Y.Z> [--dry-run]`.** It clones the public repository, replaces the tree, commits under the public identity (no session trailer), pushes main and the tag in one atomic push, checks on the remote that the tag points at the pushed commit, and only then creates the release. A failed clone, copy, commit, tag or push stops it before the release; a tag that already sits on another commit is refused; a re-run after a failed release continues only when the tree is unchanged. It refuses a tree that holds a `.git` entry in any letter case, a symlink, or no export marker, never passes a credential-helper override, ignores `GIT_*` settings from the environment, and takes a different remote only in an explicit test mode that cannot reach the real repository. `--dry-run` prints the steps and writes nothing.
+
+### Changed
+- **`tools/export-public.sh` writes an `.export-ok` marker after its scan.** The marker never ships. It shows that a tree was once exported, not that its content was scanned.
+
 ## [0.9.18] - 2026-10-18
 
 OKF Knowledge Gate 0.9.18 moves the version bump of a release out of a session helper and into the repository.
@@ -511,7 +521,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.18...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.19...HEAD
+[0.9.19]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.18...v0.9.19
 [0.9.18]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.17...v0.9.18
 [0.9.17]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.16...v0.9.17
 [0.9.16]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.15...v0.9.16
