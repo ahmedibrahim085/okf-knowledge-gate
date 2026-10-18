@@ -50,7 +50,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.6"
+VERSION="0.9.7"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -773,6 +773,112 @@ run_config() {
   return $EXIT_DEP
 }
 
+# ------------------------------------------------------- deprecation names a successor (#67, public #9)
+# With okf_check.deprecated_requires: superseded_by, every `status: deprecated` note names its successor in
+# superseded_by. A violation is a house-rule error (exit 1). Option off: nothing is printed.
+run_successor() {
+  local bundle="$1" out ec n
+  [ -f "$BUNDLE/okf-base.yaml" ] && [ -n "$PY" ] || return 0
+  out=$(OKF_VENDOR_DIR="$ROOT/vendor" py_with_vendor - "$bundle" "$BUNDLE/okf-base.yaml" <<'PYEOF'
+import os, pathlib, sys
+try:
+    sys.path.insert(0, os.environ["OKF_VENDOR_DIR"])
+    from okf_validate import load_frontmatter
+    # The bounded loader for the manifest too: an alias bomb in okf-base.yaml must not expand here (LT-35a).
+    cfg = load_frontmatter(open(sys.argv[2], encoding="utf-8", errors="replace").read())
+except Exception:
+    sys.exit(0)
+opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}
+# The value itself is checked once, by the shared schema (config/okf-check-block.json via run_config): any other
+# value is that layer's exit 2, so this rule just stays off.
+if not isinstance(opt, dict) or opt.get("deprecated_requires") != "superseded_by":
+    sys.exit(0)
+bundle = pathlib.Path(sys.argv[1])
+
+def meta(p):
+    try:
+        t = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return {}
+    end = t.find("\n---", 3) if t.startswith("---") else -1
+    if end < 0:
+        return {}
+    try:
+        m = load_frontmatter(t[3:end])
+    except Exception:
+        return {}
+    return m if isinstance(m, dict) else {}
+
+root = os.path.realpath(str(bundle))
+def resolve(ref, note):
+    # A wikilink, a markdown link or a path. Same convention as the L2 wikilink rule: from the bundle root or from the
+    # note's own folder, with or without .md, and inside the bundle.
+    s = ref.strip()
+    if s.startswith("[[") and s.endswith("]]"):
+        s = s[2:-2].split("|")[0]
+    elif s.startswith("[") and s.endswith(")") and "](" in s:
+        s = s[s.index("](") + 2:-1].strip()
+        # CommonMark link destination: <dest> in angle brackets, or dest followed by an optional title in double or
+        # single quotes or parentheses (review F-B: both forms used to give a false "successor not found"). The quote
+        # and paren characters are chr() codes: bash 3.2 scans an unbalanced one inside this $( heredoc ) and fails.
+        if s.startswith("<") and ">" in s:
+            s = s[1:s.index(">")]
+        else:
+            pairs = {chr(34): chr(34), chr(39): chr(39), chr(41): chr(40)}
+            if s and s[-1] in pairs and s.rfind(" " + pairs[s[-1]]) > 0:
+                s = s[:s.rfind(" " + pairs[s[-1]])].rstrip()
+    s = s.split("#")[0].strip().lstrip("/")
+    if not s:
+        return None
+    for base in (root, os.path.dirname(os.path.realpath(str(note)))):
+        for cand in (s, s + ".md"):
+            q = os.path.realpath(os.path.join(base, cand))
+            if (q == root or q.startswith(root + os.sep)) and os.path.isfile(q) and q.endswith(".md"):
+                return q
+    return None
+
+n = 0
+for p in sorted(bundle.rglob("*.md")):
+    if p.name in ("index.md", "log.md"):
+        continue
+    m = meta(p)
+    if m.get("status") != "deprecated":
+        continue
+    n += 1
+    rel = str(p.relative_to(bundle))
+    sb = m.get("superseded_by")
+    if not sb:
+        print("E|%s: status deprecated but no superseded_by names its successor" % rel)
+        continue
+    for ref in (sb if isinstance(sb, list) else [sb]):
+        ref = str(ref)
+        q = resolve(ref, p)
+        if q is None:
+            print("E|%s: superseded_by %s: successor not found" % (rel, ref))
+        elif os.path.basename(q) in ("index.md", "log.md"):
+            # reserved files are not notes (the scan above skips them too): review F-C
+            print("E|%s: superseded_by %s: successor is not a note (index.md and log.md are reserved files)" % (rel, ref))
+        elif q == os.path.realpath(str(p)):
+            print("E|%s: superseded_by %s: a note cannot supersede itself" % (rel, ref))
+        elif meta(pathlib.Path(q)).get("status") == "deprecated":
+            # One hop, no chains (decided on #67): name the note that replaced the successor.
+            print("E|%s: superseded_by %s is deprecated too: point at the final successor, not a deprecated one" % (rel, ref))
+print("N|%d" % n)
+PYEOF
+  ); ec=$?
+  [ "$ec" -eq 0 ] || { say "  Successor        COULD NOT RUN — the successor check exited $ec"; return $EXIT_DEP; }
+  n=$(printf '%s\n' "$out" | sed -n 's/^N|//p')
+  [ -n "$n" ] || return 0
+  if printf '%s\n' "$out" | grep -q '^E|'; then
+    say "  Successor        FAIL   $(printf '%s\n' "$out" | grep -c '^E|') error(s): a deprecated note must name its successor in superseded_by"
+    printf '%s\n' "$out" | sed -n 's/^E|//p' | while IFS= read -r l; do record error "$l"; say "                   $l"; done
+    return $EXIT_CONFORM
+  fi
+  if [ "$n" -eq 0 ]; then say "  Successor        PASS   no deprecated notes"
+  else say "  Successor        PASS   ${n} deprecated note(s) name a valid successor"; fi
+  return 0
+}
+
 # ------------------------------------------------------- L2 house profile
 # l2_isolate: okflint crashed on the whole bundle. Find the notes it crashes on (one run per note,
 # time-bounded), copy the rest into a mirror and run okflint once on that. Only for bundles of at
@@ -1441,6 +1547,18 @@ selftest() {
   # good.md was written seconds ago; a note that records it as of 2000-01-01 cites a source that has moved since.
   probe "recorded source changed" "records it as of" run_derived_stale "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\nsources:\n  - resource: good.md\n    last_modified: "2000-01-01"\n---\nbody\n'
 
+  say "  Successor (deprecated_requires):"
+  # The option is switched on for this probe only: the manifest is put back before the next probe (#67, review F-A).
+  _succ_probe() {
+    local BUNDLE="$1" rc
+    [ -f "$1/okf-base.yaml" ] && cp -p "$1/okf-base.yaml" "$TMP/selftest.base"
+    printf 'okf_check:\n  deprecated_requires: superseded_by\n' >> "$1/okf-base.yaml"
+    run_successor "$1"; rc=$?
+    if [ -f "$TMP/selftest.base" ]; then mv "$TMP/selftest.base" "$1/okf-base.yaml"; else rm -f "$1/okf-base.yaml"; fi
+    return $rc
+  }
+  probe "deprecated, no superseded_by" "no superseded_by names its successor" _succ_probe "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: deprecated\nstale_after: "2099-01-01"\n---\nbody\n'
+
   say ""
   # A skipped probe is a gate nobody watched fire: the verdict names it instead of saying "every gate" (S3-E1).
   if [ "$fails" -eq 0 ] && [ -n "$skipped" ]; then
@@ -1618,6 +1736,7 @@ if [ "$STRICT_TRUST" -eq 1 ]; then
 fi
 run_profile     "$LAYER_BUNDLE"; worse_other $?
 run_index       "$LAYER_BUNDLE"; worse_other $?
+run_successor   "$LAYER_BUNDLE"; worse_other $?
 run_staleness   "$LAYER_BUNDLE"; worse_other $?
 run_derived_stale "$BUNDLE"; worse_other $?
 FP_AFTER=$(bundle_fingerprint "$BUNDLE")

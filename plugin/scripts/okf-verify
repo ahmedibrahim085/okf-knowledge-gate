@@ -444,6 +444,10 @@ def check_node(value, node: dict, where: str) -> None:
             raise BaseConfigError(f"{where} must be a list")
         for i, v in enumerate(value):
             check_node(v, node["list"], f"{where}[{i}]")
+    elif "enum" in node:
+        if not isinstance(value, str) or value not in node["enum"]:
+            # JSON, not a Python repr: a YAML user wrote true/null/"x ", not True/None (review F-D)
+            raise BaseConfigError(f"{where}: {json.dumps(value)} is not one of: {', '.join(node['enum'])}")
     elif not isinstance(value, str) or not value:
         raise BaseConfigError(f"{where} must be a non-empty string")
 

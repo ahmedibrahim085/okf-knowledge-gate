@@ -2960,6 +2960,11 @@ par entry-extra   err 'okf_check:\n  verify:\n    repos:\n      - path: .\n     
 par top-unknown   err 'okf_check:\n  colour: red\n'
 par bad-utf8      err 'okf_check:\n  verify:\n    repos:\n      - path: \377\n'
 par bad-yaml      err 'okf_check: [\n'
+# #67: deprecated_requires is an enum node (one allowed value today)
+par dep-ok        ok  'okf_check:\n  deprecated_requires: superseded_by\n'
+par dep-typo      err 'okf_check:\n  deprecated_requires: superseded-by\n'
+par dep-list      err 'okf_check:\n  deprecated_requires: [superseded_by]\n'
+par dep-null      err 'okf_check:\n  deprecated_requires:\n'
 # an alias bomb in okf-base.yaml: both tools go through the bounded loader (LT-35a forbids a bare yaml.safe_load), so it is a YAML error, not a hang
 BOMB52=$("$REALPY" -c 'print("x0: &a0 [x,x,x,x,x,x,x,x,x]"); [print("x%d: &a%d [%s]" % (i, i, ",".join(["*a%d" % (i - 1)] * 9))) for i in range(1, 8)]')
 par alias-bomb    err "okf_check: {}\n$BOMB52\n"
@@ -3011,6 +3016,81 @@ if ! PATH="$SB55" command -v okflint >/dev/null 2>&1; then
 else
   skip "LT-55g S3-E1 the sandbox still finds okflint"
 fi
+
+# --- LT-53 (0.9.7, #67, cases S5-*): okf_check.deprecated_requires: superseded_by ----------------------------------------
+# lt53 <name> <superseded_by line or empty> [option line] — a bundle with a stable new.md and a deprecated old.md; prints rc.
+lt53() {
+  local d="$TMP/lt53-$1"; rm -rf "$d"; mkbundle "$d"
+  sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$d/okf-base.yaml"
+  printf 'okf_check:\n  %s\n' "${3:-deprecated_requires: superseded_by}" >> "$d/okf-base.yaml"
+  printf -- '---\ntype: Lesson\ntitle: New\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\nbody\n' > "$d/new.md"
+  printf -- '---\ntype: Lesson\ntitle: Old\ndescription: D\nstatus: deprecated\nstale_after: "2099-01-01"\n%s---\nbody\n' "${2:+$2
+}" > "$d/old.md"
+  "$CHECK" "$d" >"$d.txt" 2>&1; echo "rc=$?"
+}
+r=$(lt53 n1 "")
+{ [ "$r" = "rc=1" ] && grep -q 'Successor .*FAIL' "$TMP/lt53-n1.txt" && grep -q 'old.md: status deprecated but no superseded_by' "$TMP/lt53-n1.txt"; } \
+  && ok "LT-53a S5-N1 a deprecated note with no superseded_by is a house-rule error naming the note (exit 1)" \
+  || bad "LT-53a S5-N1 no successor" "$r $(grep -n 'Successor\|Config\|old.md' "$TMP/lt53-n1.txt" | head -3 | tr '\n' ' ')"
+r=$(lt53 h1 'superseded_by: new.md')
+{ [ "$r" = "rc=0" ] && grep -q 'Successor .*PASS .*1 deprecated note' "$TMP/lt53-h1.txt"; } \
+  && ok "LT-53b S5-H1 a deprecated note whose superseded_by names an existing stable note passes" \
+  || bad "LT-53b S5-H1 valid successor" "$r $(grep -n 'Successor' -A1 "$TMP/lt53-h1.txt" | head -2 | tr '\n' ' ')"
+# S5-N2: each invalid target is its own error, with its own message.
+for c in "n2a|superseded_by: gone.md|superseded_by gone.md: successor not found" \
+         "n2b|superseded_by: old.md|a note cannot supersede itself" \
+         "n2c|superseded_by: old2.md|point at the final successor, not a deprecated one"; do
+  id=${c%%|*}; rest=${c#*|}; line=${rest%%|*}; msg=${rest#*|}
+  d="$TMP/lt53-$id"
+  r=$(lt53 "$id" "$line")
+  [ "$id" = n2c ] && { sed 's/^title: Old$/title: Old2/; s/^superseded_by: old2.md$/superseded_by: new.md/' "$d/old.md" > "$d/old2.md"; "$CHECK" "$d" >"$d.txt" 2>&1; r="rc=$?"; }
+  { [ "$r" = "rc=1" ] && grep -q "^ *old.md: .*$msg" "$d.txt" && ! grep -q '^ *old2.md: .*superseded_by' "$d.txt"; } \
+    && ok "LT-53c S5-N2 ($line) is an error saying '$msg' (exit 1)" \
+    || bad "LT-53c S5-N2 $line" "$r $(grep -n 'Successor' -A2 "$d.txt" | head -3 | tr '\n' ' ')"
+done
+r=$(lt53 e1 'superseded_by: [new.md, "[[c]]"]')
+{ [ "$r" = "rc=0" ] && grep -q 'Successor .*PASS' "$TMP/lt53-e1.txt"; } \
+  && ok "LT-53d S5-E1 a list of two existing notes (a path and a wikilink) passes" \
+  || bad "LT-53d S5-E1 two successors" "$r $(grep -n 'Successor' -A2 "$TMP/lt53-e1.txt" | head -3 | tr '\n' ' ')"
+r=$(lt53 e2 "" "verify: {repos: [{path: .}]}")
+{ [ "$r" = "rc=0" ] && ! grep -q 'Successor' "$TMP/lt53-e2.txt"; } \
+  && ok "LT-53e S5-E2 with the option off a deprecated note without a successor passes and no Successor line is printed" \
+  || bad "LT-53e S5-E2 option off" "$r $(grep -n 'Successor' -A1 "$TMP/lt53-e2.txt" | head -2 | tr '\n' ' ')"
+# A value other than superseded_by would switch the rule off in silence, like an unknown key (LT-51a): exit 2, named.
+r=$(lt53 val "" "deprecated_requires: superseded-by")
+{ [ "$r" = "rc=2" ] && grep -q 'deprecated_requires.*superseded-by' "$TMP/lt53-val.txt"; } \
+  && ok "LT-53f S5-N3 an unknown deprecated_requires value exits 2 and names the value" \
+  || bad "LT-53f unknown deprecated_requires value" "$r $(grep -n 'Successor\|Config' "$TMP/lt53-val.txt" | head -2 | tr '\n' ' ')"
+# --selftest has a Successor probe (project rule: every layer has one, proven by a copy with the rule disabled -> exit 5).
+"$CHECK" --selftest >"$TMP/lt53g.txt" 2>&1; rcl=$?
+L53=$(grep -A1 '^  Successor (deprecated_requires):' "$TMP/lt53g.txt" | grep -c 'FIRED  *deprecated, no superseded_by')
+r=$(lt55_dead succ 's/    if m.get("status") != "deprecated":/    if True:/')
+{ [ "$rcl" -eq 0 ] && [ "$L53" -eq 1 ] && [ "$r" = "rc=5" ] && grep -A1 '^  Successor (deprecated_requires):' "$TMP/lt55-succ.txt" | grep -q 'NOT FIRED'; } \
+  && ok "LT-53g --selftest has a Successor probe that fires, and a copy with the rule disabled reports NOT FIRED and exits 5" \
+  || bad "LT-53g Successor selftest probe" "healthy rc=$rcl fired=$L53; crippled $r $(grep -n 'Successor\|SELFTEST' "$TMP/lt55-succ.txt" 2>/dev/null | tr '\n' ' ')"
+# Markdown links with a title or in angle brackets are links too (CommonMark): [x](new.md "t") and [x](<new.md>).
+for c in "h1|superseded_by: '[x](new.md \"The new rule\")'" "h2|superseded_by: \"[x](new.md 'The new rule')\"" "h3|superseded_by: '[x](<new.md>)'"; do
+  id=${c%%|*}; line=${c#*|}
+  r=$(lt53 "$id" "$line")
+  { [ "$r" = "rc=0" ] && grep -q 'Successor .*PASS' "$TMP/lt53-$id.txt"; } \
+    && ok "LT-53h a markdown-link successor with a title or angle brackets resolves ($id)" \
+    || bad "LT-53h markdown link form $id" "$r $(grep -n 'Successor' -A1 "$TMP/lt53-$id.txt" | head -2 | tr '\n' ' ')"
+done
+# With the option on and no deprecated note the line says so, instead of "0 deprecated note(s) name a valid successor".
+D="$TMP/lt53-nodep"; rm -rf "$D"; mkbundle "$D"; sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$D/okf-base.yaml"
+printf 'okf_check:\n  deprecated_requires: superseded_by\n' >> "$D/okf-base.yaml"
+"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -Eq 'Successor +PASS +no deprecated notes' "$D.txt"; } \
+  && ok "LT-53j with the option on and no deprecated note the Successor line says 'no deprecated notes'" \
+  || bad "LT-53j no deprecated notes wording" "rc=$rcl $(grep -n 'Successor' "$D.txt" | tr '\n' ' ')"
+# index.md and log.md are reserved files, not notes: they cannot be a successor.
+for c in "i1|superseded_by: index.md" "i2|superseded_by: \"[[log]]\""; do
+  id=${c%%|*}; line=${c#*|}
+  r=$(lt53 "$id" "$line")
+  { [ "$r" = "rc=1" ] && grep -q 'old.md: .*successor is not a note' "$TMP/lt53-$id.txt"; } \
+    && ok "LT-53i a reserved file as successor ($line) is an error: successor is not a note (exit 1)" \
+    || bad "LT-53i reserved file as successor $id" "$r $(grep -n 'Successor' -A1 "$TMP/lt53-$id.txt" | head -2 | tr '\n' ' ')"
+done
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

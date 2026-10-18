@@ -22,7 +22,7 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 - **One verdict you can gate on.** `okf-check` runs every layer. Exit 1 means "not valid", exit 2 means "could not run",
   and a skipped layer is printed as SKIPPED and never shown as PASS (the exit code stays 0, and the verdict line reports
   a skipped layer). `--selftest` plants one defect in each of L0 (doctor), L1, L2 (profile), L2 (index), Trust,
-  L3 (staleness) and L3 (derived staleness) and fails if a gate misses it. Without `okflint` the L2 profile probes are
+  L3 (staleness), L3 (derived staleness) and the Successor rule and fails if a gate misses it. Without `okflint` the L2 profile probes are
   SKIPPED, and the verdict line names them.
 - **The same check in three places.** Claude Code (hooks, plus a skill an agent reads), a GitHub Action, and a pre-commit
   hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)).
@@ -154,14 +154,20 @@ file by itself.
 `okflint` ignores the block (measured: the L2 warning count is the same with and without it), and both `okf-check` and
 `okf-verify` check it against one schema, `plugin/config/okf-check-block.json`: a key it does not know, or a value of the
 wrong shape, exits 2 and names the key, so a typo cannot switch an option off without a word. Known keys: `verify`
-(read by `okf-verify`; `repos` is a list of `path:` entries).
+(read by `okf-verify`; `repos` is a list of `path:` entries) and `deprecated_requires`.
 
 ```yaml
 okf_check:
   verify:
     repos:
       - path: .
+  deprecated_requires: superseded_by
 ```
+
+`deprecated_requires: superseded_by`: every `status: deprecated` note names its replacement in `superseded_by` (a
+path, a `[[wikilink]]`, a markdown link, or a list of them, resolved from the bundle root or the note's folder). The
+`Successor` line reports a missing `superseded_by`, a successor that is not found, a note that names itself, and a
+successor that is deprecated too (one hop: point at the final successor). Each is a house-rule error, exit 1.
 
 **Environment variables** (all optional):
 
@@ -189,7 +195,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.6
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.7
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -205,7 +211,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.6
+    rev: v0.9.7
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

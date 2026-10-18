@@ -747,6 +747,21 @@ note5 "$TMP/cc2" "x"; rc=$(run "$TMP/cc2" --check-config)
 note5 "$TMP/cc3" "x"; printf 'okf_check:\n  verify:\n    repo: []\n' > "$TMP/cc3/okf-base.yaml"
 rc=$(run "$TMP/cc3" --check-config)
 { [ "$rc" = "2" ] && [ "$(wc -l < "$TMP/out.txt" | tr -d ' ')" = "1" ] && grep -q 'okf_check.verify.repo' "$TMP/out.txt"; } && ok "RV-17 --check-config on a bad block: one error line, exit 2" || bad "RV-17 --check-config invalid" "exit $rc: $(head -3 "$TMP/out.txt" | tr '\n' ' ')"
+# --- RV-24 (#67): an {enum: [...]} schema node (okf_check.deprecated_requires) takes only the listed values
+note5 "$TMP/cc4" "x"; printf 'okf_check:\n  deprecated_requires: superseded_by\n' > "$TMP/cc4/okf-base.yaml"
+rc=$(run "$TMP/cc4" --check-config); [ "$rc" = "0" ] && ok "RV-24 an enum node accepts its listed value" || bad "RV-24 enum valid" "exit $rc: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+note5 "$TMP/cc5" "x"; printf 'okf_check:\n  deprecated_requires: superseded-by\n' > "$TMP/cc5/okf-base.yaml"
+rc=$(run "$TMP/cc5" --check-config)
+{ [ "$rc" = "2" ] && grep -q 'okf_check.deprecated_requires: "superseded-by" is not one of: superseded_by' "$TMP/out.txt"; } \
+  && ok "RV-24 an enum node refuses another value, naming the value and the allowed ones (exit 2)" || bad "RV-24 enum invalid" "exit $rc: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+# the offending value is shown as JSON (true, null, "x "), not as a Python repr (True, None): review F-D
+for c in "cc6|true|true" "cc7||null" "cc8|\"x \"|\"x \""; do
+  id=${c%%|*}; rest=${c#*|}; val=${rest%%|*}; shown=${rest#*|}
+  note5 "$TMP/$id" "x"; printf 'okf_check:\n  deprecated_requires: %s\n' "$val" > "$TMP/$id/okf-base.yaml"
+  rc=$(run "$TMP/$id" --check-config)
+  { [ "$rc" = "2" ] && grep -qF "okf_check.deprecated_requires: $shown is not one of" "$TMP/out.txt"; } \
+    && ok "RV-24 the refused value '$val' is shown as JSON: $shown" || bad "RV-24 JSON value $id" "exit $rc: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+done
 
 # --- 0.9.4 review round 2 (#53): a declared path that cannot be resolved is UNRESOLVED, never a crash ---------------------
 # `~nosuchuser/x` made expanduser() raise RuntimeError and an unreadable parent made exists() raise PermissionError: a traceback and exit 1,

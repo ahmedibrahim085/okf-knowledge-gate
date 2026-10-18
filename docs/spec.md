@@ -941,6 +941,7 @@ here"*. Conformance is a question about form; this is a question about fact.
 | RV-17 | `okf-verify <bundle> --check-config` | valid or absent block: exit 0, no output, no verdicts; invalid: one error line, exit 2 | ✅ |
 | RV-18 | A declared path that cannot be resolved (`~nosuchuser/x`; a path under an unreadable directory) | UNRESOLVED `cannot resolve: ...` in text and `--json`, exit 0, no traceback, no REFUTED; the other repositories are still searched | ✅ |
 | RV-19 | A `path:line @sha` citation, repository declared in `okf-base.yaml`, no `--repo` (S1 x S2 seam) | CONFIRMED when the path exists at that commit; REFUTED when it is missing | ✅ |
+| RV-24 | An `{enum: [...]}` schema node (`okf_check.deprecated_requires`) | the listed value: exit 0; any other: exit 2, the error names the value as JSON (`true`, `null`, `"x "`, not a Python repr) and the allowed ones (#67) | ✅ |
 
 **V-10 and V-11 came from live-firing, not from imagination.** The first run on
 the real bundle REFUTED `/tmp/net-spy.log` — a `const LOG = …` literal inside an
@@ -1164,7 +1165,7 @@ okf-check's own options live in ONE `okf_check:` block of `okf-base.yaml`; each 
 | LT-51a | S4-N1: an unknown key inside `okf_check:` | exit 2; the output names `okf_check.<key>` | ✅ |
 | LT-51b | S4-H1: a valid `okf_check:` block, real `okflint` | `l2_profile`, `l2_warnings` and `l2_by_rule` equal the run without the block (SKIPPED when `okflint` is absent) | ✅ |
 | LT-51c | S4-E1: no `okf_check:` block | text and `--json` output and exit code byte-identical to the same build with the okf_check step deleted | ✅ |
-| LT-52 | One table of `okf_check:` shapes (valid, wrong type, null, list, typo'd key, unknown entry key, empty path, invalid UTF-8, invalid YAML) to BOTH tools | both exit 0 on a valid block; both exit 2 on an invalid one, and `okf-check` shows `okf-verify`'s message | ✅ |
+| LT-52 | One table of `okf_check:` shapes (valid, wrong type, null, list, typo'd key, unknown entry key, empty path, invalid UTF-8, invalid YAML; `deprecated_requires` valid, typo'd, a list and null) to BOTH tools | both exit 0 on a valid block; both exit 2 on an invalid one, and `okf-check` shows `okf-verify`'s message | ✅ |
 
 ### `--selftest` covers every layer (#59, 0.9.6)
 `--selftest` has a probe for each layer: L0 (the doctor, pointed at a validator path that does not exist, must say `MISSING`), L1, L2 profile, L2 index (an `index.md` that declares 5 notes for the 1-note baseline; the original `index.md` is put back), Trust, L3 staleness and L3 derived staleness (a note that records the baseline note as of 2000-01-01). Each new probe is proven by a plugin copy with that layer disabled: `--selftest` then reports `NOT FIRED` (the Gherkin "did not fire") and exits 5. Without `okflint` the L2 profile probes are SKIPPED with the reason, and the verdict line names the skipped layer instead of "every gate still fires"; the exit stays 0, as for a skipped layer in a check.
@@ -1178,6 +1179,22 @@ okf-check's own options live in ONE `okf_check:` block of `okf-base.yaml`; each 
 | LT-55e | S3-H1: L0 probe, healthy install | `L0 (doctor):` `FIRED`; exit 0 | ✅ |
 | LT-55f | the doctor's validator check disabled | its probe `NOT FIRED`; exit 5 | ✅ |
 | LT-55g | S3-E1: `okflint` absent | `L2 (house profile): SKIPPED — okflint absent`; the verdict names the skip and never says "every gate still fires"; exit 0 | ✅ |
+
+### Deprecation names a successor (#67, public #9, 0.9.7)
+`okf_check.deprecated_requires: superseded_by` turns the rule on; it is off by default. Every `status: deprecated` note must carry `superseded_by`: a path, a `[[wikilink]]`, a markdown link (also with a title, `[x](new.md "t")`, or in angle brackets, `[x](<new.md>)`), or a list of them. Each is resolved like the L2 wikilink rule (LT-46): from the bundle root or the note's own folder, with or without `.md`, and only inside the bundle. Each problem is its own error on the `Successor` line and in `errors[]`: no `superseded_by`; `successor not found`; `a note cannot supersede itself`; `successor is not a note` (`index.md` and `log.md` are reserved files); a successor that is deprecated too (`point at the final successor, not a deprecated one`: one hop, chains are not followed). Any error is a house-rule error, exit 1. The value is checked by the shared schema (`config/okf-check-block.json`, an `enum` node, RV-24): any value other than `superseded_by` is a `Config` error, exit 2, naming the value, and the rule stays off. Option off: no `Successor` line.
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-53a | S5-N1: deprecated, no `superseded_by` | `Successor FAIL`, the error names the note; exit 1 | ✅ |
+| LT-53b | S5-H1: `superseded_by` names an existing stable note | `Successor PASS`; exit 0 | ✅ |
+| LT-53c | S5-N2: a missing file, the note itself, another deprecated note | one error each with its own message; exit 1 | ✅ |
+| LT-53d | S5-E1: a list of a path and a `[[wikilink]]` to existing notes | `Successor PASS`; exit 0 | ✅ |
+| LT-53e | S5-E2: option off, deprecated note without a successor | exit 0; no `Successor` line | ✅ |
+| LT-53f | S5-N3: `deprecated_requires: superseded-by` (unknown value) | exit 2; the output names the value | ✅ |
+| LT-53g | `--selftest` | a `Successor (deprecated_requires)` probe fires (the option is on for that probe only); a copy with the rule disabled reports `NOT FIRED` and exits 5 | ✅ |
+| LT-53h | `[x](new.md "t")`, `[x](new.md 't')`, `[x](<new.md>)` | each resolves to new.md: `Successor PASS` | ✅ |
+| LT-53i | `superseded_by: index.md`, `"[[log]]"` | `successor is not a note`; exit 1 | ✅ |
+| LT-53j | option on, no deprecated note | `Successor PASS no deprecated notes` | ✅ |
 
 ## Non-goals
 

@@ -9,6 +9,13 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-10-18
+
+OKF Knowledge Gate 0.9.7 lets a bundle require that a deprecated note names the note that replaces it.
+
+### Added
+- **`okf_check.deprecated_requires: superseded_by`.** With this option in the `okf_check:` block of `okf-base.yaml` (off by default), every note with `status: deprecated` must carry `superseded_by`: a path, a `[[wikilink]]`, a markdown link, or a list of them, resolved from the bundle root or the note's own folder (the same way the L2 wikilink rule resolves a link). The new `Successor` line reports a deprecated note with no `superseded_by`, a successor that is not found, a note that names itself, and a successor that is deprecated too (one hop only: point at the final successor). Each is a house-rule error and exits 1. A value other than `superseded_by` for the option exits 2 and names the allowed value. The schema gained an `enum` node kind for this.
+
 ## [0.9.6] - 2026-10-18
 
 OKF Knowledge Gate 0.9.6 makes `--selftest` prove more of the gate: it now plants a defect for three layers it never tested.
@@ -410,7 +417,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.6...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.7...HEAD
+[0.9.7]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.5...v0.9.6
 [0.9.5]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.4...v0.9.5
 [0.9.4]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.3...v0.9.4
