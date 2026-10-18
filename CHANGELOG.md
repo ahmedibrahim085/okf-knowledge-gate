@@ -9,6 +9,15 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.12] - 2026-10-18
+
+OKF Knowledge Gate 0.9.12 checks one note in well under a second, so an edit hook can run it.
+
+### Added
+- **`okf-check <bundle> --file <note>`.** L1 and Trust for that one note, no other layer: one line per finding (`<note>: L1 error: ...`, `L1 warning`, `Trust warning`), nothing when the note is clean. It calls the vendored validator's own per-file checks, so it copies no rule; a test compares its findings with a full run's for the same note. Exit codes keep their meaning: 1 for an L1 error (or, with `--strict-trust`, a Trust warning or a near-miss actor), 0 otherwise, 2 when it could not run, 64 when the note is missing, is not a `.md` file, or lies outside the bundle. A note that `.okfignore` excludes prints `not checked (.okfignore excludes it)` and exits 0. The full run is still the gate.
+- **`--selftest` probes `--file`** (a note without frontmatter must print its L1 error), and a crippled copy exits 5, because the edit hook reads "nothing printed" as a clean note.
+- **A new suite, `plugin/scripts/scoped.test.sh`,** in the release gate.
+
 ## [0.9.11] - 2026-10-18
 
 OKF Knowledge Gate 0.9.11 makes every file walker treat symlinks the same way, so a note is counted once.
@@ -455,7 +464,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.11...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.12...HEAD
+[0.9.12]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.10...v0.9.11
 [0.9.10]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.9...v0.9.10
 [0.9.9]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.8...v0.9.9

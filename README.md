@@ -104,6 +104,7 @@ okf-check <bundle> --fail-on-change   # exit 6 if the bundle changes during the 
 okf-check <bundle> --json          # machine-readable summary
 okf-check <bundle> --duplicates    # list candidate duplicate notes (a report, always exit 0)
 okf-check <bundle> --duplicates-body   # the same, plus notes whose bodies are similar
+okf-check <bundle> --file <note>   # L1 + Trust for one note: one line per finding, nothing when clean (for edit hooks)
 okf-check --doctor                 # what is installed, and does okflint behave
 okf-check --selftest               # re-prove every gate still fires
 okf-check --init-ignore <bundle>   # write a starter .okfignore (never automatic, never overwrites)
@@ -222,7 +223,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.11
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.12
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -238,7 +239,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.11
+    rev: v0.9.12
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -326,6 +327,7 @@ probes. Upstream bug fixes we depend on are submitted as pull requests (see [Pin
 bash plugin/scripts/okf-check.test.sh     # the gate
 bash plugin/scripts/okf-verify.test.sh    # L4
 bash plugin/scripts/symlinks.test.sh      # every file walker treats symlinks alike
+bash plugin/scripts/scoped.test.sh        # okf-check --file (one note)
 bash plugin/scripts/plugin.test.sh        # packaging and install drift
 bash tools/demo/demo.test.sh              # the README demo is a recording of real runs
 plugin/scripts/okf-check --selftest

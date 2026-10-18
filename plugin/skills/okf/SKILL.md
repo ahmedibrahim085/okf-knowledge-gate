@@ -93,9 +93,16 @@ A missing SHA is never REFUTED (it depends on which repositories were searched a
 rewrite); a missing path is REFUTED only when its parent folder exists. `--strict` also fails on UNRESOLVED and on
 notes with no checkable claim (those are listed as unverifiable, not verified).
 
+## One note: `--file`
+
+`okf-check <bundle> --file <note>` checks only that note, L1 and Trust, in well under a second: one line per
+finding (`<note>: L1 error: ...`, `L1 warning`, `Trust warning`), nothing when the note is clean. Exit codes keep
+their meaning (1 an L1 error, or a Trust finding under `--strict-trust`; 2 could not run; 64 the note is not a `.md`
+inside the bundle). It is meant for an edit hook; the full run is still the gate.
+
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.11`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.12`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

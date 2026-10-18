@@ -2516,7 +2516,9 @@ grep -q '"l2_profile":"skipped"' "$TMP/ih_nfj.txt" && ok "LT-28p --json says l2_
 # (a) A gate that cannot fail is the defect this tool exists to catch: --selftest had no probe for the trust layer,
 # so a disabled trust rule still printed SELFTEST PASS. Cripple a plugin copy's helper; selftest must now FAIL (exit 5).
 DEADT="$TMP/deadtrust"; mkdir -p "$DEADT"; cp -R "$HERE/.." "$DEADT/plugin" 2>/dev/null
-printf 'import sys, json\njson.dump([], open(sys.argv[2], "w"))\n' > "$DEADT/plugin/scripts/okf-trust.py"
+# Guarded like the real helper: okf-scoped.py (--file, #60) imports okf-trust.py, and an unguarded stub wrote "[]" into
+# the caller's working directory under the scoped note's name.
+printf 'import sys, json\nif __name__ == "__main__":\n    json.dump([], open(sys.argv[2], "w"))\n' > "$DEADT/plugin/scripts/okf-trust.py"
 "$DEADT/plugin/scripts/okf-check" --selftest >"$TMP/deadtrust.txt" 2>&1; rc=$?
 { [ "$rc" -eq 5 ] && grep -q 'NOT FIRED' "$TMP/deadtrust.txt" && grep -q 'C4' "$TMP/deadtrust.txt"; } \
   && ok "LT-32a --selftest FAILS (exit 5) when the trust layer stops firing: the Trust gate has a probe" \

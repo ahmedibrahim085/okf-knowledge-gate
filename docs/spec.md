@@ -1161,6 +1161,11 @@ A small note whose YAML aliases nest describes billions of items; `str()` on suc
 | LT-50 | `--doctor` search binary | `--doctor` says whether the optional `okf` search binary is present (the doc-reuse closest-notes hint) and what is off without it | ✅ |
 | LT-47 | GitHub Action | warns on 0 concepts and on each skipped layer; `require-house-rules: true` exits 3 when L2 was skipped; other values exit 64 | ✅ |
 | LT-46 | L2 wikilinks | an L001 whose path-qualified target exists is dropped and counted | ✅ |
+| SC-1..2 | `--file <note>` (#60) | a note with an L1 error prints one line per finding and exits 1; a clean note prints nothing and exits 0 | ✅ |
+| SC-3..4 | `--file` vs a full run | the scoped findings equal the full validator + Trust findings for that note, none from other notes; `--strict-trust` blocks as in a full run | ✅ |
+| SC-5..7 | `--file` edges | outside the bundle, not `.md`, missing, or no value: exit 64; an `.okfignore`-excluded note is not checked (one line); a crashing helper is exit 2, never an L1 verdict | ✅ |
+| SC-8 | `--file` speed | on a 100-note bundle, under half the time of a full run on the same bundle (median of 3; about 0.1 s against 0.65 s measured, so well under the 1 s of #60) | ✅ |
+| SC-9 | `--selftest` | a `Scoped (--file)` probe fires on a note without frontmatter; a copy whose helper drops every finding reports `NOT FIRED` and exits 5 | ✅ |
 
 ### The `okf_check:` options block (#66, 0.9.4)
 okf-check's own options live in ONE `okf_check:` block of `okf-base.yaml`; each option is off by default. `okflint` 0.5.0 reads only the manifest keys it knows, so the block is not stripped before L2: the L2 warning count with and without it is equal, and LT-51b pins that against the real `okflint`. A block of the wrong shape or a key nobody knows is reported on a `Config` line and in `errors[]`, and the run exits 2: a typo would otherwise switch an option off in silence. The rules live ONCE, as data, in `plugin/config/okf-check-block.json` (each option's ticket adds its key there); `okf-verify` enforces them and `okf-check` calls `okf-verify --check-config`, so the two tools cannot disagree. LT-52 feeds one table of block shapes to both tools and asserts they agree. No block: no `Config` line, and text and `--json` output are byte-identical to the build before this change (measured against 5709b2e).

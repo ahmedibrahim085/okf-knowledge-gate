@@ -52,7 +52,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.11"
+VERSION="0.9.12"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -123,6 +123,8 @@ for a in "$@"; do
     --json)        JSON=1 ;;
     --fail-stale)  FAIL_STALE=1 ;;
     --strict-trust) STRICT_TRUST=1 ;;
+    --file)        if [ "${_want_file:-0}" = 1 ] || [ -n "${SCOPED_FILE:-}" ]; then echo "error: --file given twice - check one note at a time" >&2; exit 64; fi
+                   MODE="scoped"; _want_file=1 ;;   # its value is the next argument (run_scoped)
     --fail-on-change) FAIL_ON_CHANGE=1 ;;
     --fingerprint) MODE="fingerprint" ;;
     --duplicates)  MODE="duplicates" ;;
@@ -135,8 +137,10 @@ for a in "$@"; do
     --latest)      USE_LATEST=1 ;;
     --version)     echo "okf-check $VERSION"; exit 0 ;;
     -h|--help)     sed -n '2,40p' "$_self"; exit 0 ;;
-    -*)            echo "unknown flag: $a" >&2; exit 64 ;;
-    *)             # A second positional silently replaced the first, so
+    -*)            if [ "${_want_file:-0}" = 1 ] && [ -f "$a" ]; then SCOPED_FILE="$a"; _want_file=0; continue; fi   # a note named -d.md
+                   echo "unknown flag: $a" >&2; exit 64 ;;
+    *)             if [ "${_want_file:-0}" = 1 ]; then SCOPED_FILE="$a"; _want_file=0; continue; fi
+                   # A second positional silently replaced the first, so
                    # `okf-check <FAILING> <CLEAN>` examined only the last and
                    # exited 0. A glob over several bundles checked one. (R-9)
                    if [ -n "$BUNDLE" ]; then
@@ -304,6 +308,38 @@ report_folder_links() {
   n=$(printf '%s\n' "$links" | grep -c .)
   say "  symlinks         $n symlinked folder(s) not entered (an alias of a folder in the bundle, or outside it):"
   printf '%s\n' "$links" | say_capped 10 "                   "
+}
+
+# run_scoped <bundle> <note>: `--file` mode (#60; the edit hook of #61 calls it). L1 and Trust for one note through
+# okf-scoped.py: one line per finding, nothing for a clean note, no other layer. Exit codes keep their meaning:
+# 1 an L1 error (or, with --strict-trust, a Trust warning or near-miss actor), 0 otherwise, 2 could not run,
+# 64 the note is missing, not .md, or outside the bundle.
+run_scoped() {
+  local bundle note rel out rc keep
+  [ "${_want_file:-0}" = 1 ] && { echo "usage: okf-check <bundle> --file <note>" >&2; return 64; }
+  [ "$JSON" -eq 1 ] && { echo "error: --file prints text lines; --json is not supported with it" >&2; return 64; }
+  case "$2" in *$'\n'*) echo "error: --file: a newline in the note name would split a finding over two lines" >&2; return 64 ;; esac
+  [ -f "$2" ] || { echo "error: --file '$2' is not a file" >&2; return 64; }
+  case "$2" in *.md) ;; *) echo "error: --file '$2' is not a .md note" >&2; return 64 ;; esac
+  bundle=$(cd -P "$1" && pwd) || return 64
+  note="$(cd -P "$(dirname -- "$2")" && pwd)/$(basename -- "$2")"
+  case "$note" in "$bundle"/*) rel=${note#"$bundle"/} ;; *) echo "error: --file '$2' is not inside $1" >&2; return 64 ;; esac
+  if [ -f "$bundle/.okfignore" ]; then
+    okfignore_load "$bundle"; [ $? -eq 2 ] && return $EXIT_DEP
+    okfignore_match "$rel" && { echo "$rel: not checked (.okfignore excludes it)"; return 0; }
+  fi
+  [ -n "$PY" ] || { echo "okf-check: python3 is missing - $rel was not checked" >&2; return $EXIT_DEP; }
+  # The full run checks links against the notes .okfignore keeps (a filtered mirror), so the scoped run does too.
+  keep=""
+  if [ -f "$bundle/.okfignore" ]; then okfignore_list "$bundle" > "$TMP/scoped-keep.lst" 2>/dev/null && keep="$TMP/scoped-keep.lst"; fi
+  out=$(OKF_KEEP_LIST="$keep" py_with_vendor "$HERE/okf-scoped.py" "$bundle" "$rel" $([ "$STRICT_TRUST" -eq 1 ] && echo --strict-trust)); rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out"
+  case "$rc" in
+    0) return 0 ;;
+    1) [ -n "$out" ] && return $EXIT_CONFORM ;;   # exit 1 with no finding printed is a crash, not a verdict
+  esac
+  echo "okf-check: the scoped check could not run (exit $rc) - $rel was not checked" >&2
+  return $EXIT_DEP
 }
 
 _stat_flavor=""
@@ -1687,6 +1723,11 @@ selftest() {
   _body_probe() { local DUP_BODY=1; run_duplicates "$1"; }
   probe "same body" "body 1.00" _body_probe "bad.md" '---\ntype: Lesson\ntitle: Other\ndescription: Another text.\nstatus: stable\nstale_after: "2099-01-01"\n---\nbody\n'
 
+  say "  Scoped (--file):"
+  # The edit hook (#61) reads "nothing printed" as a clean note, so a helper that loses its findings must fail here (#60).
+  _scoped_probe() { run_scoped "$1" "$1/bad.md"; }
+  probe "note without frontmatter" "bad.md: L1 error: " _scoped_probe "bad.md" 'no frontmatter here\n'
+
   say ""
   # A skipped probe is a gate nobody watched fire: the verdict names it instead of saying "every gate" (S3-E1).
   if [ "$fails" -eq 0 ] && [ -n "$skipped" ]; then
@@ -1776,6 +1817,7 @@ esac
 
 [ -n "$BUNDLE" ] || { echo "usage: okf-check <bundle> [--doctor|--selftest|--json|--fail-stale|--strict-trust]" >&2; exit 64; }
 [ -d "$BUNDLE" ] || { echo "error: $BUNDLE is not a directory" >&2; exit 64; }
+[ "$MODE" = scoped ] && { run_scoped "$BUNDLE" "${SCOPED_FILE:-}"; exit $?; }
 # An UNREADABLE directory used to yield "L1 PASS 0 concepts" and exit 0 — a
 # permission problem, or a typo'd path, read as a clean bill of health. The
 # fail-closed principle E-7b enforces for a single unreadable FILE was simply
