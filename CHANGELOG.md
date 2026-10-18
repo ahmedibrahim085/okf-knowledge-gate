@@ -9,6 +9,13 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.23] - 2026-10-18
+
+OKF Knowledge Gate 0.9.23 gives the L2 profile a verdict for a bundle that holds a dangling Markdown link.
+
+### Fixed
+- **A dangling `*.md` symbolic link no longer stops L2 with `COULD NOT RUN`.** The third-party `okflint` raised `FileNotFoundError` on such a link, so the whole L2 verdict was lost with exit 2, while L1 and L3 simply skip a dangling link. When the tree holds one, L2 now runs on the same copy that `.okfignore` uses, which leaves dangling links out, and each link is reported as an advisory (`dangling symlink: the link target does not exist`, rule `DANGLING_MD`) that counts in `l2_warnings`. A bundle without a dangling `*.md` link takes the old path unchanged, and a link inside an ignored folder is not reported.
+
 ## [0.9.22] - 2026-10-18
 
 OKF Knowledge Gate 0.9.22 lets a CI job or an agent see which notes the L2 advisory findings point at.
@@ -549,7 +556,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.22...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.23...HEAD
+[0.9.23]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.22...v0.9.23
 [0.9.22]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.21...v0.9.22
 [0.9.21]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.20...v0.9.21
 [0.9.20]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.19...v0.9.20

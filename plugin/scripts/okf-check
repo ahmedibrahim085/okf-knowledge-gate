@@ -52,7 +52,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.22"
+VERSION="0.9.23"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -158,6 +158,7 @@ for c in python3 python; do command -v "$c" >/dev/null 2>&1 && { PY="$c"; break;
 # name the bundle the user pointed at, never the temp copy.
 MIRROR_ROOT=""
 L2_MIRROR_ROOT=""
+L2_SRC=""   # the bundle as the user gave it: where L2 looks for dangling links when LAYER_BUNDLE is a copy
 say()  { [ "$JSON" -eq 1 ] && return 0; local m="$*"; [ -n "$MIRROR_ROOT" ] && m=${m//"$MIRROR_ROOT"/"$BUNDLE"}; [ -n "$L2_MIRROR_ROOT" ] && m=${m//"$L2_MIRROR_ROOT"/"$BUNDLE"}; printf '%s\n' "$m"; }
 # record <kind> <text> — one finding for --json (kind: error, stale, l2, skipped). Appends to a file, so it also works
 # inside `| while read` pipelines. The text lines of the human report stay untouched.
@@ -1035,6 +1036,27 @@ run_duplicates() {
 }
 
 # ------------------------------------------------------- L2 house profile
+# l2_dangling <bundle> [all]: the dangling *.md symlinks okflint cannot walk past, root-relative, NUL-separated, sorted. The same
+# link set L1 and L3 skip (okf_md_files), minus what .okfignore excludes unless "all" (an ignored link still crashes okflint
+# when the ignore mirror is not built). A loop (a.md -> a.md) fails -e too, so it is listed.
+l2_dangling() {
+  local root="${1%/}" f
+  okfignore_load "$root" >/dev/null 2>&1
+  while IFS= read -r -d '' f; do
+    [ -e "$f" ] && continue
+    [ -z "${2:-}" ] && okfignore_match "${f#"$root"/}" && continue
+    printf '%s\0' "${f#"$root"/}"
+  done < <(find -H "$root" -name .git -prune -o -type l -name '*.md' -print0 2>/dev/null) | sort -z
+}
+# l2_say_dangling <list>: one advisory line per dangling link, capped and honest about the cap by say_capped.
+l2_say_dangling() {
+  local f
+  [ -s "$1" ] || return 0
+  while IFS= read -r -d '' f; do
+    printf '%s — dangling symlink: the link target does not exist\n' "$(printf '%s' "$f" | tr '\n\r\t' '   ')"
+  done < "$1" | say_capped 12 "                   "
+}
+
 # l2_isolate: okflint crashed on the whole bundle. Find the notes it crashes on (one run per note,
 # time-bounded), copy the rest into a mirror and run okflint once on that. Only for bundles of at
 # most OKF_L2_ISOLATE_MAX notes (default 200): each run is about 0.2 s. Sets, in the CALLER's
@@ -1141,6 +1163,18 @@ __l2_core() {
   # Time-bounded: a hung okflint used to stall the run for as long as it hung.
   local l2limit="${OKF_L2_TIMEOUT:-120}"
   case "$l2limit" in ''|*[!0-9]*|0) l2limit=120;; esac
+  # okflint raises FileNotFoundError on a dangling *.md link and reaches no verdict (#99). Run it on a mirror without the
+  # link (the .okfignore mirror skips dangling links) and report each link below. No dangling link: no mirror, same run.
+  local dlst="$TMP/l2dangling.lst" _src="${L2_SRC:-$bundle}"
+  l2_dangling "$_src" > "$dlst"
+  if [ "$(l2_dangling "$bundle" all | tr -d '\0' | head -c 1)" ]; then   # the ignore mirror holds none, so it needs no second one
+    if ! okfignore_mirror "$bundle" "$TMP/l2dangling" >/dev/null 2>"$TMP/l2dangling.err"; then
+      L2_PROFILE=could_not_run
+      say "  L2 profile       COULD NOT RUN — the dangling symlink(s) could not be set aside for okflint: $(head -1 "$TMP/l2dangling.err" | cut -c1-160)"
+      return $EXIT_DEP
+    fi
+    bundle="$TMP/l2dangling"; L2_MIRROR_ROOT="$bundle"
+  fi
   run_limited "$l2limit" "$TMP/l2.out" sh -c 'cd "$1" && exec okflint validate . --manifest okf-base.yaml --json' _ "$bundle"; ec=$?
   cat "$TMP/l2.out" "$TMP/l2.out.err" > "$TMP/l2.txt" 2>/dev/null
 
@@ -1171,7 +1205,7 @@ __l2_core() {
   # Parse the structured report. If okflint signalled findings (exit 1) but we
   # cannot parse them, that is COULD NOT RUN — never a pass.
   local counts errs warns
-  counts=$("$PY" - "$TMP/l2.txt" "$bundle" <<'PY' 2>/dev/null
+  counts=$("$PY" - "$TMP/l2.txt" "$bundle" "$dlst" <<'PY' 2>/dev/null
 import json, os, re, sys
 raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 
@@ -1226,6 +1260,12 @@ doc = [x for x in doc if not _resolves(x)]
 errors  = [x for x in doc if sev(x) == "error"]
 unknown = [x for x in doc if isinstance(x, dict) and "severity" not in x]
 others  = [x for x in doc if sev(x) not in ("error",) and x not in unknown]
+# One advisory per dangling *.md link okf-check set aside before okflint ran (#99).
+try:
+    dangling = [d for d in open(sys.argv[3], encoding="utf-8", errors="replace").read().split("\0") if d]
+except OSError:
+    dangling = []
+others += [{"code": "DANGLING_MD", "severity": "warning", "file": d} for d in dangling]
 print(len(errors), len(others), len(unknown), len(dropped), dropped_err)
 for x in errors + unknown:
     print("E|%s %s — %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", "")))
@@ -1277,11 +1317,13 @@ PY
   if [ "${errs:-0}" -eq 0 ]; then
     say "  L2 profile       PASS   0 errors, ${warns:-0} warning(s) (advisory)"
     [ -n "$bycode" ] && say "                   by rule: $bycode"
+    l2_say_dangling "$dlst"
     [ "${dropped:-0}" -gt 0 ] && say "                   ${dropped} path wikilink(s) resolved by okf-check (okflint reports them as L001 although the note exists)"
     return 0
   fi
   say "  L2 profile       FAIL   ${errs} house-rule error(s)"
   [ -n "$bycode" ] && say "                   advisory by rule: $bycode"
+  l2_say_dangling "$dlst"
   [ "${dropped:-0}" -gt 0 ] && say "                   ${dropped} path wikilink(s) resolved by okf-check (okflint reports them as L001 although the note exists)"
   grep '^E|' "$TMP/l2parsed.txt" | sed 's/^E|//' | while IFS= read -r _e; do record l2 "$_e"; done
   grep '^E|' "$TMP/l2parsed.txt" | sed 's/^E|//' | say_capped 12 "                   "
@@ -1949,6 +1991,7 @@ if [ "$STRICT_TRUST" -eq 1 ]; then
     TRUST_POLICY_FAIL=1; worse $EXIT_CONFORM
   fi
 fi
+L2_SRC="$BUNDLE"
 run_profile     "$LAYER_BUNDLE"; worse_other $?
 run_index       "$LAYER_BUNDLE"; worse_other $?
 run_successor   "$LAYER_BUNDLE"; worse_other $?
