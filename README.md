@@ -81,7 +81,7 @@ claude plugin marketplace add ahmedibrahim085/okf-knowledge-gate   # or a local 
 claude plugin install okf@ahmedmaged-okf
 ```
 
-While the plugin is enabled, Claude Code puts `okf-check` and `okf-verify` on the Bash tool's PATH (the plugin's `bin/`
+While the plugin is enabled, Claude Code puts `okf-check`, `okf-verify` and `okf-export` on the Bash tool's PATH (the plugin's `bin/`
 folder), so the bare commands below work in a session. Outside Claude Code, run `plugin/scripts/okf-check` from a clone.
 
 Restart Claude Code to load a new version. Update with `claude plugin update okf@ahmedmaged-okf`.
@@ -114,6 +114,7 @@ okf-check --selftest               # re-prove every gate still fires
 okf-check --init-ignore <bundle>   # write a starter .okfignore (never automatic, never overwrites)
 okf-check --init-house-rules <bundle>   # write a starter okf-base.yaml so L2 runs (never automatic, never overwrites)
 okf-verify <bundle> --repo DIR     # L4: are the cited commits real? DIR is where SHAs are looked up
+okf-export <vault> <out>           # write a vault of [[wikilinked]] notes out as a bundle
 ```
 
 What a run looks like (real output; four more lines are left out: the version header, two lines of advice and the L2 index line). The note says a human
@@ -136,6 +137,13 @@ A Trust warning counts as an advisory in the last line, so the run still passes 
 
 `okf-verify` checks three kinds of claim: a cited commit SHA, a code citation (`path:line @sha`) and an absolute file path. A cited commit SHA is looked up in each `--repo` folder and in each repository the bundle declares once in its `okf-base.yaml` under `okf_check.verify.repos` (each entry has a `path`: relative to the bundle, absolute, or starting with `~`; `--repo` adds to them, and a repository named twice is searched once). A declared path that is missing or is not a git repository is reported as UNRESOLVED with that reason; it does not change the exit code unless you pass `--strict`. An `okf-base.yaml` that cannot be read, is not valid YAML, or whose `okf_check.verify.repos` is not a list of `{path: <string>}` stops the run with one error line and exit 2. A code citation written `path:line @sha`, `path:first-last @sha` or `path:line at sha` (for example `` `src/a.py:10 @d084956` ``) is ONE claim: the commit is looked up as above, then the path is looked up in that commit's files. The path is repo-relative and may be only its end (`a.py` for `src/a.py`). It is CONFIRMED when the file exists at that commit, REFUTED when the commit is found and the file is not in it (the detail says the path part failed), and UNRESOLVED when the commit is in no searched repository or the end of the path matches more than one file. The line (or the end of the range) must also exist in that file at that commit: a line past the end is REFUTED and the detail gives the file's line count; line 0 is REFUTED (lines start at 1); an empty file has 0 lines; a reversed range such as `20-10` is read as the lines up to the larger number; a binary file or a symlink is UNRESOLVED because its lines cannot be checked; a line number of more than 9 digits is REFUTED as out of range. A drive-letter path with backslashes (`C:\x\y.py:3`), a URL or a version number is not a citation. A path with a space in a directory name (`my dir/w.py:1 @sha`) is read from the space on, so it is UNRESOLVED when that is the end of a longer file name, never REFUTED. Absolute file paths
 in backticks or quotes (and paths that start with `~`) are checked on disk, but only inside the bundle or a `--repo` folder: a path elsewhere on the machine is UNRESOLVED, so a bundle you did not write cannot use the check to learn which files exist on your machine. Add `--host-paths` to look those up too. Relative paths are not read. In a shallow clone (the `actions/checkout` default), commits older than the clone are missing: use `fetch-depth: 0`.
+
+`okf-export` is for a team that edits in an Obsidian-style vault, whose backlinks and graph count only `[[wikilinks]]`.
+The vault stays the source; the export is a bundle `okf-check` can gate. Body `[[note]]`, `[[note|alias]]`,
+`[[note#heading]]` and `[[#heading]]` become relative Markdown links, and each target and heading is checked.
+Frontmatter and code are copied unchanged. Exit 1 lists each missing or ambiguous target and missing heading as
+`file:line` (the bundle is still written); exit 2 means nothing was written (`<out>` is not empty or is inside the
+vault). A target is matched by its exact case (Obsidian ignores case). The vault is only read.
 
 A near-miss actor is a wrongly written actor such as `Human:dana`. OKF reads it as an agent, so a person's review is
 lost without any other symptom. `--strict-trust` fails on it.
@@ -230,7 +238,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.13
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.14
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -246,7 +254,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.13
+    rev: v0.9.14
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -336,6 +344,7 @@ bash plugin/scripts/okf-verify.test.sh    # L4
 bash plugin/scripts/symlinks.test.sh      # every file walker treats symlinks alike
 bash plugin/scripts/edit-hook.test.sh     # the opt-in edit hook
 bash plugin/scripts/scoped.test.sh        # okf-check --file (one note)
+bash plugin/scripts/okf-export.test.sh    # vault export
 bash plugin/scripts/plugin.test.sh        # packaging and install drift
 bash tools/demo/demo.test.sh              # the README demo is a recording of real runs
 plugin/scripts/okf-check --selftest
@@ -349,7 +358,7 @@ fix. A change is reviewed on two axes (standards and spec) before it is released
 | Path | Contents |
 |---|---|
 | `plugin/` | The installable plugin: scripts, hooks, skill, vendored validator, config |
-| `plugin/scripts/` | `okf-check`, `okf-verify`, the hooks, and their test suites (`*.test.sh`) |
+| `plugin/scripts/` | `okf-check`, `okf-verify`, `okf-export`, the hooks, and their test suites (`*.test.sh`) |
 | `plugin/vendor/` | The vendored validator and PyYAML, with `VENDOR.md` (source, pin, licence) |
 | `docs/demo.gif`, `tools/demo/` | The README demo and the scripts that record and render it |
 | `docs/comparison-2026-10-17.md` | The evidence behind the comparison claim in "Why use it" |

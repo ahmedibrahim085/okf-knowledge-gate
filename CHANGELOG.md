@@ -9,6 +9,15 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.14] - 2026-10-18
+
+OKF Knowledge Gate 0.9.14 adds `okf-export`, which writes a vault of `[[wikilinked]]` notes out as a bundle `okf-check` can gate.
+
+### Added
+- **`okf-export <vault> <out>`.** For a team that edits in an Obsidian-style vault, where backlinks and the graph count only `[[wikilinks]]`: the vault stays the source and is only read, and the export is a separate bundle. Body `[[note]]`, `[[note|alias]]`, `[[note#heading]]` and `[[#heading]]` become relative Markdown links; each target and heading is checked. Frontmatter, code fences and code spans are copied unchanged (a byte order mark and CRLF line endings are kept), and an embed `![[x]]` is left as written. A table-cell alias written `[[a\|alias]]` is read as an alias. A heading link into a file that is not Markdown (`[[doc.pdf#page=3]]`) keeps its fragment and is not read as text. A note that is not valid UTF-8 is listed as `file:1: not valid UTF-8, copied unchanged` and the rest of the vault is still exported. A target is matched by its exact case. Exit 1 lists each missing or ambiguous target and each missing heading as `file:line` (the bundle is still written); exit 2 means nothing was written (`<out>` is not empty, or is inside the vault). Names and link text quoted in those lines have control characters replaced by `?`.
+- **`okf-export` is on the Bash tool's PATH** while the plugin is enabled (`plugin/bin/okf-export`), like `okf-check` and `okf-verify`.
+- **A new suite, `plugin/scripts/okf-export.test.sh`,** in the release gate.
+
 ## [0.9.13] - 2026-10-18
 
 OKF Knowledge Gate 0.9.13 can check each note Claude writes or edits, at once, with an opt-in hook.
@@ -473,7 +482,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.13...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.14...HEAD
+[0.9.14]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.13...v0.9.14
 [0.9.13]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.12...v0.9.13
 [0.9.12]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.11...v0.9.12
 [0.9.11]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.10...v0.9.11

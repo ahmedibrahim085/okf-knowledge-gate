@@ -105,9 +105,21 @@ The plugin ships that hook, OFF by default: `okf_check: {edit_hook: true}` in a 
 sees one line starting `okf-check:` after the edit; fix the note it names. The hook is time-boxed and stays silent
 when it cannot run.
 
+## okf-export: a note-tool vault in, an OKF bundle out
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/okf-export" <vault> <out>   # plain `okf-export` also works while the plugin is enabled
+```
+
+For a team that edits in an Obsidian-style vault: the vault stays the source, and the export is a bundle
+`okf-check` can gate. Body `[[note]]`, `[[note|alias]]`, `[[note#heading]]` and `[[#heading]]` become relative
+Markdown links; frontmatter and code are copied unchanged. Exit 1 lists every missing or ambiguous target and
+missing heading as `file:line` (the bundle is still written); exit 2 means nothing was written (`<out>` not
+empty or inside the vault). It never writes into the vault.
+
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.13`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.14`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

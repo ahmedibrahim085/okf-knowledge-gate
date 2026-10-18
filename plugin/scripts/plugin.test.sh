@@ -538,7 +538,7 @@ n_never=$(tr -s '[:space:]' ' ' < "$TMP_W/readme_deps.txt" | grep -o 'never merg
 # Anthropic: files in a plugin's bin/ are on the Bash tool's PATH while the plugin is enabled (plugins-reference);
 # Agent Skills best practices: a third-person description saying what and when, a body under 500 lines,
 # references one level deep. The skill is the one document an agent reads, so it must teach what 0.9.0 added.
-for tool in okf-check okf-verify; do
+for tool in okf-check okf-verify okf-export; do
   [ -x "$PLUGIN/bin/$tool" ] || { bad "LT-31a bin/$tool exists and is executable" "missing"; continue; }
   want=$("$PLUGIN/scripts/$tool" --version 2>&1 | head -1); got=$(cd / && "$PLUGIN/bin/$tool" --version 2>&1 | head -1)
   "$PLUGIN/bin/$tool" --nope-not-a-flag >/dev/null 2>&1; rc_w=$?; "$PLUGIN/scripts/$tool" --nope-not-a-flag >/dev/null 2>&1; rc_s=$?
@@ -579,7 +579,7 @@ deep=$(grep -l 'references/' "$PLUGIN"/skills/okf/references/*.md 2>/dev/null ||
 
 # Review round 1. A PATH entry may be a SYMLINK to the wrapper; resolving the link's own folder broke it (exit 126).
 SLN="$TMP_W/symlinked"; mkdir -p "$SLN"
-for tool in okf-check okf-verify; do
+for tool in okf-check okf-verify okf-export; do
   ln -sf "$PLUGIN/bin/$tool" "$SLN/$tool"
   want=$("$PLUGIN/scripts/$tool" --nope-not-a-flag >/dev/null 2>&1; echo $?); got=$(cd / && PATH="$SLN:$PATH" "$tool" --nope-not-a-flag >/dev/null 2>&1; echo $?)
   [ "$want" = "$got" ] && [ "$got" != 126 ] && [ "$got" != 127 ] && ok "LT-31h $tool reached through a SYMLINK to the wrapper behaves like the real tool (exit $got)" || bad "LT-31h $tool via symlink" "real exit $want, via symlink $got"
