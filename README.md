@@ -244,7 +244,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.19
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.20
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -260,7 +260,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.19
+    rev: v0.9.20
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -346,6 +346,8 @@ probes. Upstream bug fixes we depend on are submitted as pull requests (see [Pin
 
 ```bash
 bash plugin/scripts/okf-check.test.sh     # the gate
+bash plugin/scripts/okf-check-l3.test.sh  # the gate's L3 staleness layer (own file, runs beside the one above)
+bash plugin/scripts/okf-test-lib.test.sh  # the helpers those two share, and OKF_TEST_TIMING=1 (seconds per section)
 bash plugin/scripts/okf-verify.test.sh    # L4
 bash plugin/scripts/symlinks.test.sh      # every file walker treats symlinks alike
 bash plugin/scripts/edit-hook.test.sh     # the opt-in edit hook

@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# Tests for plugin/tests/okf-test-lib.sh, the helpers the okf-check suites share (ticket #92, cases S11-TS-*).
+#
+# The timing mode is the part with behaviour: OKF_TEST_TIMING=1 prints one line per section
+# (seconds and assert count) so a split of the big suite is decided by measurement, not by line counts.
+# bash 3.2 compatible.
+set -uo pipefail
+
+HERE=$(cd -P "$(dirname "$0")" && pwd)
+LIB="$HERE/../tests/okf-test-lib.sh"
+PASS=0; FAIL=0
+TMP=$(mktemp -d 2>/dev/null || mktemp -d -t okftestlib)
+trap 'rm -rf "$TMP"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+ok()  { PASS=$((PASS+1)); printf '  PASS  %s\n' "$1"; }
+bad() { FAIL=$((FAIL+1)); printf '  FAIL  %s\n     -> %s\n' "$1" "$2"; }
+
+echo "okf-test-lib tests"
+
+# A throwaway suite with two sections: 2 asserts, then 1 pass + 1 fail + 1 skip, then a section with none.
+cat > "$TMP/mini.test.sh" <<'MINI'
+#!/usr/bin/env bash
+set -uo pipefail
+. "$OKF_LIB"
+section "first"
+sleep 1
+ok "a"; ok "b"
+section "second"
+ok "c"; bad "d" "why"; skip "e"
+section "third"
+okf_test_summary
+[ "$FAIL" -eq 0 ] || exit 1
+MINI
+
+OKF_LIB="$LIB" OKF_TEST_TIMING=1 bash "$TMP/mini.test.sh" > "$TMP/on.txt" 2>&1; rc_on=$?
+OKF_LIB="$LIB" bash "$TMP/mini.test.sh" > "$TMP/off.txt" 2>&1; rc_off=$?
+
+# S11-TS-H1: one line per section, in order, with seconds and the assert count.
+if grep -Eq '^TIMING +[1-9][0-9]*s +2 asserts +first$' "$TMP/on.txt" \
+   && grep -Eq '^TIMING +[0-9]+s +3 asserts +second$' "$TMP/on.txt" \
+   && grep -Eq '^TIMING +[0-9]+s +0 asserts +third$' "$TMP/on.txt" \
+   && [ "$(grep -c '^TIMING' "$TMP/on.txt")" -eq 3 ]; then
+  ok "TS-1 OKF_TEST_TIMING=1 prints one seconds-and-count line per section (S11-TS-H1)"
+else
+  bad "TS-1 timing lines" "$(grep -c '^TIMING' "$TMP/on.txt" 2>/dev/null) TIMING lines; output: $(head -12 "$TMP/on.txt" | tr '\n' '|')"
+fi
+
+# S11-TS-N1: a plain run prints no timing line.
+if grep -q '3 passed, 1 failed, 1 SKIPPED' "$TMP/off.txt" && ! grep -q 'TIMING' "$TMP/off.txt"; then
+  ok "TS-2 a plain run prints no timing line (S11-TS-N1)"
+else
+  bad "TS-2 plain run" "output: $(head -12 "$TMP/off.txt" | tr '\n' '|')"
+fi
+
+# S11-TS-E1: timing changes neither the verdict nor the summary; the failing assert still fails the run.
+if [ "$rc_on" -eq 1 ] && [ "$rc_off" -eq 1 ] && grep -q '3 passed, 1 failed, 1 SKIPPED' "$TMP/on.txt" \
+   && [ "$(grep -v '^TIMING' "$TMP/on.txt")" = "$(cat "$TMP/off.txt")" ]; then
+  ok "TS-3 timing mode leaves the output, the summary and the exit code unchanged (S11-TS-E1)"
+else
+  bad "TS-3 timing is inert" "rc_on=$rc_on rc_off=$rc_off"
+fi
+
+# S11-TS-E2: a header with no section call right under it would drop its seconds from the report.
+miss=""
+for f in "$HERE"/okf-check*.test.sh; do
+  [ -f "$f" ] || continue
+  m=$(awk 'prev && !/^section "/ { print FILENAME ":" NR - 1 } { prev = /^# (---|===) / }' "$f")
+  [ -z "$m" ] || miss="$miss $m"
+done
+if [ -z "$miss" ]; then
+  ok "TS-4 every section header in the okf-check suites has a section call under it (S11-TS-E2)"
+else
+  bad "TS-4 section call missing" "headers without a section call:$miss"
+fi
+
+echo; echo "  $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ] || exit 1

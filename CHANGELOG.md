@@ -9,6 +9,17 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.20] - 2026-10-18
+
+OKF Knowledge Gate 0.9.20 starts to cut the time a release spends in the slowest test suite.
+
+### Added
+- **`OKF_TEST_TIMING=1` prints the seconds each section of `okf-check.test.sh` takes.** One line per section, with its share of the run; a plain run prints nothing extra.
+- **The shared test helpers live in one sourced file** (`plugin/tests/okf-test-lib.sh`), so a suite can be split without copying them.
+
+### Changed
+- **The staleness (L3) section, the slowest by measure, moved to its own suite** (`okf-check-l3.test.sh`). No test changed: the two files together run the same 513 tests, and they can run side by side.
+
 ## [0.9.19] - 2026-10-18
 
 OKF Knowledge Gate 0.9.19 moves the public publish step into the repository and makes its order impossible to get wrong.
@@ -521,7 +532,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.19...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.20...HEAD
+[0.9.20]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.19...v0.9.20
 [0.9.19]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.18...v0.9.19
 [0.9.18]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.17...v0.9.18
 [0.9.17]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.16...v0.9.17
