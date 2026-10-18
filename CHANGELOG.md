@@ -9,6 +9,15 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.9] - 2026-10-18
+
+OKF Knowledge Gate 0.9.9 lists candidate duplicate notes, so a maintainer can deprecate one of a pair.
+
+### Added
+- **`okf-check <bundle> --duplicates`.** A report of its own, not a gate: it runs instead of the layers and always exits 0 once it ran. A pair of notes is a candidate when they have the same normalized title, cite the same `sources[].resource`, or have descriptions whose word sets overlap at or above `okf_check.duplicates.threshold` (default `1.0`: identical word sets, because lower values flagged templated series on our labelled sample). Each pair shows the signal and score, both statuses, both `generated.at` values and both owners. A pair already linked by `superseded_by` is skipped. The run is time-boxed by `okf_check.duplicates.time_limit` seconds (default 60) and says `CUT SHORT` if it was. `--json` adds `duplicates[]`.
+- **A note whose `sources` is not a list is read, and a symlink alias of a note is not listed against its target.** Both were found in review: the first made `--duplicates` stop with exit 2, the second reported a note as a duplicate of itself.
+- **`--selftest` probes `--duplicates`**, and a crippled copy exits 5. The note reader the Successor, Owner and duplicates rules share moved to `okf_notes.py`.
+
 ## [0.9.8] - 2026-10-18
 
 OKF Knowledge Gate 0.9.8 lets a bundle require that every note has an owner, and shows the owner on stale and lifecycle findings.
@@ -427,7 +436,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.8...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.9...HEAD
+[0.9.9]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.8...v0.9.9
 [0.9.8]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.7...v0.9.8
 [0.9.7]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.6...v0.9.7
 [0.9.6]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.5...v0.9.6

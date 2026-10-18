@@ -22,7 +22,7 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 - **One verdict you can gate on.** `okf-check` runs every layer. Exit 1 means "not valid", exit 2 means "could not run",
   and a skipped layer is printed as SKIPPED and never shown as PASS (the exit code stays 0, and the verdict line reports
   a skipped layer). `--selftest` plants one defect in each of L0 (doctor), L1, L2 (profile), L2 (index), Trust,
-  L3 (staleness), L3 (derived staleness), the Successor rule and the Owner rule and fails if a gate misses it. Without `okflint` the L2 profile probes are
+  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule and `--duplicates` and fails if a gate misses it. Without `okflint` the L2 profile probes are
   SKIPPED, and the verdict line names them.
 - **The same check in three places.** Claude Code (hooks, plus a skill an agent reads), a GitHub Action, and a pre-commit
   hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)).
@@ -102,6 +102,7 @@ okf-check <bundle> --fail-stale    # staleness blocks (exit 4)
 okf-check <bundle> --strict-trust  # unauthenticated human verification and near-miss actors block (exit 1)
 okf-check <bundle> --fail-on-change   # exit 6 if the bundle changes during the scan
 okf-check <bundle> --json          # machine-readable summary
+okf-check <bundle> --duplicates    # list candidate duplicate notes (a report, always exit 0)
 okf-check --doctor                 # what is installed, and does okflint behave
 okf-check --selftest               # re-prove every gate still fires
 okf-check --init-ignore <bundle>   # write a starter .okfignore (never automatic, never overwrites)
@@ -154,7 +155,8 @@ file by itself.
 `okflint` ignores the block (measured: the L2 warning count is the same with and without it), and both `okf-check` and
 `okf-verify` check it against one schema, `plugin/config/okf-check-block.json`: a key it does not know, or a value of the
 wrong shape, exits 2 and names the key, so a typo cannot switch an option off without a word. Known keys: `verify`
-(read by `okf-verify`; `repos` is a list of `path:` entries), `deprecated_requires`, `require_owner` and `owners`.
+(read by `okf-verify`; `repos` is a list of `path:` entries), `deprecated_requires`, `require_owner`, `owners` and
+`duplicates`.
 
 ```yaml
 okf_check:
@@ -183,6 +185,13 @@ okf_check:
     "decisions/security/**": human:dana
 ```
 
+**Duplicates:** `okf-check <bundle> --duplicates` lists pairs of notes that may record the same knowledge: the same
+title (case, punctuation and spacing ignored), the same `sources[].resource`, or descriptions whose words overlap at or
+above `okf_check.duplicates.threshold` (default `1.0`, identical word sets; on our labelled sample, lower values
+flagged templated series, not duplicates). Each pair shows the signal and score, both statuses, `generated.at` and
+owners. Pairs linked by `superseded_by` are skipped. It is a report, not a gate: exit 0. It stops at
+`okf_check.duplicates.time_limit` seconds (default 60) and says `CUT SHORT` if it did. `--json` gives `duplicates[]`.
+
 **Environment variables** (all optional):
 
 | Variable | Default | Effect |
@@ -194,7 +203,7 @@ okf_check:
 | `OKF_SEARCH_BIN` | `okf` on PATH | The `okf` search binary the doc-reuse reminder uses to name the closest notes. |
 | `OKF_DOC_DIRS_FILE` | `~/.config/okf/doc-dirs` | File of extra shell globs for locations the doc-reuse guard watches. |
 
-`OKF_TODAY`, `OKF_PINNED_VERSIONS` and `OKF_BUNDLE_DIR` exist for tests and replays.
+`OKF_TODAY`, `OKF_PINNED_VERSIONS`, `OKF_BUNDLE_DIR` and `OKF_DUP_TIME_LIMIT` exist for tests and replays.
 
 ## Use in CI and git
 
@@ -209,7 +218,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.8
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.9
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -225,7 +234,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.8
+    rev: v0.9.9
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

@@ -456,6 +456,10 @@ def check_node(value, node: dict, where: str) -> None:
             if node.get("key_no_prefix") and k.startswith(node["key_no_prefix"]):
                 raise BaseConfigError(f"{where}.{k}: a pattern that starts with {node['key_no_prefix']} (negation) is not supported")
             check_node(v, node["map"], f"{where}.{k}")
+    elif node.get("type") == "number":
+        # {type: number, min, max}: a number within the bounds (inclusive). `default` is read by the option's user.
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not node["min"] <= value <= node["max"]:
+            raise BaseConfigError(f"{where} must be a number from {node['min']} to {node['max']}")
     elif node.get("type") == "boolean":
         if not isinstance(value, bool):
             raise BaseConfigError(f"{where} must be true or false")

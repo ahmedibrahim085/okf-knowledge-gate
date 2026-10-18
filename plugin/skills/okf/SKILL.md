@@ -8,7 +8,7 @@ description: >-
   needs a conformance, house-rule, staleness, trust or truth verdict. Also use when a folder of markdown notes
   with YAML frontmatter (lessons, decisions, a knowledge base) must be checked.
 user-invocable: true
-argument-hint: "<bundle-dir> [--fail-stale | --strict-trust | --json | --fail-on-change] | --doctor | --selftest | --init-house-rules <bundle-dir>"
+argument-hint: "<bundle-dir> [--fail-stale | --strict-trust | --json | --fail-on-change | --duplicates] | --doctor | --selftest | --init-house-rules <bundle-dir>"
 allowed-tools: Bash
 ---
 
@@ -95,7 +95,7 @@ notes with no checkable claim (those are listed as unverifiable, not verified).
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.8`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.9`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

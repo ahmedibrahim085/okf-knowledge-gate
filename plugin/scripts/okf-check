@@ -47,10 +47,11 @@
 #                                          actors (Human:dana) blocking (exit 1). Severity only: the
 #                                          findings are the same with or without the flag.
 #   okf-check <bundle> --fail-on-change    make a mid-scan change blocking (exit 6)
+#   okf-check <bundle> --duplicates        list candidate duplicate notes (advisory: exit 0)
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.8"
+VERSION="0.9.9"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -74,6 +75,9 @@ HERE=$(cd -P "$(dirname "$_self")" && pwd)
 . "$HERE/l3-lib.sh"
 [ -r "$HERE/ignore-lib.sh" ] || { echo "okf-check: $HERE/ignore-lib.sh is missing - cannot read .okfignore; reinstall the plugin" >&2; exit $EXIT_DEP; }
 . "$HERE/ignore-lib.sh"
+# The okf_check rules (successor, owner, duplicates) import their note reader from okf_notes.py inside a try: without the
+# file they would switch themselves off with exit 0 (LT-56m).
+[ -r "$HERE/okf_notes.py" ] || { echo "okf-check: $HERE/okf_notes.py is missing - cannot run the okf_check rules; reinstall the plugin" >&2; exit $EXIT_DEP; }
 ROOT=$(cd -P "$HERE/.." && pwd)
 VALIDATOR="$ROOT/vendor/okf_validate.py"
 # PyYAML is vendored (pure-python, no C extension) so L1 needs nothing installed.
@@ -99,10 +103,12 @@ VALIDATOR="$ROOT/vendor/okf_validate.py"
 # blocks, libyaml=True 10.7 ms vs libyaml=False 10.6 ms).
 VENDOR_PY="$ROOT/vendor/pyyaml"
 py_with_vendor() {  # run $PY with the vendored PyYAML visible to IT ONLY
+  # No bytecode: a python3 that caches beside the module (Linux does) left scripts/__pycache__/ in the installed
+  # plugin, which plugin.test.sh Z-2 then reported as a dead file (0.9.9 Debian gate).
   if [ -d "$VENDOR_PY" ]; then
-    PYTHONPATH="$VENDOR_PY${PYTHONPATH:+:$PYTHONPATH}" "$PY" "$@"
+    PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$VENDOR_PY${PYTHONPATH:+:$PYTHONPATH}" "$PY" "$@"
   else
-    "$PY" "$@"
+    PYTHONDONTWRITEBYTECODE=1 "$PY" "$@"
   fi
 }
 PINS="${OKF_PINNED_VERSIONS:-$ROOT/config/pinned-versions.txt}"
@@ -118,6 +124,7 @@ for a in "$@"; do
     --strict-trust) STRICT_TRUST=1 ;;
     --fail-on-change) FAIL_ON_CHANGE=1 ;;
     --fingerprint) MODE="fingerprint" ;;
+    --duplicates)  MODE="duplicates" ;;
     --preflight)   MODE="preflight" ;;
     --init-ignore) MODE="init-ignore" ;;
     --init-house-rules) MODE="init-house-rules" ;;
@@ -779,11 +786,12 @@ run_config() {
 run_successor() {
   local bundle="$1" out ec n
   [ -f "$BUNDLE/okf-base.yaml" ] && [ -n "$PY" ] || return 0
-  out=$(OKF_VENDOR_DIR="$ROOT/vendor" py_with_vendor - "$bundle" "$BUNDLE/okf-base.yaml" <<'PYEOF'
+  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$BUNDLE/okf-base.yaml" <<'PYEOF'
 import os, pathlib, sys
 try:
-    sys.path.insert(0, os.environ["OKF_VENDOR_DIR"])
+    sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter
+    from okf_notes import meta, resolve
     # The bounded loader for the manifest too: an alias bomb in okf-base.yaml must not expand here (LT-35a).
     cfg = load_frontmatter(open(sys.argv[2], encoding="utf-8", errors="replace").read())
 except Exception:
@@ -795,48 +803,7 @@ if not isinstance(opt, dict) or opt.get("deprecated_requires") != "superseded_by
     sys.exit(0)
 bundle = pathlib.Path(sys.argv[1])
 
-def meta(p):
-    try:
-        # utf-8-sig: a note that starts with a BOM is read as L1 reads it (0.9.8 review G-1)
-        t = p.read_text(encoding="utf-8-sig", errors="replace")
-    except OSError:
-        return {}
-    end = t.find("\n---", 3) if t.startswith("---") else -1
-    if end < 0:
-        return {}
-    try:
-        m = load_frontmatter(t[3:end])
-    except Exception:
-        return {}
-    return m if isinstance(m, dict) else {}
-
 root = os.path.realpath(str(bundle))
-def resolve(ref, note):
-    # A wikilink, a markdown link or a path. Same convention as the L2 wikilink rule: from the bundle root or from the
-    # note's own folder, with or without .md, and inside the bundle.
-    s = ref.strip()
-    if s.startswith("[[") and s.endswith("]]"):
-        s = s[2:-2].split("|")[0]
-    elif s.startswith("[") and s.endswith(")") and "](" in s:
-        s = s[s.index("](") + 2:-1].strip()
-        # CommonMark link destination: <dest> in angle brackets, or dest followed by an optional title in double or
-        # single quotes or parentheses (review F-B: both forms used to give a false "successor not found"). The quote
-        # and paren characters are chr() codes: bash 3.2 scans an unbalanced one inside this $( heredoc ) and fails.
-        if s.startswith("<") and ">" in s:
-            s = s[1:s.index(">")]
-        else:
-            pairs = {chr(34): chr(34), chr(39): chr(39), chr(41): chr(40)}
-            if s and s[-1] in pairs and s.rfind(" " + pairs[s[-1]]) > 0:
-                s = s[:s.rfind(" " + pairs[s[-1]])].rstrip()
-    s = s.split("#")[0].strip().lstrip("/")
-    if not s:
-        return None
-    for base in (root, os.path.dirname(os.path.realpath(str(note)))):
-        for cand in (s, s + ".md"):
-            q = os.path.realpath(os.path.join(base, cand))
-            if (q == root or q.startswith(root + os.sep)) and os.path.isfile(q) and q.endswith(".md"):
-                return q
-    return None
 
 n = 0
 for p in sorted(bundle.rglob("*.md")):
@@ -853,7 +820,7 @@ for p in sorted(bundle.rglob("*.md")):
         continue
     for ref in (sb if isinstance(sb, list) else [sb]):
         ref = str(ref)
-        q = resolve(ref, p)
+        q = resolve(ref, p, root)
         if q is None:
             print("E|%s: superseded_by %s: successor not found" % (rel, ref))
         elif os.path.basename(q) in ("index.md", "log.md"):
@@ -861,7 +828,7 @@ for p in sorted(bundle.rglob("*.md")):
             print("E|%s: superseded_by %s: successor is not a note (index.md and log.md are reserved files)" % (rel, ref))
         elif q == os.path.realpath(str(p)):
             print("E|%s: superseded_by %s: a note cannot supersede itself" % (rel, ref))
-        elif meta(pathlib.Path(q)).get("status") == "deprecated":
+        elif meta(q).get("status") == "deprecated":
             # One hop, no chains (decided on #67): name the note that replaced the successor.
             print("E|%s: superseded_by %s is deprecated too: point at the final successor, not a deprecated one" % (rel, ref))
 print("N|%d" % n)
@@ -918,11 +885,12 @@ PY
       done < <(find -L "$bundle" -name '*.md' -type f -print0 2>/dev/null) ) > "$TMP/owner-defaults.tsv"
   fi
   # $TMP/owners.tsv (relative path, TAB, owner) is what L3 reads to show the owner on its findings.
-  out=$(OKF_VENDOR_DIR="$ROOT/vendor" py_with_vendor - "$bundle" "$BUNDLE/okf-base.yaml" "$TMP/owners.tsv" "$TMP/owner-defaults.tsv" <<'PYEOF'
+  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$BUNDLE/okf-base.yaml" "$TMP/owners.tsv" "$TMP/owner-defaults.tsv" <<'PYEOF'
 import json, os, pathlib, sys
 try:
-    sys.path.insert(0, os.environ["OKF_VENDOR_DIR"])
+    sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter, check_actor, Report
+    from okf_notes import meta, INVALID
     cfg = load_frontmatter(open(sys.argv[2], encoding="utf-8", errors="replace").read())
 except Exception:
     sys.exit(0)
@@ -933,21 +901,6 @@ if not isinstance(opt, dict) or opt.get("require_owner") is not True:
     sys.exit(0)
 bundle = pathlib.Path(sys.argv[1])
 
-def meta(p):
-    try:
-        # utf-8-sig: a note that starts with a BOM is read as L1 reads it (0.9.8 review G-1)
-        t = p.read_text(encoding="utf-8-sig", errors="replace")
-    except OSError:
-        return {}
-    end = t.find("\n---", 3) if t.startswith("---") else -1
-    if end < 0:
-        return {}
-    try:
-        m = load_frontmatter(t[3:end])
-    except Exception:
-        return None   # frontmatter that is not valid YAML: its owner cannot be read (L1 reports the error)
-    return m if isinstance(m, dict) else {}
-
 defaults = dict(l.rstrip("\n").split("\t", 1) for l in open(sys.argv[4], encoding="utf-8", errors="replace") if "\t" in l)
 n, rows = 0, []
 for p in sorted(bundle.rglob("*.md")):
@@ -955,8 +908,8 @@ for p in sorted(bundle.rglob("*.md")):
         continue
     n += 1
     rel = str(p.relative_to(bundle))
-    m = meta(p)
-    if m is None:
+    m = meta(p, invalid=INVALID)
+    if m is INVALID:
         print("E|%s: the frontmatter is not valid YAML, so its owner cannot be read (L1 reports the YAML error)" % rel)
         continue
     raw = m.get("owner")
@@ -987,6 +940,26 @@ PYEOF
     return $EXIT_CONFORM
   fi
   say "  Owner            PASS   $(printf '%s\n' "$out" | sed -n 's/^N|//p') note(s) have an owner"
+  return 0
+}
+
+# ------------------------------------------------------- --duplicates (#69, public #10)
+# Candidate duplicate pairs: the same normalized title, the same sources[].resource, or descriptions whose word overlap
+# reaches okf_check.duplicates.threshold. Advisory: exit 0. A block that fails the schema is exit 2, as in a check.
+run_duplicates() {
+  local bundle="$1" rc
+  [ -n "$PY" ] || { echo "okf-check: --duplicates needs python3" >&2; return $EXIT_DEP; }
+  say "okf-check $VERSION — duplicates in $bundle"
+  run_config "$bundle"; CONFIG_RC=$?
+  [ "$CONFIG_RC" -eq 0 ] || return $EXIT_DEP
+  # The owner check writes the effective owners ($TMP/owners.tsv) when require_owner is on; its report is not wanted here.
+  run_owner "$bundle" >/dev/null 2>&1
+  # .okfignore: the notes it leaves in, NUL-separated, as the L3 derived layer reads them (OKF_KEEP_LIST).
+  local keep=""
+  if [ -f "$bundle/.okfignore" ]; then okfignore_list "$bundle" > "$TMP/dup-keep.lst" 2>/dev/null && keep="$TMP/dup-keep.lst"; fi
+  OKF_KEEP_LIST="$keep" OKF_OWNERS_TSV="$TMP/owners.tsv" OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor "$HERE/okf-duplicates.py" "$bundle" "$ROOT/config/okf-check-block.json" "$JSON"
+  rc=$?
+  [ "$rc" -eq 0 ] || { say "  Duplicates       COULD NOT RUN — okf-duplicates.py exited $rc"; return $EXIT_DEP; }
   return 0
 }
 
@@ -1692,6 +1665,11 @@ selftest() {
   }
   probe "note without an owner" "bad.md: no owner" _owner_probe "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\nbody\n'
 
+  say "  Duplicates (--duplicates):"
+  # A note titled like the baseline note (good.md, "Baseline") must be listed as a same-title pair (#69).
+  _dup_probe() { local DUP_BODY=0; run_duplicates "$1"; }
+  probe "same title" "title 1.00" _dup_probe "bad.md" '---\ntype: Lesson\ntitle: baseline!\ndescription: Another text.\nstatus: stable\nstale_after: "2099-01-01"\n---\nother body\n'
+
   say ""
   # A skipped probe is a gate nobody watched fire: the verdict names it instead of saying "every gate" (S3-E1).
   if [ "$fails" -eq 0 ] && [ -n "$skipped" ]; then
@@ -1799,6 +1777,8 @@ if [ -n "$_unreadable" ]; then
 fi
 
 if ! doctor >/dev/null 2>&1; then doctor; echo "L1 cannot run — fix the above." >&2; exit $EXIT_DEP; fi
+# --duplicates (#69) is a report of its own, not a gate: it runs instead of the layers and always exits 0 once it ran.
+if [ "$MODE" = duplicates ]; then run_duplicates "$BUNDLE"; exit $?; fi
 
 say "okf-check $VERSION — $BUNDLE"
 worst=0

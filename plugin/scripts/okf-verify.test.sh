@@ -949,9 +949,10 @@ vok "RV-23 (S2-E4) a reversed range '20-10' is read as up to line 20 (the larger
 cite "$TMP/rv2" "\`src/a.py:25-10 @$C2\`"; rc=$(run "$TMP/rv2" --repo "$CREPO")
 vrefuted "RV-23 (S2-E4) ... and REFUTED when the larger number is past the end"
 # --- RV-25 (#68): a {type: boolean} node, a {map: node} node (free keys) and a node that {requires} a sibling value
+RVID=RV-25
 cc() { # <name> <okf_check body, printf %b> <want rc> [message the error must contain]
   note5 "$TMP/$1" "x"; printf 'okf_check:\n%b' "$2" > "$TMP/$1/okf-base.yaml"; rc=$(run "$TMP/$1" --check-config)
-  { [ "$rc" = "$3" ] && { [ -z "${4:-}" ] || grep -qF -- "$4" "$TMP/out.txt"; }; } && ok "RV-25 $1: exit $3${4:+, says '$4'}" || bad "RV-25 $1" "exit $rc: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+  { [ "$rc" = "$3" ] && { [ -z "${4:-}" ] || grep -qF -- "$4" "$TMP/out.txt"; }; } && ok "$RVID $1: exit $3${4:+, says '$4'}" || bad "$RVID $1" "exit $rc: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
 }
 cc bool-ok   '  require_owner: true\n' 0
 cc bool-str  '  require_owner: yes-please\n' 2 'okf_check.require_owner must be true or false'
@@ -960,6 +961,13 @@ cc map-list  '  require_owner: true\n  owners: [team:a]\n' 2 'okf_check.owners m
 cc map-value '  require_owner: true\n  owners:\n    "decisions/**": 3\n' 2 'okf_check.owners.decisions/** must be a non-empty string'
 cc requires  '  owners:\n    "decisions/**": team:a\n' 2 'okf_check.owners needs okf_check.require_owner: true'
 cc negation  '  require_owner: true\n  owners:\n    "!x/**": team:a\n' 2 'okf_check.owners.!x/**: a pattern that starts with ! (negation) is not supported'
+# --- RV-26 (#69): a {type: number, min, max} node (okf_check.duplicates.threshold / time_limit)
+RVID=RV-26
+cc num-ok    '  duplicates:\n    threshold: 0.5\n    time_limit: 30\n' 0
+cc num-int   '  duplicates:\n    threshold: 1\n' 0
+cc num-high  '  duplicates:\n    threshold: 5\n' 2 'okf_check.duplicates.threshold must be a number from 0.1 to 1'
+cc num-str   '  duplicates:\n    time_limit: soon\n' 2 'okf_check.duplicates.time_limit must be a number from 1 to 3600'
+cc num-bool  '  duplicates:\n    threshold: true\n' 2 'okf_check.duplicates.threshold must be a number'
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

@@ -943,6 +943,7 @@ here"*. Conformance is a question about form; this is a question about fact.
 | RV-19 | A `path:line @sha` citation, repository declared in `okf-base.yaml`, no `--repo` (S1 x S2 seam) | CONFIRMED when the path exists at that commit; REFUTED when it is missing | ✅ |
 | RV-24 | An `{enum: [...]}` schema node (`okf_check.deprecated_requires`) | the listed value: exit 0; any other: exit 2, the error names the value as JSON (`true`, `null`, `"x "`, not a Python repr) and the allowed ones (#67) | ✅ |
 | RV-25 | A `{type: boolean}` node (`require_owner`), a `{map: node}` node (`owners`: free keys, each value a node) and a node that `requires` a sibling value (`owners` needs `require_owner: true`), and `key_no_prefix` (an `owners` key that starts with `!`) | valid: exit 0; a non-boolean, a list for the map, a non-string or empty value, and a missing sibling: exit 2 with the message (#68) | ✅ |
+| RV-26 | A `{type: number, min, max}` node (`okf_check.duplicates.threshold`, `time_limit`) | a number within the bounds, int or float: exit 0; out of bounds, a string, a boolean: exit 2 naming the bounds (#69) | ✅ |
 
 **V-10 and V-11 came from live-firing, not from imagination.** The first run on
 the real bundle REFUTED `/tmp/net-spy.log` — a `const LOG = …` literal inside an
@@ -1166,7 +1167,7 @@ okf-check's own options live in ONE `okf_check:` block of `okf-base.yaml`; each 
 | LT-51a | S4-N1: an unknown key inside `okf_check:` | exit 2; the output names `okf_check.<key>` | ✅ |
 | LT-51b | S4-H1: a valid `okf_check:` block, real `okflint` | `l2_profile`, `l2_warnings` and `l2_by_rule` equal the run without the block (SKIPPED when `okflint` is absent) | ✅ |
 | LT-51c | S4-E1: no `okf_check:` block | text and `--json` output and exit code byte-identical to the same build with the okf_check step deleted | ✅ |
-| LT-52 | One table of `okf_check:` shapes (valid, wrong type, null, list, typo'd key, unknown entry key, empty path, invalid UTF-8, invalid YAML; `deprecated_requires` valid, typo'd, a list and null; `require_owner`/`owners` valid, a string for the boolean, a list, an int or empty owner, and `owners` without `require_owner: true`) to BOTH tools | both exit 0 on a valid block; both exit 2 on an invalid one, and `okf-check` shows `okf-verify`'s message | ✅ |
+| LT-52 | One table of `okf_check:` shapes (valid, wrong type, null, list, typo'd key, unknown entry key, empty path, invalid UTF-8, invalid YAML; `deprecated_requires` valid, typo'd, a list and null; `require_owner`/`owners` valid, a string for the boolean, a list, an int or empty owner, and `owners` without `require_owner: true`; `duplicates` valid, out of bounds, a string, zero and a typo'd key) to BOTH tools | both exit 0 on a valid block; both exit 2 on an invalid one, and `okf-check` shows `okf-verify`'s message | ✅ |
 
 ### `--selftest` covers every layer (#59, 0.9.6)
 `--selftest` has a probe for each layer: L0 (the doctor, pointed at a validator path that does not exist, must say `MISSING`), L1, L2 profile, L2 index (an `index.md` that declares 5 notes for the 1-note baseline; the original `index.md` is put back), Trust, L3 staleness and L3 derived staleness (a note that records the baseline note as of 2000-01-01). Each new probe is proven by a plugin copy with that layer disabled: `--selftest` then reports `NOT FIRED` (the Gherkin "did not fire") and exits 5. Without `okflint` the L2 profile probes are SKIPPED with the reason, and the verdict line names the skipped layer instead of "every gate still fires"; the exit stays 0, as for a skipped layer in a check.
@@ -1216,6 +1217,29 @@ okf-check's own options live in ONE `okf_check:` block of `okf-base.yaml`; each 
 | LT-54l | `owner: "human:"`; `owner: human:` (not valid YAML) | `not an allowed actor form`; `the frontmatter is not valid YAML, so its owner cannot be read` (never `no owner`) | ✅ |
 | LT-54m | S6-N3: `owner: [team:x]`, `owner: 0`, `owner: false` | `owner \`["team:x"]\` is not an allowed actor form` (the value as JSON; never a Python repr on the L3 line); exit 1 | ✅ |
 | LT-54n | S6-N4: an `owners` pattern `"!drafts/**"` | `okf_check.owners.!drafts/**: a pattern that starts with ! (negation) is not supported`, exit 2 (also RV-25 and the LT-52 parity row) | ✅ |
+
+### `--duplicates`: candidate duplicate notes (#69, public #10, 0.9.9)
+`okf-check <bundle> --duplicates` is a report of its own, not a gate: it runs instead of the layers and exits 0 once it ran (exit 2 when the `okf_check` block fails the schema, as in a check). A pair of concept notes is a candidate when the titles are equal after normalization (NFKC, lower case, punctuation to spaces, spaces folded), when both cite the same `sources[].resource` (normalized path), or when the descriptions' word sets overlap (Jaccard) at or above `okf_check.duplicates.threshold`. The strongest signal is shown with its score, both statuses, both `generated.at` values and both effective owners (#68: the note's key, else the folder default). A pair already linked by `superseded_by`, either way, is skipped; notes excluded by `.okfignore` are not compared. `--json` gives `duplicates[]`, `complete`, `compared` and `pairs_total` (keys of this mode only). The comparison stops at `okf_check.duplicates.time_limit` (default 60 s) and then says `CUT SHORT` with the number of pairs compared.
+
+The threshold default is **1.0** (identical description word sets only). It was chosen on a labelled sample of five private knowledge-base vaults (1,034 notes): all 71 candidate pairs (53 same-title, 18 description overlap ≥ 0.5, 0 same-resource; all in one vault) plus 30 random pairs with 0 < overlap < 0.5, labelled DUP/NOT by a fresh-context agent that saw only the two notes' title, description and body start, never a score. Same title: 53 of 53 DUP. Description overlap: 0 of 18 DUP at every threshold from 0.5 to 0.93 (the pairs were templated series: register part 1/2/3, one questions note per team). No threshold below 1.0 reached precision 0.8, so 1.0 is the conservative default and a bundle can lower it. The labels are agent-made, so these precision figures are INFERRED-grade; the pair list is kept out of the repository (#69 carries counts and pair hashes).
+
+| ID | Scenario | Expected | State |
+|---|---|---|---|
+| LT-56a | S7-N1: no candidate pairs | `no candidate duplicates`; exit 0 | ✅ |
+| LT-56b | S7-H1: `Deploy rule` and `deploy  RULE!` | `title 1.00`, both paths, statuses, `generated.at` and owners; exit 0 | ✅ |
+| LT-56c | S7-H2: descriptions overlapping 0.86, `threshold: 0.5` | `description 0.86` listed | ✅ |
+| LT-56d | the same pair, no option | not listed (default threshold 1.0) | ✅ |
+| LT-56e | S7-E2: a same-title pair linked by `superseded_by`, either direction | not listed | ✅ |
+| LT-56f | the same `sources[].resource` (`docs/api.md`, `./docs//api.md`) | `resource 1.00` listed | ✅ |
+| LT-56g | `require_owner` with a folder default | the effective owner of each note is shown | ✅ |
+| LT-56h | S7-E1: 1,000 notes | complete within the 60 s default; no `CUT SHORT` | ✅ |
+| LT-56i | S7-E1: the time limit reached (`OKF_DUP_TIME_LIMIT`, tests only) | `CUT SHORT ... N of 500500 pairs compared`; exit 0 | ✅ |
+| LT-56j | `--duplicates --json` | `duplicates[]` with signal and both notes; `complete: true`, `pairs_total` | ✅ |
+| LT-56k | a same-title note under a `.okfignore`d folder | not compared | ✅ |
+| LT-56l | `duplicates.threshold: 5` | `Config` error naming it, exit 2, nothing listed | ✅ |
+| LT-56m | a plugin without `okf_notes.py` (the note reader the successor, owner and duplicates rules share) | exit 2 naming the file; the rules never switch themselves off | ✅ |
+| LT-56n | `--selftest` | a `Duplicates (--duplicates)` probe fires on a note titled like the baseline note; a copy with the title signal disabled reports `NOT FIRED` and exits 5 | ✅ |
+| LT-56o | a BOM-prefixed note with the same title | listed (the shared `okf_notes.py` reader decodes `utf-8-sig`, as L1 does) | ✅ |
 
 ## Non-goals
 

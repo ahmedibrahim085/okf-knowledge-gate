@@ -2975,6 +2975,12 @@ par own-empty     err 'okf_check:\n  require_owner: true\n  owners:\n    "decisi
 par own-norequire err 'okf_check:\n  owners:\n    "decisions/**": team:a\n'
 par own-reqfalse  err 'okf_check:\n  require_owner: false\n  owners:\n    "decisions/**": team:a\n'
 par own-negation  err 'okf_check:\n  require_owner: true\n  owners:\n    "!drafts/**": team:a\n'
+# #69: duplicates is a keys node of two {type: number} nodes
+par dup-ok        ok  'okf_check:\n  duplicates:\n    threshold: 0.6\n    time_limit: 30\n'
+par dup-high      err 'okf_check:\n  duplicates:\n    threshold: 1.5\n'
+par dup-str       err 'okf_check:\n  duplicates:\n    time_limit: soon\n'
+par dup-zero      err 'okf_check:\n  duplicates:\n    time_limit: 0\n'
+par dup-unknown   err 'okf_check:\n  duplicates:\n    treshold: 0.6\n'
 # an alias bomb in okf-base.yaml: both tools go through the bounded loader (LT-35a forbids a bare yaml.safe_load), so it is a YAML error, not a hang
 BOMB52=$("$REALPY" -c 'print("x0: &a0 [x,x,x,x,x,x,x,x,x]"); [print("x%d: &a%d [%s]" % (i, i, ",".join(["*a%d" % (i - 1)] * 9))) for i in range(1, 8)]')
 par alias-bomb    err "okf_check: {}\n$BOMB52\n"
@@ -2982,12 +2988,12 @@ grep -qi 'alias' "$P52/alias-bomb.ver" && ok "LT-52 parity: the alias bomb is na
 
 # --- LT-55 (0.9.6, #59, cases S3-*): --selftest has a probe for L0, L2 index and L3 derived staleness ----------------
 # A probe is proven by its layer going dead: each case cripples one layer in a plugin copy, and --selftest must exit 5.
-# lt55_dead <name> <sed expression> — a plugin copy whose okf-check carries the expression; fails the test if it did
+# lt55_dead <name> <sed expression> [script, default okf-check] — a plugin copy whose script carries the expression; fails the test if it did
 # not change the file (a cripple that misses its target would make the RED meaningless).
 lt55_dead() {
-  local d="$TMP/lt55-$1"; rm -rf "$d"; mkdir -p "$d"; cp -R "$HERE/.." "$d/plugin" 2>/dev/null
-  sed -i.orig "$2" "$d/plugin/scripts/okf-check"
-  cmp -s "$d/plugin/scripts/okf-check" "$d/plugin/scripts/okf-check.orig" && { echo "cripple $1 changed nothing"; return 1; }
+  local d="$TMP/lt55-$1" f="${3:-okf-check}"; rm -rf "$d"; mkdir -p "$d"; cp -R "$HERE/.." "$d/plugin" 2>/dev/null
+  sed -i.orig "$2" "$d/plugin/scripts/$f"
+  cmp -s "$d/plugin/scripts/$f" "$d/plugin/scripts/$f.orig" && { echo "cripple $1 changed nothing"; return 1; }
   "$d/plugin/scripts/okf-check" --selftest >"$d.txt" 2>&1; echo "rc=$?"
 }
 "$CHECK" --selftest >"$TMP/lt55.txt" 2>&1; rcl=$?
@@ -3228,6 +3234,148 @@ mk54 neg '  require_owner: true\n  owners:\n    "**": team:a\n    "!drafts/**": 
 { [ "$rcl" -eq 2 ] && grep -q 'okf_check.owners.!drafts/\*\*: a pattern that starts with ! (negation) is not supported' "$D.txt"; } \
   && ok "LT-54n S6-N4 an owners pattern that starts with ! exits 2 naming it (negation is not supported)" \
   || bad "LT-54n negated owners pattern" "rc=$rcl $(grep -n 'Config\|Owner' "$D.txt" | head -2 | tr '\n' ' ')"
+# --- LT-56 (0.9.9, #69, cases S7-*): okf-check --duplicates lists candidate duplicate pairs (advisory, always exit 0) ------
+# mk56 <name> [okf_check body, printf %b] — a bundle (c.md from mkbundle) with the template manifest and that block.
+mk56() {
+  local d="$TMP/lt56-$1"; rm -rf "$d"; mkbundle "$d"
+  sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$d/okf-base.yaml"
+  [ -n "${2:-}" ] && printf 'okf_check:\n%b' "$2" >> "$d/okf-base.yaml"
+  return 0
+}
+# note56 <bundle dir> <rel> <title> <description> [extra frontmatter lines] [status]
+note56() {
+  mkdir -p "$(dirname "$1/$2")"
+  printf -- '---\ntype: Lesson\ntitle: %s\ndescription: %s\nstatus: %s\ngenerated:\n  by: human:t\n  at: "2026-01-02"\nstale_after: "2099-01-01"\n%s---\nbody\n' \
+    "$3" "$4" "${6:-stable}" "${5:+$5
+}" > "$1/$2"
+}
+mk56 n1; D="$TMP/lt56-n1"; note56 "$D" a.md "Alpha rule" "Use alpha for x"; note56 "$D" b.md "Beta rule" "Beta covers y"
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -q 'no candidate duplicates' "$D.txt"; } \
+  && ok "LT-56a S7-N1 a bundle with no candidate pairs says 'no candidate duplicates', exit 0" \
+  || bad "LT-56a S7-N1 no pairs" "rc=$rcl $(head -3 "$D.txt" | tr '\n' ' ')"
+# S7-H1: titles equal after NFKC, lower case, punctuation and spacing are folded.
+mk56 h1; D="$TMP/lt56-h1"; note56 "$D" a.md "Deploy rule" "Ship on Fridays"; note56 "$D" sub/b.md "deploy  RULE!" "Never on weekends" 'owner: team:x' draft
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+L=$(grep 'title 1.00' "$D.txt")
+{ [ "$rcl" -eq 0 ] && grep -q '1 candidate pair' "$D.txt" && case "$L" in *a.md*stable*2026-01-02*sub/b.md*draft*2026-01-02*team:x*) true;; *) false;; esac; } \
+  && ok "LT-56b S7-H1 two notes with the same normalized title are listed with the score, both statuses, generated.at and owner, exit 0" \
+  || bad "LT-56b S7-H1 same title" "rc=$rcl line='$L' $(head -4 "$D.txt" | tr '\n' ' ')"
+# S7-H2: description word overlap (Jaccard of the word sets) at or above okf_check.duplicates.threshold. 6 shared words
+# of 7: 0.86. The default threshold is 1.0 (identical word sets only): on the #69 labelled sample no lower threshold
+# reached precision 0.8, so the same pair is NOT listed without the option.
+mk56 h2 '  duplicates:\n    threshold: 0.5\n'; D="$TMP/lt56-h2"
+note56 "$D" a.md "Staging first" "Use the staging cluster before release"; note56 "$D" b.md "Cluster order" "Use the staging cluster before every release"
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -Eq 'description 0\.86 +a\.md .* ~ +b\.md' "$D.txt"; } \
+  && ok "LT-56c S7-H2 descriptions that overlap at or above okf_check.duplicates.threshold are listed with their score" \
+  || bad "LT-56c S7-H2 description overlap" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+cp "$HERE/../config/okf-base.yaml.template" "$D/okf-base.yaml"
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -q 'no candidate duplicates' "$D.txt"; } \
+  && ok "LT-56d without the option the description threshold is 1.0: a 0.86 overlap is not listed" \
+  || bad "LT-56d default threshold" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# S7-E2: a pair already linked by superseded_by (either note naming the other) is not listed.
+for c in "e2a|old.md|new.md" "e2b|new.md|old.md"; do
+  id=${c%%|*}; rest=${c#*|}; from=${rest%%|*}; to=${rest#*|}
+  mk56 "$id"; D="$TMP/lt56-$id"; note56 "$D" old.md "Deploy rule" "Old way"; note56 "$D" new.md "Deploy rule" "New way"
+  printf -- '---\ntype: Lesson\ntitle: Deploy rule\ndescription: The retired way\nstatus: deprecated\nsuperseded_by: "[[%s]]"\nstale_after: "2099-01-01"\n---\nb\n' "${to%.md}" > "$D/$from"
+  "$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+  { [ "$rcl" -eq 0 ] && grep -q 'no candidate duplicates' "$D.txt"; } \
+    && ok "LT-56e S7-E2 a same-title pair where $from names $to in superseded_by is not listed" \
+    || bad "LT-56e S7-E2 $from supersedes $to" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+done
+# The same sources[].resource (normalized path) is a candidate too.
+mk56 res; D="$TMP/lt56-res"
+note56 "$D" a.md "Retry policy" "Back off" $'sources:\n  - resource: docs/api.md'; note56 "$D" b.md "Client limits" "Rate caps" $'sources:\n  - resource: ./docs//api.md'
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -Eq 'resource 1\.00 +a\.md' "$D.txt"; } \
+  && ok "LT-56f two notes citing the same sources[].resource (after path normalization) are listed" \
+  || bad "LT-56f same resource" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# The owner is the effective one (#68): a folder default when the note has no owner key.
+mk56 own '  require_owner: true\n  owners:\n    "**": team:a\n'; D="$TMP/lt56-own"; rm -f "$D/c.md"
+note56 "$D" a.md "Deploy rule" "One"; note56 "$D" b.md "Deploy rule" "Two" 'owner: team:b'
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -Eq 'a\.md \[[^]]*owner team:a\] +~ +b\.md \[[^]]*owner team:b\]' "$D.txt"; } \
+  && ok "LT-56g the owner shown is the effective one: the folder default for a note without an owner key" \
+  || bad "LT-56g effective owner" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# LT-56p (0.9.9 review, HIGH): a note whose `sources` is not a list passes L1 with a warning, so the report must read it, not crash.
+mk56 srcs; D="$TMP/lt56-srcs"; note56 "$D" a.md "Same" "One" 'sources: 5'; note56 "$D" b.md "Same" "Two" 'sources: {x: 1}'; note56 "$D" c.md "Other" "Three" 'sources: text'
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -Eq 'title 1\.00 +a\.md .*~ +b\.md' "$D.txt" && ! grep -q Traceback "$D.txt"; } \
+  && ok "LT-56p a note whose sources is a number, a mapping or a string is read, not a crash (exit 0)" \
+  || bad "LT-56p non-list sources" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# LT-56q (0.9.9 review, MEDIUM): a symlink to a note in the bundle is the same note, not a duplicate of its own target.
+mk56 lnk; D="$TMP/lt56-lnk"; note56 "$D" a.md "Alias" "One"; ln -s a.md "$D/alias.md"
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -q 'no candidate duplicates' "$D.txt"; } \
+  && ok "LT-56q a symlink alias of a note is not listed as a duplicate of its target" \
+  || bad "LT-56q symlink alias" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# LT-56m: the plugin directory ships as it was installed. A python3 that writes bytecode beside the imported module
+# (Linux does; Apple's python redirects it to a cache folder) left scripts/__pycache__/ behind, and plugin.test.sh Z-2
+# then reported it as a dead file on the Debian gate (0.9.9). A shim python3 that clears the cache prefix reproduces
+# that on any host.
+mk56 pyc; D="$TMP/lt56-pyc"; note56 "$D" a.md "Same" "One"; note56 "$D" b.md "Same" "Two"
+PYC="$TMP/lt56-pyc-plugin"; rm -rf "$PYC"; mkdir -p "$PYC/bin"; cp -R "$HERE/.." "$PYC/plugin" 2>/dev/null
+find "$PYC/plugin" -name __pycache__ -type d -exec rm -rf {} + 2>/dev/null
+printf '#!/bin/sh\nexec "%s" -X pycache_prefix= "$@"\n' "$REALPY" > "$PYC/bin/python3"; chmod +x "$PYC/bin/python3"
+PATH="$PYC/bin:$PATH" "$PYC/plugin/scripts/okf-check" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -q 'a.md' "$D.txt" && [ -z "$(find "$PYC/plugin" -name '*.pyc' -o -name __pycache__ 2>/dev/null)" ]; } \
+  && ok "LT-56m --duplicates leaves no bytecode in the plugin directory" \
+  || bad "LT-56m no bytecode left behind" "rc=$rcl $(find "$PYC/plugin" -name '*.pyc' | head -3 | tr '\n' ' ')"
+# S7-E1: 1,000 notes end within the default time limit (60 s), and a run that hits the limit says it was cut short.
+# OKF_DUP_TIME_LIMIT (tests only, like OKF_TODAY) replaces the limit so the cut is deterministic, not a race.
+mk56 e1; D="$TMP/lt56-e1"
+"$REALPY" - "$D" <<'PY'
+import sys
+for i in range(1000):
+    open("%s/n%04d.md" % (sys.argv[1], i), "w").write('---\ntype: Lesson\ntitle: Note %d\ndescription: Topic %d covers item %d of set %d\nstatus: stable\nstale_after: "2099-01-01"\n---\nb\n' % (i, i % 37, i, i % 11))
+PY
+t0=$SECONDS; "$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?; el=$((SECONDS - t0))
+{ [ "$rcl" -eq 0 ] && [ "$el" -lt 60 ] && ! grep -q 'CUT SHORT' "$D.txt"; } \
+  && ok "LT-56h S7-E1 1,000 notes are compared in full within the 60 s default (${el} s here)" \
+  || bad "LT-56h S7-E1 1,000 notes" "rc=$rcl ${el}s $(head -3 "$D.txt" | tr '\n' ' ')"
+OKF_DUP_TIME_LIMIT=0.000001 "$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -Eq 'CUT SHORT .*[0-9]+ of 500500 pairs compared' "$D.txt"; } \
+  && ok "LT-56i S7-E1 a run that reaches the time limit says CUT SHORT and how many pairs it compared, exit 0" \
+  || bad "LT-56i S7-E1 cut short" "rc=$rcl $(head -3 "$D.txt" | tr '\n' ' ')"
+# --json: duplicates[] (signal, score, both notes) plus complete/compared/pairs_total; a key of this mode only.
+D="$TMP/lt56-h1"; "$CHECK" "$D" --duplicates --json >"$D.json" 2>&1; rcl=$?
+[ "$rcl" -eq 0 ] && [ "$(jq44 "$D.json" '(d["complete"], d["pairs_total"], [(x["signal"], x["a"]["rel"], x["b"]["rel"], x["b"]["owner"]) for x in d["duplicates"]])')" = "(True, 3, [('title', 'a.md', 'sub/b.md', 'team:x')])" ] \
+  && ok "LT-56j --duplicates --json gives duplicates[] with the signal and both notes, and says the run was complete" \
+  || bad "LT-56j --json" "rc=$rcl $(head -c 300 "$D.json")"
+# .okfignore: an ignored note is not compared, as in every layer of a check.
+mk56 ign; D="$TMP/lt56-ign"; note56 "$D" a.md "Deploy rule" "One"; note56 "$D" archive/b.md "Deploy rule" "Two"; printf 'archive/\n' > "$D/.okfignore"
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -q 'no candidate duplicates' "$D.txt"; } \
+  && ok "LT-56k a note excluded by .okfignore is not compared" || bad "LT-56k .okfignore" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# A duplicates block that fails the schema is the Config line's exit 2, and no pairs are reported.
+mk56 bad '  duplicates:\n    threshold: 5\n'; D="$TMP/lt56-bad"
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 2 ] && grep -q 'okf_check.duplicates.threshold must be a number from 0.1 to 1' "$D.txt" && ! grep -q 'Duplicates ' "$D.txt"; } \
+  && ok "LT-56l --duplicates with an unusable okf_check.duplicates value exits 2 naming it, and lists nothing" \
+  || bad "LT-56l bad duplicates config" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+# okf_notes.py (the note reader the successor, owner and duplicates rules share) missing: exit 2, named. Without the
+# guard the successor rule's import failed inside its try and the rule switched itself off with exit 0.
+D56M="$TMP/lt56m"; rm -rf "$D56M"; mkdir -p "$D56M"; cp -R "$HERE/.." "$D56M/plugin" 2>/dev/null; rm -f "$D56M/plugin/scripts/okf_notes.py"
+mk56 m '  deprecated_requires: superseded_by\n'; "$D56M/plugin/scripts/okf-check" "$TMP/lt56-m" >"$D56M.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 2 ] && grep -q 'okf_notes.py is missing' "$D56M.txt"; } \
+  && ok "LT-56m a plugin without okf_notes.py exits 2 naming it, instead of switching the okf_check rules off" \
+  || bad "LT-56m okf_notes.py missing" "rc=$rcl $(head -3 "$D56M.txt" | tr '\n' ' ')"
+# --selftest has a Duplicates probe (project rule): a note titled like the baseline note must be listed.
+"$CHECK" --selftest >"$TMP/lt56n.txt" 2>&1; rcl=$?
+L56=$(grep -A1 '^  Duplicates (--duplicates):' "$TMP/lt56n.txt" | grep -c 'FIRED  *same title')
+r=$(lt55_dead dup 's/    if a\["title"\] and a\["title"\] == b\["title"\]:/    if False:/' okf-duplicates.py)
+{ [ "$rcl" -eq 0 ] && [ "$L56" -eq 1 ] && [ "$r" = "rc=5" ] && grep -A1 '^  Duplicates (--duplicates):' "$TMP/lt55-dup.txt" | grep -q 'NOT FIRED'; } \
+  && ok "LT-56n --selftest has a Duplicates probe that fires, and a copy with the title signal disabled reports NOT FIRED and exits 5" \
+  || bad "LT-56n Duplicates selftest probe" "healthy rc=$rcl fired=$L56; crippled $r $(grep -n 'Duplicates\|SELFTEST' "$TMP/lt55-dup.txt" 2>/dev/null | tr '\n' ' ')"
+# A note that starts with a UTF-8 BOM is read like L1 reads it (0.9.8 review G-1, the shared okf_notes.py reader).
+mk56 bom; D="$TMP/lt56-bom"; note56 "$D" a.md "Deploy rule" "One"
+printf '\357\273\277---\ntype: Lesson\ntitle: Deploy rule\ndescription: Two\nstatus: stable\nstale_after: "2099-01-01"\n---\nb\n' > "$D/bom.md"
+"$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -Eq 'title 1\.00 +a\.md .* ~ +bom\.md' "$D.txt"; } \
+  && ok "LT-56o a BOM-prefixed note with the same title is listed" || bad "LT-56o BOM note" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
+
 echo
 if [ "$SKIPPED" -gt 0 ]; then
   echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"
