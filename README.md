@@ -141,7 +141,10 @@ in backticks or quotes (and paths that start with `~`) are checked on disk, but 
 `okf-export` is for a team that edits in an Obsidian-style vault, whose backlinks and graph count only `[[wikilinks]]`.
 The vault stays the source; the export is a bundle `okf-check` can gate. Body `[[note]]`, `[[note|alias]]`,
 `[[note#heading]]` and `[[#heading]]` become relative Markdown links, and each target and heading is checked.
-Frontmatter and code are copied unchanged. Exit 1 lists each missing or ambiguous target and missing heading as
+Frontmatter and code are copied unchanged. A vault's `index.md` note becomes the folder note (`dir/index.md` to
+`dir/dir.md`, the root one to `<vault folder>.md`), and an `index.md` listing is generated in every folder that holds
+a note, with `okf_version` at the root; a rename onto an existing note stops the export. Exit 1 lists each missing or
+ambiguous target and missing heading as
 `file:line` (the bundle is still written); exit 2 means nothing was written (`<out>` is not empty or is inside the
 vault). A target is matched by its exact case (Obsidian ignores case). The vault is only read.
 
@@ -238,7 +241,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.14
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.15
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -254,7 +257,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.14
+    rev: v0.9.15
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

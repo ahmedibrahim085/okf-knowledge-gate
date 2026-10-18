@@ -22,6 +22,13 @@ import sys
 from pathlib import Path
 from urllib.parse import quote
 
+VENDOR = Path(__file__).resolve().parent.parent / "vendor"
+# The pinned copies go FIRST: a yaml module inherited from the environment must not outrank the pin
+# (plugin/vendor/VENDOR.md, "The vendored copy wins, on purpose").
+sys.path[:0] = [str(VENDOR / "pyyaml"), str(VENDOR)]
+import yaml  # noqa: E402
+from okf_validate import OKF_VERSION, load_frontmatter, split_frontmatter  # noqa: E402  (the validator's own reader, so both agree)
+
 # `[[target#heading|alias]]`. An embed `![[x]]` transcludes x, which a Markdown link cannot say, so it is left as written.
 WIKILINK = re.compile(r"(?<!!)\[\[([^\[\]]+)\]\]")
 
@@ -83,8 +90,50 @@ def heading_slugs(path: Path) -> set[str]:
     return {slug(m.group(1)) for _, line, code in body_lines(lines) if not code and (m := ATX.match(line))}
 
 
+def link_text(text: str) -> str:
+    """Text for the inside of [...] in an index line: one line, no control characters, brackets and backslashes escaped
+    (a title is a YAML block scalar or a free string from the vault; 0.9.15 review)."""
+    return re.sub(r"([\\\[\]])", r"\\\1", CONTROL.sub("?", " ".join(text.split())))
+
+
+def entry(path: Path) -> str:
+    """One spec 8 index line: `* [title](file) - description`, the title falling back to the file name."""
+    try:   # a BOM is not part of the frontmatter fence; a note that is not UTF-8 was copied as it is (X-11)
+        raw, _ = split_frontmatter(read_text(path).lstrip("\ufeff"))
+    except UnicodeDecodeError:
+        raw = None
+    try:
+        meta = load_frontmatter(raw) if raw is not None else {}
+    except (yaml.YAMLError, ValueError):   # okf-check reports the bad frontmatter; the index still lists the file
+        meta = {}
+    meta = meta if isinstance(meta, dict) else {}
+    title = meta.get("title") if isinstance(meta.get("title"), str) else path.stem
+    desc = CONTROL.sub("?", " ".join(meta["description"].split())) if isinstance(meta.get("description"), str) else ""
+    return f"* [{link_text(title)}]({quote(path.name)})" + (f" - {desc}" if desc else "") + "\n"
+
+
+def write_indexes(out: Path, concepts: list[Path]) -> None:
+    """Spec 8: an index.md in every folder that holds a concept, directly or below. No frontmatter, except the
+    root's okf_version (spec 8, 12). A Concepts section, then a Folders section; an empty one is left out."""
+    folders: dict[Path, tuple[list[Path], set[str]]] = {}
+    for c in concepts:
+        folders.setdefault(c.parent, ([], set()))[0].append(c)
+        d = c.parent
+        while d != Path("."):
+            folders.setdefault(d.parent, ([], set()))[1].add(d.name)
+            d = d.parent
+    for d, (names, subs) in folders.items():
+        sections = []
+        if names:
+            sections.append("# Concepts\n\n" + "".join(entry(out / c) for c in sorted(names)))
+        if subs:
+            sections.append("# Folders\n\n" + "".join(f"* [{link_text(s)}]({quote(s)}/)\n" for s in sorted(subs)))
+        head = f'---\nokf_version: "{OKF_VERSION}"\n---\n' if d == Path(".") else ""
+        (out / d / "index.md").write_text(head + "\n".join(sections), encoding="utf-8")
+
+
 def fail(msg: str) -> int:
-    print(f"okf-export: {msg}", file=sys.stderr)
+    print(f"okf-export: {CONTROL.sub('?', msg)}", file=sys.stderr)   # it can name vault files (X-10)
     return 2
 
 
@@ -116,9 +165,28 @@ def main() -> int:
             return [p for p in (Path(name), Path(name + ".md")) if p in fileset][:1]
         return by_name.get(name) or by_name.get(name + ".md") or []
 
+    def out_rel(rel: Path) -> Path:
+        """Spec 3.1: index.md is reserved and MUST NOT be a concept, so a vault's index.md note becomes the
+        folder note dir/<dir>.md (the vault root's takes the vault folder's name). The folder is kept."""
+        if rel.name.casefold() == "index.md":   # casefold: on a case-insensitive disk Index.md IS index.md
+            return rel.parent / f"{rel.parent.name or vault.name}.md"
+        return rel
+
+    # S10-E2: a rename onto an existing note would overwrite it. Stop before anything is written.
+    # Names are compared case-folded, the way a case-insensitive disk (macOS APFS, Windows) compares them.
+    folded = {p.as_posix().casefold() for p in files}
+    clashes = [(rel, out_rel(rel)) for rel in files if rel.name.casefold() == "index.md" and out_rel(rel).as_posix().casefold() in folded]
+    for rel, new in clashes:
+        if new == rel:
+            fail(f"{rel.as_posix()} is the folder note of a folder named index, which leaves it no other name; rename the folder in the vault")
+        else:
+            fail(f"{rel.as_posix()} would be renamed to {new.as_posix()}, which already exists; rename one of them in the vault")
+    if clashes:
+        return 2
+
     problems: list[str] = []
     for rel in files:
-        dest = out / rel
+        dest = out / out_rel(rel)
         dest.parent.mkdir(parents=True, exist_ok=True)
         if rel.suffix != ".md":
             shutil.copy2(vault / rel, dest)
@@ -145,7 +213,7 @@ def main() -> int:
                     return m.group(0)
                 # Spec 6.1 allows a relative or a bundle-absolute (/...) link; the relative form is what the ticket
                 # asks for. Percent-encoded: a CommonMark link destination cannot hold a space.
-                href = quote(os.path.relpath(found[0], rel.parent).replace(os.sep, "/")) if name else ""
+                href = quote(os.path.relpath(out_rel(found[0]), rel.parent).replace(os.sep, "/")) if name else ""
                 if heading and found[0].suffix != ".md":
                     href += "#" + quote(heading, safe="=&")   # a PDF page link: the fragment is the viewer's, not a heading
                 elif heading:
@@ -162,6 +230,7 @@ def main() -> int:
                 pos = span.end()
             lines[i] = "".join(parts) + WIKILINK.sub(link, line[pos:])
         dest.write_bytes("".join(lines).encode("utf-8"))   # bytes: no newline translation on the way out either
+    write_indexes(out, [out_rel(rel) for rel in files if rel.suffix == ".md"])
     for p in problems:
         print(CONTROL.sub("?", p))
     return 1 if problems else 0

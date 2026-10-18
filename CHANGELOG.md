@@ -9,6 +9,14 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.15] - 2026-10-18
+
+OKF Knowledge Gate 0.9.15 makes `okf-export` write the index files a bundle needs.
+
+### Added
+- **`okf-export` generates index files.** A vault's own `index.md` is a note, not a spec index, so it becomes the folder note: `dir/index.md` is written as `dir/dir.md`, and the root one as `<vault folder>.md`. A spec `index.md` listing is generated in every folder that holds a note, and the root one carries `okf_version`. Each entry is a bullet with the note's title as the link text, the file as the link target and the description after a dash, read from the note's frontmatter, with the file name as the title when the note has none or is not valid UTF-8. A rename onto an existing note stops the export with exit 2 and names both files. Links to the renamed note are rewritten to its new name.
+- **A BOM note is listed by its title,** not by its file name.
+
 ## [0.9.14] - 2026-10-18
 
 OKF Knowledge Gate 0.9.14 adds `okf-export`, which writes a vault of `[[wikilinked]]` notes out as a bundle `okf-check` can gate.
@@ -482,7 +490,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.14...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.15...HEAD
+[0.9.15]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.14...v0.9.15
 [0.9.14]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.13...v0.9.14
 [0.9.13]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.12...v0.9.13
 [0.9.12]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.11...v0.9.12

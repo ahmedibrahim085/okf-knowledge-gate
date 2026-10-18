@@ -170,6 +170,70 @@ rc=$(run "$V" "$O")
   && ok "S10-E1b an embed ![[a]] stays as written; a link next to it converts" \
   || bad "S10-E1b embed" "rc=$rc b.md: $(grep -n 'Embed' "$O/b.md" 2>&1 | head -1)"
 
+# --- S10-H2: a vault index note is renamed and real indexes are generated ------------------------
+# Spec 3.1: index.md is reserved for the folder listing and MUST NOT be a concept. A vault's index.md
+# is a note, so it becomes the folder note: dir/index.md -> dir/<dir>.md, root -> <vault folder>.md.
+V="$TMP/h2/kb"; O="$TMP/h2/out"
+note "$V" index.md "Home: see [[a]]."
+note "$V" a.md "# A"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 0 ] && grep -qF 'Home: see [a](a.md).' "$O/kb.md" && grep -qF 'title: index' "$O/kb.md" \
+  && ! grep -q 'Home' "$O/index.md"; } 2>/dev/null \
+  && ok "S10-H2a the vault-root index.md note becomes kb.md (the vault folder's name), content kept, links converted" \
+  || bad "S10-H2a root rename" "rc=$rc out: $(cd "$O" 2>/dev/null && ls | tr '\n' ' ') report: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+
+# A link keeps its vault meaning and points at the new name.
+V="$TMP/h2b/kb"; O="$TMP/h2b/out"
+note "$V" sub/index.md "Sub home, up to [[a]]."
+note "$V" a.md "Go to [[sub/index]] or [[index|the sub home]]."
+rc=$(run "$V" "$O")
+{ [ "$rc" = 0 ] && grep -qF 'Go to [sub/index](sub/sub.md) or [the sub home](sub/sub.md).' "$O/a.md" \
+  && grep -qF 'Sub home, up to [a](../a.md).' "$O/sub/sub.md" && ! grep -q 'Sub home' "$O/sub/index.md"; } 2>/dev/null \
+  && ok "S10-H2b sub/index.md becomes sub/sub.md; [[sub/index]] and [[index]] point at it, and its own links still resolve" \
+  || bad "S10-H2b nested rename" "rc=$rc a.md: $(grep -n 'Go to' "$O/a.md" 2>&1 | head -1) out: $(cd "$O" 2>/dev/null && find . -type f | tr '\n' ' ') report: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+
+# Spec 8: every folder that holds a concept, directly or below, gets an index.md with no frontmatter,
+# except the root, which carries okf_version (spec 12). Entries carry the concept's title and description.
+V="$TMP/h2c/kb"; O="$TMP/h2c/out"
+note "$V" a.md "# A"
+note "$V" sub/index.md "Sub home."
+note "$V" sub/c.md "# C"
+note "$V" deep/x/y.md "# Y"
+mkdir -p "$V/img"; printf 'PNG' > "$V/img/pic.png"
+rc=$(run "$V" "$O")
+printf -- '---\nokf_version: "0.2"\n---\n# Concepts\n\n* [a](a.md) - The a note.\n\n# Folders\n\n* [deep](deep/)\n* [sub](sub/)\n' > "$TMP/want_root"
+printf -- '# Concepts\n\n* [c](c.md) - The c note.\n* [index](sub.md) - The index note.\n' > "$TMP/want_sub"
+printf -- '# Folders\n\n* [x](x/)\n' > "$TMP/want_deep"
+{ [ "$rc" = 0 ] && cmp -s "$TMP/want_root" "$O/index.md" && cmp -s "$TMP/want_sub" "$O/sub/index.md" \
+  && cmp -s "$TMP/want_deep" "$O/deep/index.md" && grep -qF '* [y](y.md) - The y note.' "$O/deep/x/index.md" \
+  && [ ! -e "$O/img/index.md" ]; } 2>/dev/null \
+  && ok "S10-H2c indexes are generated per folder: root with okf_version, nested ones without frontmatter, title + description per entry, none for an attachment-only folder" \
+  || bad "S10-H2c generated indexes" "rc=$rc root: $(head -12 "$O/index.md" 2>&1 | tr '\n' '|') sub: $(cat "$O/sub/index.md" 2>&1 | tr '\n' '|') report: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+"$CHECK" --json "$O" > "$TMP/check.json" 2>/dev/null
+counts=$(tail -1 "$TMP/check.json" | "$REALPY" -c 'import json,sys; d=json.load(sys.stdin); print(d["l1_errors"], d["l1_warnings"], d["concepts"])' 2>&1)
+[ "$counts" = "0 0 4" ] \
+  && ok "S10-H2 acceptance: okf-check <out> on the renamed + indexed bundle reports 0 L1 errors, 0 warnings, 4 concepts" \
+  || bad "S10-H2 acceptance" "l1 errors/warnings/concepts: $counts; $("$CHECK" "$O" 2>&1 | grep -iE 'warn|error|index' | head -4 | tr '\n' ' ')"
+
+# The vendored PyYAML is the one used: a yaml module inherited from PYTHONPATH must not outrank the
+# pin (plugin/vendor/VENDOR.md). The decoy fails loudly if it is ever imported.
+mkdir -p "$TMP/decoy/yaml"; echo 'raise SystemExit("decoy yaml imported")' > "$TMP/decoy/yaml/__init__.py"
+O="$TMP/h2c/out-decoy"
+rc=$(PYTHONPATH="$TMP/decoy" run "$V" "$O")
+{ [ "$rc" = 0 ] && cmp -s "$TMP/want_sub" "$O/sub/index.md"; } 2>/dev/null \
+  && ok "S10-H2d a decoy yaml on PYTHONPATH is not imported: the vendored PyYAML wins and the index is the same" \
+  || bad "S10-H2d vendored yaml" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+
+# --- S10-E2: a rename collision stops the export -------------------------------------------------
+V="$TMP/e2/kb"; O="$TMP/e2/out"
+note "$V" sub/index.md "Sub home."
+note "$V" sub/sub.md "Already here."
+note "$V" a.md "# A"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 2 ] && grep -qF 'sub/index.md' "$TMP/out.txt" && grep -qF 'sub/sub.md' "$TMP/out.txt" && [ ! -e "$O" ]; } \
+  && ok "S10-E2 sub/index.md -> sub/sub.md when sub/sub.md exists stops the export (exit 2), names both, writes nothing" \
+  || bad "S10-E2 collision" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' ' ') out: $(cd "$O" 2>/dev/null && find . -type f | tr '\n' ' ')"
+
 # --- the vault is only read; <out> is never merged into ------------------------------------------
 V="$TMP/safe/vault"; O="$TMP/safe/out"
 note "$V" a.md "Link [[a]]."
@@ -209,6 +273,24 @@ rc=$(run "$V" "$O")
   && grep -qF 'b?.md:' "$TMP/out.txt" && grep -qF '[[gh?ost?]]' "$TMP/out.txt"; } \
   && ok "X-5 control characters in a quoted link or file name are replaced by ? in the problem line (exit 1)" \
   || bad "X-5 control characters" "rc=$rc report: $(head -2 "$TMP/out.txt" | od -c | head -4 | tr '\n' ' ')"
+# The same for an exit-2 message that names vault files: the index rename collision (S10-E2) quotes both paths.
+V="$TMP/ctl2/vault"; O="$TMP/ctl2/out"; D="d$(printf '\007')"
+note "$V" "$D/index.md" "# I"; note "$V" "$D/$D.md" "# D"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 2 ] && grep -q 'already exists' "$TMP/out.txt" && ! LC_ALL=C grep -q "$(printf '[\001-\010\016-\037\177]')" "$TMP/out.txt" \
+  && grep -qF 'd?/index.md' "$TMP/out.txt"; } \
+  && ok "X-10 control characters in the file names of an exit-2 message (rename collision) are replaced by ?" \
+  || bad "X-10 control characters, exit 2" "rc=$rc report: $(head -2 "$TMP/out.txt" | od -c | head -4 | tr '\n' ' ')"
+# X-11 (#64 on 0.9.14): the generated index reads each note's title as the validator does. A BOM note is listed under
+# its title; a note that is not valid UTF-8 (copied unchanged, X-6) is listed under its file name, not a crash.
+V="$TMP/x11/vault"; O="$TMP/x11/out"
+mkdir -p "$V"; printf '\357\273\277---\ntype: Note\ntitle: Bom Title\ndescription: With a BOM.\n---\nbody\n' > "$V/bom.md"
+printf '%s\n' '---' 'type: Note' 'title: bad' '---' > "$V/bad.md"; printf 'bad \377\376\n' >> "$V/bad.md"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 1 ] && grep -qxF '* [Bom Title](bom.md) - With a BOM.' "$O/index.md" && grep -qxF '* [bad](bad.md)' "$O/index.md" \
+  && ! grep -q Traceback "$TMP/out.txt"; } 2>/dev/null \
+  && ok "X-11 the index lists a BOM note under its title and a non-UTF-8 note under its file name (no crash)" \
+  || bad "X-11 index of BOM and non-UTF-8 notes" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') index: $(grep -n '^\*' "$O/index.md" 2>&1 | tr '\n' '|')"
 
 # --- 0.9.14 review ---------------------------------------------------------------------------------------------
 # X-6 (blocker): a note that is not valid UTF-8 must not stop the export half-way: it is listed, copied as it is, and
@@ -252,6 +334,42 @@ rc=$(run "$V" "$O")
 { [ "$rc" = 0 ] && grep -qF 'See [h > Top](h.md#top).' "$O/l.md"; } 2>/dev/null \
   && ok "X-9 a heading in a BOM note without frontmatter is found" \
   || bad "X-9 BOM heading" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
+
+# --- 0.9.15 review ---------------------------------------------------------------------------------------------
+# X-12 (blocker): the rename clash check compares names the way the file system does. On a case-insensitive disk (macOS
+# APFS, Windows) dir/Dir.md IS dir/dir.md, so the export must stop, name both files and write nothing.
+V="$TMP/x12/vault"; O="$TMP/x12/out"
+note "$V" dir/index.md "IDX"; note "$V" dir/Dir.md "DIRNOTE"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 2 ] && grep -q 'dir/index.md would be renamed to dir/dir.md' "$TMP/out.txt" && [ ! -e "$O" ]; } \
+  && ok "X-12 a rename onto a note that differs only in case stops the export (exit 2, both named, nothing written)" \
+  || bad "X-12 case clash" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(ls "$O" 2>&1 | head -2 | tr '\n' ' ')"
+# X-13 (blocker): a vault note named Index.md is the reserved file on a case-insensitive disk; it becomes the folder note too.
+V="$TMP/x13/vault"; O="$TMP/x13/out"
+note "$V" Index.md "CAPINDEX"; note "$V" o.md "other"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 0 ] && grep -q CAPINDEX "$O/vault.md" 2>/dev/null && ! grep -q 'CAPINDEX' "$O/index.md"; } \
+  && ok "X-13 a note named Index.md is renamed to the folder note, not overwritten by the generated index" \
+  || bad "X-13 capital Index.md" "rc=$rc out: $(ls "$O" 2>&1 | tr '\n' ' ') report: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
+# X-14 (blocker): a title or folder name can hold line breaks, brackets and control characters; the index line stays ONE
+# well-formed Markdown link line.
+V="$TMP/x14/vault"; O="$TMP/x14/out"; mkdir -p "$V/fo[ld]er"
+printf -- '---\ntype: Note\ntitle: |\n  multi\n  * [inj](x.md)\ndescription: d\n---\nb\n' > "$V/multi.md"
+printf -- '---\ntype: Note\ntitle: "Evil ] (x) and \\e[31mred\\a"\ndescription: d\n---\nb\n' > "$V/evil.md"
+note "$V" "fo[ld]er/n.md" "n"
+rc=$(run "$V" "$O")
+lines=$(grep -c '^\* \[' "$O/index.md" 2>/dev/null)
+{ [ "$rc" = 0 ] && grep -qF '* [multi * \[inj\](x.md)](multi.md) - d' "$O/index.md" && grep -qF '* [Evil \] (x) and ?\[31mred?](evil.md) - d' "$O/index.md" \
+  && grep -qF '* [fo\[ld\]er](fo%5Bld%5Der/)' "$O/index.md" && ! LC_ALL=C grep -q "$(printf '[\001-\010\016-\037\177]')" "$O/index.md"; } \
+  && ok "X-14 a block-scalar title, brackets and control characters in a title or folder name stay one escaped link line" \
+  || bad "X-14 index line injection" "rc=$rc index: $(cat "$O/index.md" 2>&1 | tr '\n' '|' | cut -c1-300)"
+# X-15 (low): a folder named index leaves no name for its folder note; say so instead of 'renamed to itself'.
+V="$TMP/x15/vault"; O="$TMP/x15/out"
+note "$V" index/index.md "X"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 2 ] && grep -q 'rename the folder' "$TMP/out.txt"; } \
+  && ok "X-15 a folder named index is refused with a message that says to rename the folder" \
+  || bad "X-15 folder named index" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
 
 echo
 echo "  $PASS passed, $FAIL failed"
