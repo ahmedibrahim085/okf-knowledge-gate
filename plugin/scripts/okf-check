@@ -50,10 +50,13 @@
 #   okf-check <bundle> --fail-on-change    make a mid-scan change blocking (exit 6)
 #   okf-check <bundle> --duplicates        list candidate duplicate notes (advisory: exit 0)
 #   okf-check <bundle> --duplicates-body   the same, plus notes whose bodies are similar (MinHash, time-boxed)
+#   okf-check <bundle> --facts [NAME]      list every statement of the okf_check.facts (or of NAME): a dry run, exit 0
+#   okf-check <bundle> --conserve <ref>    every line removed since <ref> must reappear: MOVED, CHANGED, LOST (advisory;
+#                                          --fail-lost exits 1 on a LOST line; --deleted FILE declares intended deletions)
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.33"
+VERSION="0.9.34"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -135,6 +138,10 @@ for a in "$@"; do
     --fingerprint) MODE="fingerprint" ;;
     --duplicates)  MODE="duplicates" ;;
     --duplicates-body) MODE="duplicates"; DUP_BODY=1 ;;
+    --facts)       MODE="facts"; _want_fact=1 ;;   # an optional NAME: the next bare argument once the bundle is known
+    --conserve)    MODE="conserve"; _want_ref=1 ;;  # its <ref> is the next bare argument once the bundle is known
+    --fail-lost)   FAIL_LOST=1 ;;
+    --deleted)     _want_del=1 ;;
     --preflight)   MODE="preflight" ;;
     --init-ignore) MODE="init-ignore" ;;
     --init-house-rules) MODE="init-house-rules" ;;
@@ -146,6 +153,9 @@ for a in "$@"; do
     -*)            if [ "${_want_file:-0}" = 1 ] && [ -f "$a" ]; then SCOPED_FILE="$a"; _want_file=0; continue; fi   # a note named -d.md
                    echo "unknown flag: $a" >&2; exit 64 ;;
     *)             if [ "${_want_file:-0}" = 1 ]; then SCOPED_FILE="$a"; _want_file=0; continue; fi
+                   if [ "${_want_fact:-0}" = 1 ] && [ -n "$BUNDLE" ]; then FACT_NAME="$a"; _want_fact=0; continue; fi
+                   if [ "${_want_del:-0}" = 1 ]; then DELETED_FILE="$a"; _want_del=0; continue; fi
+                   if [ "${_want_ref:-0}" = 1 ] && [ -n "$BUNDLE" ]; then CONSERVE_REF="$a"; _want_ref=0; continue; fi
                    # A second positional silently replaced the first, so
                    # `okf-check <FAILING> <CLEAN>` examined only the last and
                    # exited 0. A glob over several bundles checked one. (R-9)
@@ -194,7 +204,7 @@ PY
   _t="[]"; [ -s "$TMP/trust.json" ] && _t=$(cat "$TMP/trust.json"); [ "${TRUST_RAN:-1}" -eq 0 ] && _t=null
   if [ -n "$PY" ]; then
     _b=$(printf '%s' "$BUNDLE" | "$PY" -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))')
-    _f=$(OKF_SIZES_JSONL="$TMP/sizes.jsonl" "$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
+    _f=$(OKF_SIZES_JSONL="$TMP/sizes.jsonl" OKF_FACTS_JSONL="$TMP/facts.jsonl" "$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
 import json, os, sys
 # Layers that read a filtered copy (.okfignore, crash isolation) hand okflint the copy's path, and some of its messages
 # print it (R201: "reserved file missing in <root>"). The report names the bundle the user pointed at; the copy is
@@ -249,6 +259,12 @@ if misplaced:
 try:
     rows = open(os.environ.get("OKF_SIZES_JSONL", ""), encoding="utf-8").read().splitlines()
     out["sizes"] = [json.loads(r) for r in rows if r]
+except (OSError, ValueError):
+    pass
+# Present only when okf_check.facts is set: every statement of a declared fact and whether it agrees (okf-knowledge-gate#15).
+try:
+    rows = open(os.environ.get("OKF_FACTS_JSONL", ""), encoding="utf-8").read().splitlines()
+    out["facts"] = [json.loads(r) for r in rows if r]
 except (OSError, ValueError):
     pass
 print(json.dumps(out)[1:-1])
@@ -1223,6 +1239,55 @@ PYEOF
   return 0
 }
 
+# ------------------------------------------------------- declared facts (okf-knowledge-gate#15)
+# With okf_check.facts a note that states a declared fact with another value is a FACT-CONFLICT: a house-rule error (exit 1,
+# like require_owner and size). The patterns were checked by the shared schema (run_config). Option off: nothing is printed.
+run_facts() {
+  local bundle="$1" out ec nc
+  [ -f "$bundle/okf-base.yaml" ] && [ -n "$PY" ] || return 0
+  [ "${CONFIG_RC:-0}" -eq 0 ] || return 0
+  grep -q 'facts' "$bundle/okf-base.yaml" 2>/dev/null || return 0   # no python unless the manifest mentions the key
+  okf_md_files "$bundle" > "$TMP/facts-files.lst" 2>/dev/null
+  # Under the watchdog (okf-limit.py, as okflint): a pattern from okf-base.yaml can backtrack for ever on a long line, and a
+  # regular expression cannot be stopped from inside Python. OKF_FACTS_TIMEOUT seconds, default 60.
+  local secs="${OKF_FACTS_TIMEOUT:-60}"; case "$secs" in ''|*[!0-9]*|0) secs=60 ;; esac
+  run_limited "$secs" "$TMP/facts.out" env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$VENDOR_PY${PYTHONPATH:+:$PYTHONPATH}" \
+    OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" "$PY" "$HERE/okf-facts.py" "$bundle" "$bundle/okf-base.yaml" "$TMP/facts-files.lst" check
+  ec=$?; out=$(cat "$TMP/facts.out" 2>/dev/null)
+  [ "$ec" -ne 143 ] || { say "  Facts            COULD NOT RUN — the facts patterns timed out after $secs s (a pattern that backtracks? OKF_FACTS_TIMEOUT)"; return $EXIT_DEP; }
+  [ "$ec" -eq 0 ] || { say "  Facts            COULD NOT RUN — okf-facts.py exited $ec"; return $EXIT_DEP; }
+  [ -n "$(printf '%s\n' "$out" | sed -n 's/^N|//p')" ] || return 0
+  printf '%s\n' "$out" | sed -n 's/^S|//p' > "$TMP/facts.jsonl"
+  nc=$(printf '%s\n' "$out" | grep -c '^E|')
+  if [ "$nc" -gt 0 ]; then
+    say "  Facts            FAIL   $nc conflict(s) with okf_check.facts"
+    printf '%s\n' "$out" | sed -n 's/^E|//p' | while IFS= read -r l; do record error "$l"; say "                   $l"; done
+    return $EXIT_CONFORM
+  fi
+  say "  Facts            PASS   $(printf '%s\n' "$out" | sed -n 's/^N|//p' | awk -F'|' '{print $1 " fact(s), " $2 " statement(s) agree"}')"
+  return 0
+}
+
+# --facts [NAME] (okf-knowledge-gate#15): every statement of the declared facts, before an owner changes a value. A report: exit 0.
+run_facts_list() {
+  local bundle="$1"
+  [ -n "$PY" ] || { echo "okf-check: --facts needs python3" >&2; return $EXIT_DEP; }
+  run_config "$bundle" >/dev/null; CONFIG_RC=$?
+  [ "$CONFIG_RC" -eq 0 ] || { run_config "$bundle"; return $EXIT_DEP; }
+  okf_md_files "$bundle" > "$TMP/facts-files.lst" 2>/dev/null
+  if okfignore_present "$bundle"; then
+    okfignore_load "$bundle"; [ $? -eq 2 ] && { echo "okf-check: .okfignore could not be applied, so --facts cannot run" >&2; return $EXIT_DEP; }
+    okfignore_list "$bundle" | while IFS= read -r -d '' f; do printf '%s\0' "$bundle/$f"; done > "$TMP/facts-files.lst"
+  fi
+  [ -f "$bundle/okf-base.yaml" ] || { echo "no okf-base.yaml in $bundle: nothing to list"; return 0; }
+  local secs="${OKF_FACTS_TIMEOUT:-60}" ec; case "$secs" in ''|*[!0-9]*|0) secs=60 ;; esac
+  run_limited "$secs" "$TMP/facts.out" env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$VENDOR_PY${PYTHONPATH:+:$PYTHONPATH}" \
+    OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" "$PY" "$HERE/okf-facts.py" "$bundle" "$bundle/okf-base.yaml" "$TMP/facts-files.lst" list ${FACT_NAME:+"$FACT_NAME"}
+  ec=$?; cat "$TMP/facts.out" 2>/dev/null
+  [ "$ec" -ne 143 ] || { echo "okf-check: --facts: the patterns timed out after $secs s (OKF_FACTS_TIMEOUT)" >&2; return $EXIT_DEP; }
+  return $ec
+}
+
 # ------------------------------------------------------- --duplicates (okf-knowledge-gate#10)
 # Candidate duplicate pairs: the same normalized title, the same sources[].resource, or descriptions whose word overlap
 # reaches okf_check.duplicates.threshold. Advisory: exit 0. A block that fails the schema is exit 2, as in a check.
@@ -2101,6 +2166,18 @@ selftest() {
   }
   probe "body over the limit" "size probe: bad.md listed, the notes under the limit are not" _size_probe "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\n123456789012345678901234567890123456789012345678901234567890'
 
+  say "  Facts (okf_check.facts):"
+  # A fact is declared for this probe only, and the planted note states another value (okf-knowledge-gate#15).
+  _facts_probe() {
+    local BUNDLE="$1" CONFIG_RC=0 rc
+    [ -f "$1/okf-base.yaml" ] && cp -p "$1/okf-base.yaml" "$TMP/selftest.base"
+    printf 'okf_check:\n  facts:\n    probe.count:\n      value: "7"\n      patterns: ["probe count: (\\\\d+)"]\n' >> "$1/okf-base.yaml"
+    run_facts "$1"; rc=$?
+    if [ -f "$TMP/selftest.base" ]; then mv "$TMP/selftest.base" "$1/okf-base.yaml"; else rm -f "$1/okf-base.yaml"; fi
+    return $rc
+  }
+  probe "a note states another value" 'bad.md:8: FACT-CONFLICT probe.count states "5"' _facts_probe "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\nThe probe count: 5\n'
+
   say "  Duplicates (--duplicates):"
   # A note titled like the baseline note (good.md, "Baseline") must be listed as a same-title pair.
   _dup_probe() { local DUP_BODY=0; run_duplicates "$1"; }
@@ -2246,6 +2323,17 @@ resolve_note_cap "$BUNDLE" || exit $EXIT_DEP   # every layer and helper below ju
 # --duplicates is a report of its own, not a gate: it runs instead of the layers and always exits 0 once it ran.
 # Its readers are all bounded (okf_notes.read_note), and the manifest is judged first: a device or pipe named okf-base.yaml
 # is refused up front, never opened (the plain open().read() of review round 1 ran a real /dev/zero out of memory).
+# --conserve <ref> (okf-knowledge-gate#16): a report of its own, read from git and the notes on disk; it runs instead of the layers.
+if [ "$MODE" = conserve ]; then
+  [ -n "${CONSERVE_REF:-}" ] || { echo "usage: okf-check <bundle> --conserve <ref> [--fail-lost] [--deleted FILE]" >&2; exit 64; }
+  OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor "$HERE/okf-conserve.py" "$BUNDLE" "$CONSERVE_REF" "$VERSION" "$JSON" "${FAIL_LOST:-0}" ${DELETED_FILE:+"$DELETED_FILE"}
+  exit $?
+fi
+if [ "$MODE" = facts ]; then
+  _mwhy=$(okf_note_refusal "$BUNDLE/okf-base.yaml")
+  [ -z "$_mwhy" ] || { echo "okf-check: $BUNDLE/okf-base.yaml — $_mwhy: not read, so --facts cannot run" >&2; exit $EXIT_DEP; }
+  run_facts_list "$BUNDLE"; exit $?
+fi
 if [ "$MODE" = duplicates ]; then
   _mwhy=$(okf_note_refusal "$BUNDLE/okf-base.yaml")
   [ -z "$_mwhy" ] || { echo "okf-check: $BUNDLE/okf-base.yaml — $_mwhy: not read, so --duplicates cannot run" >&2; exit $EXIT_DEP; }
@@ -2337,6 +2425,7 @@ run_index       "$LAYER_BUNDLE"; worse_other $?
 run_successor   "$LAYER_BUNDLE"; worse_other $?
 run_owner       "$LAYER_BUNDLE"; worse_other $?
 run_size        "$LAYER_BUNDLE"; worse_other $?
+run_facts       "$LAYER_BUNDLE"; worse_other $?
 run_staleness   "$LAYER_BUNDLE"; worse_other $?
 run_derived_stale "$LAYER_BUNDLE"; worse_other $?
 FP_AFTER=$(bundle_fingerprint "$BUNDLE")

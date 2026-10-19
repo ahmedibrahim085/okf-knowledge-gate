@@ -47,22 +47,63 @@ fi
 [ -n "${SUITES// /}" ] || { echo "run-suites: no suite found"; exit 2; }
 
 echo "run-suites: $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-$(uname -s)}") $(uname -m); bash $BASH_VERSION; $(python3 --version 2>&1); okflint $(python3 -c 'import importlib.metadata as m; print(m.version("okflint"))' 2>/dev/null || echo absent); $(pre-commit --version 2>/dev/null || echo 'pre-commit absent'); $(awk -W version 2>&1 | head -1); user $(id -un)"
-log=$(mktemp); fail=0
+# OKF_SUITE_JOBS (gate speed): how many suites run at once; default the CPU count, at most 4. Each suite has its own mktemp folder
+# (plugin/tests/okf-test-lib.sh), so they do not share state; the suites in OKF_GATE_SIDE_BY_SIDE (the two heavy halves of
+# the okf-check tests) start first. The report lists the suites in suite-list order, whatever order they finish in. A pool
+# that waits on its oldest job, not `wait -n`: bash 3.2 (macOS) has no `wait -n`.
+JOBS=${OKF_SUITE_JOBS:-$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 1)}
+case "$JOBS" in ''|*[!0-9]*|0) JOBS=1 ;; esac
+[ -n "${OKF_SUITE_JOBS:-}" ] || { [ "$JOBS" -le 4 ] || JOBS=4; }
+SIDE=""
+[ -f tools/linux-gate.conf ] && SIDE=$(sed -n 's/^OKF_GATE_SIDE_BY_SIDE=//p' tools/linux-gate.conf)
+echo "run-suites: $JOBS suite(s) at a time"
+# No bytecode: suites that run at once would race on plugin/scripts/__pycache__ (a copy taken mid-write fails).
+export PYTHONDONTWRITEBYTECODE=1
+WORK=$(mktemp -d); fail=0; pids=""
+trap 'for p in $pids; do kill "$p" 2>/dev/null; done; rm -rf "$WORK"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+# run_one <suite> <n>: run it under the time limit, its log in $WORK/<n>.log, its seconds and exit code in $WORK/<n>.rc.
+run_one() {
+  local start rc; start=$(date +%s)
+  timeout -k 10 "$SUITE_TIMEOUT" bash "$1" < /dev/null > "$WORK/$2.log" 2>&1; rc=$?
+  echo "$rc $(( $(date +%s) - start ))" > "$WORK/$2.rc"
+}
+# Start order: the side-by-side suites, then the rest by file size, largest first (the long suites are the big files: the
+# run ends no sooner than its longest suite, so that one must not start last).
+BYSIZE=$(for s in $SUITES; do printf '%s %s\n' "$(wc -c < "$s" | tr -d ' ')" "$s"; done | sort -rn | awk '{print $2}')
+n=0; order=""
+for s in $SIDE $BYSIZE; do
+  case " $order " in *" $s "*) continue ;; esac   # a side-by-side suite is also in the list: run it once
+  case " $SUITES " in *" $s "*) ;; *) continue ;; esac
+  # A free slot is taken as soon as any job ends: poll with kill -0 (bash 3.2 has no `wait -n`). Waiting on the oldest job
+  # instead left slots idle behind a long suite (0.9.34 gate: 907 s for a run whose longest suite took 570 s).
+  while :; do
+    live=""; for p in $pids; do if kill -0 "$p" 2>/dev/null; then live="$live $p"; else wait "$p"; fi; done; pids=$live
+    set -- $pids; [ "$#" -lt "$JOBS" ] && break
+    sleep 0.2
+  done
+  order="$order $s"; n=$((n + 1)); eval "idx_$n=\$s"
+  run_one "$s" "$n" & pids="$pids $!"
+done
+for p in $pids; do wait "$p"; done
 for s in $SUITES; do
-  start=$(date +%s)
-  timeout -k 10 "$SUITE_TIMEOUT" bash "$s" < /dev/null > "$log" 2>&1; rc=$?
-  why=$(suite_verdict "$log" "$rc" "$SUITE_TIMEOUT")
-  printf '%-42s rc=%-3s %5ss  %s%s\n' "$s" "$rc" "$(( $(date +%s) - start ))" \
-    "$(grep -E '[0-9]+ passed' "$log" | tail -1 | sed 's/^ *//')" "${why:+  GATE-FAIL: $why}"
+  i=0; k=1; while [ "$k" -le "$n" ]; do eval "[ \"\$idx_$k\" = \"\$s\" ]" && i=$k; k=$((k + 1)); done
+  [ "$i" -gt 0 ] || continue
+  rc=255; secs=0   # no result file (the job was killed): a failure, never the previous suite's result
+  [ -f "$WORK/$i.rc" ] && read -r rc secs < "$WORK/$i.rc"
+  why=$(suite_verdict "$WORK/$i.log" "$rc" "$SUITE_TIMEOUT")
+  printf '%-42s rc=%-3s %5ss  %s%s\n' "$s" "$rc" "$secs" \
+    "$(grep -E '[0-9]+ passed' "$WORK/$i.log" | tail -1 | sed 's/^ *//')" "${why:+  GATE-FAIL: $why}"
   if [ -n "$why" ]; then
     fail=1
     echo "::group::$s — FAIL lines and the end of its log"
-    grep -A1 '^  FAIL' "$log" | head -60; echo '...'; tail -20 "$log"
+    grep -A1 '^  FAIL' "$WORK/$i.log" | head -60; echo '...'; tail -20 "$WORK/$i.log"
     echo "::endgroup::"
   fi
 done
+log="$WORK/selftest.log"
 plugin/scripts/okf-check --selftest > "$log" 2>&1; rc=$?
 printf '%-42s rc=%s\n' "okf-check --selftest" "$rc"
 [ "$rc" -eq 0 ] || { fail=1; tail -20 "$log"; }
-rm -f "$log"
 exit "$fail"

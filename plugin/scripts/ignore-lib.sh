@@ -221,3 +221,10 @@ STARTER
 if [ "${0##*/}" = "ignore-lib.sh" ] && [ "${1:-}" = "--list" ]; then
   okfignore_list "${2:?usage: ignore-lib.sh --list <bundle>}"
 fi
+# `bash ignore-lib.sh --match <pattern>...` reads NUL-separated bundle-relative paths on stdin and prints the ones the patterns
+# match, NUL-separated: okf-verify's okf_check.verify.generated globs go through this one matcher too (okf-knowledge-gate#14).
+if [ "${0##*/}" = "ignore-lib.sh" ] && [ "${1:-}" = "--match" ]; then
+  shift; OKFIGNORE_PATTERNS=("$@")
+  while IFS= read -r -d '' _rel; do okfignore_match "$_rel" && printf '%s\0' "$_rel"; done
+  exit 0
+fi

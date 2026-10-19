@@ -22,7 +22,7 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 - **One verdict you can gate on.** `okf-check` runs every layer. Exit 1 means "not valid", exit 2 means "could not run",
   and a skipped layer is printed as SKIPPED and never shown as PASS (the exit code stays 0, and the verdict line reports
   a skipped layer). `--selftest` plants one defect in each of L0 (doctor), L1, L2 (profile), L2 (index), Trust,
-  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule, the Size rule, `wikilink_root`, `--duplicates` and `--duplicates-body` and fails if a gate misses it. Without `okflint` the L2 profile probes are
+  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule, the Size rule, the Facts rule, `wikilink_root`, `--duplicates` and `--duplicates-body` and fails if a gate misses it. Without `okflint` the L2 profile probes are
   SKIPPED, and the verdict line names them.
 - **The same check in three places.** Claude Code (hooks, plus a skill an agent reads), a GitHub Action, and a pre-commit
   hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)).
@@ -105,9 +105,11 @@ okf-check <bundle>                 # all layers
 okf-check <bundle> --fail-stale    # staleness blocks (exit 4)
 okf-check <bundle> --strict-trust  # unauthenticated human verification and near-miss actors block (exit 1)
 okf-check <bundle> --fail-on-change   # exit 6 if the bundle changes during the scan
-okf-check <bundle> --json          # machine-readable summary (`l2_findings[]` lists house-rule errors; `l2_advisories[]` the advisories behind `l2_warnings`, as `RULE file — message`, cut at 200 with a count; `warnings[]` also lists the `okf_check.size` warnings; `misplaced_keys[]` appears only when an `okf_check` option sits at the top level of `okf-base.yaml`; `sizes[]` only when `okf_check.size` is set)
+okf-check <bundle> --json          # machine-readable summary (`l2_findings[]` lists house-rule errors; `l2_advisories[]` the advisories behind `l2_warnings`, as `RULE file — message`, cut at 200 with a count; `warnings[]` also lists the `okf_check.size` warnings; `misplaced_keys[]` appears only when an `okf_check` option sits at the top level of `okf-base.yaml`; `sizes[]` only when `okf_check.size` is set, `facts[]` only when `okf_check.facts` is)
 okf-check <bundle> --duplicates    # list candidate duplicate notes (a report, always exit 0)
 okf-check <bundle> --duplicates-body   # the same, plus notes whose bodies are similar
+okf-check <bundle> --facts [NAME]  # every statement of the declared facts (a dry run, always exit 0)
+okf-check <bundle> --conserve REF  # every line removed since REF must reappear: MOVED, CHANGED or LOST
 okf-check <bundle> --file <note>   # L1 + Trust for one note: one line per finding, nothing when clean (for edit hooks)
 okf-check --doctor                 # what is installed, and does okflint behave
 okf-check --selftest               # re-prove every gate still fires
@@ -135,18 +137,25 @@ $ okf-check notes
 
 A Trust warning counts as an advisory in the last line, so the run still passes (exit 0) unless you pass `--strict-trust`.
 
-`okf-verify` checks three kinds of claim and answers CONFIRMED, REFUTED or UNRESOLVED for each:
+`okf-verify` checks four kinds of claim and answers CONFIRMED, REFUTED or UNRESOLVED for each (and MOVED for a citation
+whose quoted text is now on another line):
 
 - **A commit SHA** is looked up in each `--repo` folder and in the repositories the bundle lists under
   `okf_check.verify.repos` in `okf-base.yaml`. A SHA that is in no searched repository is UNRESOLVED, never REFUTED.
+  With `--remote` (or `okf_check.verify.remote: true`) such a SHA is also looked up, read-only, on the GitHub or GitLab
+  repository the clone's `origin` names, and is CONFIRMED there when the local clone is only behind.
 - **A code citation**, `path:line @sha` (also `path:first-last @sha` and `path:line at sha`), is one claim: the commit
   must exist, the file must exist at that commit, and the line must be in that file.
+- **A line citation into a living document**, `decision-12.md:94`, `spec.md:40-42` or `decision-12:94` (no commit): the
+  file must have that line. Add the first words of the line in quotes, `decision-12.md:94 "shadow, canary"`, and a citation
+  whose line moved is reported as MOVED with its new line number; `--since main` finds the citations an edit shifted.
 - **Absolute file paths** in backticks or quotes (and paths that start with `~`) are checked on disk, but only inside
   the bundle or a `--repo` folder, so a bundle you did not write cannot use the check to learn which files exist on your
   machine. `--host-paths` looks up the others too. Relative paths are not read.
 
 In a shallow clone (the `actions/checkout` default), commits older than the clone are missing: use `fetch-depth: 0`.
-The full rules (declared repositories, line ranges, paths that contain a space, what is not a citation) are in
+The full rules (declared repositories, line ranges, anchors, generated notes, paths that contain a space, what is not a
+citation) are in
 [the okf-verify reference](plugin/skills/okf/references/verify-and-install.md#what-counts-as-a-claim-and-how-each-is-judged).
 
 `okf-export` is for a team that edits in an Obsidian-style vault, whose backlinks and graph count only `[[wikilinks]]`.
@@ -172,7 +181,7 @@ Read the exit code, do not just test for zero:
 | Exit | Meaning |
 |---|---|
 | 0 | No gate failed. Skipped layers and warnings print above the verdict: read them |
-| 1 | L1: the bundle is not conformant OKF, an `okf_check` house-rule error (`deprecated_requires`, `require_owner`, a body above `size.max_body_chars`, a note that is not a regular file or is above `max_note_bytes`), or (with `--strict-trust`) a trust policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite an existing file |
+| 1 | L1: the bundle is not conformant OKF, an `okf_check` house-rule error (`deprecated_requires`, `require_owner`, a body above `size.max_body_chars`, a note that is not a regular file or is above `max_note_bytes`, a `FACT-CONFLICT`), or (with `--strict-trust`) a trust policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite an existing file |
 | 2 | A gate could not run. Never treat as a pass |
 | 3 | L2: house rules broken, or `index.md` miscounts |
 | 4 | L3: stale concepts (with `--fail-stale`) |
@@ -189,7 +198,7 @@ file by itself.
 `okf-verify` check it against one schema, `plugin/config/okf-check-block.json`: a key it does not know, or a value of the
 wrong shape, exits 2 and names the key, so a typo cannot switch an option off without a word. Known keys: `verify`
 (read by `okf-verify`; `repos` is a list of `path:` entries), `deprecated_requires`, `require_owner`, `owners`,
-`size`, `duplicates`, `wikilink_root` and `edit_hook` (`true` turns the edit hook on for this bundle; a boolean, so a string
+`size`, `facts`, `duplicates`, `wikilink_root` and `edit_hook` (`true` turns the edit hook on for this bundle; a boolean, so a string
 such as `"on"` is refused).
 
 ```yaml
@@ -255,6 +264,41 @@ okf_check:
     exclude: ["generated/**"]
 ```
 
+`facts`: declared facts (okf-knowledge-gate#15). A fact such as a count, a version or a list of countries is stated in
+many notes; when it changes, some keep the old value. Declare its value once, with the regular expressions that find
+where it is stated (group 1 is the stated value), and optionally the note where it is decided:
+
+```yaml
+okf_check:
+  facts:
+    launch.countries:
+      value: "A and B"
+      patterns: ["launch countries?:? *(.+)"]
+      source: decisions/0007.md
+```
+
+A note line that states the fact with another value is a `FACT-CONFLICT`, a house-rule error (exit 1) naming the note, the
+line, the fact and both values. Patterns match without regard to case; values are compared with case, runs of spaces and
+surrounding punctuation and brackets ignored, and a stated value ends at the first `;` or `|` (a clause or a table cell).
+The note bodies are read, not their frontmatter or code blocks, and `.okfignore` applies. The patterns run under a time
+limit (`OKF_FACTS_TIMEOUT`), so a pattern that backtracks without end gives COULD NOT RUN (exit 2), not a hung run.
+`value` and `patterns` are required; a pattern that is not a regular expression or has no capture group exits 2, in
+`okf-check` and `okf-verify --check-config`. `--json` `facts[]` lists every statement and whether it agrees. Before you
+change a value, `okf-check <bundle> --facts launch.countries` lists every occurrence with its line, marks the ones that
+differ, and always exits 0.
+
+**Conservation:** `okf-check <bundle> --conserve <ref>` (okf-knowledge-gate#16) asks whether a change kept what was
+there. A split, a section moved to a companion note or a merge should keep every line; an agent that compresses a note to
+pass a size limit does not announce what it dropped. Each line removed since `<ref>` (`git diff -w`, the working tree
+included) is MOVED when it appears anywhere in the bundle now (an untracked note included), DECLARED when the deletion was
+declared, CHANGED when a line added at the same place replaces it (shown old -> new, paired by position, so ten lines
+compressed into two are two CHANGED and eight LOST), and LOST otherwise, with its note and old line number. Only notes
+(`*.md`) are compared; blank lines, whitespace-only changes, lines with no letter or digit and the frontmatter are not
+counted. A declaration counts only as a trailer, in the last paragraph of the commit message. The report is advisory
+(exit 0); `--fail-lost` exits 1 on a LOST line. Declare intended deletions with `--deleted FILE` (a note path per line
+for a whole note, or `line: <text>` for one line) or an `OKF-Deleted: <note>` trailer in the commit message. `--json`
+gives every entry. The bundle must be in a git repository (exit 2 otherwise, or for an unknown ref).
+
 **Notes that are not regular files, and the byte cap:** a note is opened only when, after symlinks are resolved, it is a
 regular file of at most `okf_check.max_note_bytes` bytes (a whole number from 1, default `5242880`, 5 MB; a bad value
 is exit 2). A `*.md` that is a device, a pipe or a socket, or is above the cap, is not read by any layer or by
@@ -311,7 +355,11 @@ and then checked exactly, within the same time limit.
 | `OKF_EDIT_HOOK` | off | `1` turns the edit hook on for every bundle, without the `edit_hook` key. |
 | `OKF_EDIT_HOOK_TIMEOUT` | `plugin/config/edit-hook.json` | Seconds the edit hook waits for the check before it gives up silently. |
 
-`OKF_TODAY`, `OKF_PINNED_VERSIONS`, `OKF_BUNDLE_DIR` and `OKF_DUP_TIME_LIMIT` exist for tests and replays.
+`OKF_TODAY`, `OKF_PINNED_VERSIONS`, `OKF_BUNDLE_DIR`, `OKF_DUP_TIME_LIMIT` and `OKF_FORGE_API_BASE` exist for tests and replays.
+`okf-verify --remote` reads `GITHUB_TOKEN` (or `GH_TOKEN`) for GitHub and `GITLAB_TOKEN` for GitLab, each sent only to its own
+forge (a self-hosted GitLab must be named in `OKF_GITLAB_HOSTS`); without one it asks anonymously (GitHub allows 60 lookups an
+hour). `OKF_FACTS_TIMEOUT` (default 60) is the seconds the `okf_check.facts` patterns may run before the Facts line says
+COULD NOT RUN.
 
 ## Use in CI and git
 
@@ -326,7 +374,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.33
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.34
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -342,7 +390,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.33
+    rev: v0.9.34
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -452,7 +500,7 @@ fix. A change is reviewed on two axes (standards and spec) before it is released
 | `plugin/vendor/` | The vendored validator and PyYAML, with `VENDOR.md` (source, pin, licence) |
 | `docs/demo.gif`, `tools/demo/` | The README demo and the scripts that record and render it |
 | `docs/comparison-2026-10-17.md` | The evidence behind the comparison claim in "Why use it" |
-| `.github/` | Issue templates, the pull-request template, and CI: `workflows/ci.yml` runs the suites and the Action, `ci/run-suites.sh` is its suite runner |
+| `.github/` | Issue templates, the pull-request template, and CI: `workflows/ci.yml` runs the suites and the Action, `ci/run-suites.sh` is its suite runner (`OKF_SUITE_JOBS` suites at a time, default the CPU count up to 4) |
 | `CHANGELOG.md` | Dated history of every release |
 
 ## Release

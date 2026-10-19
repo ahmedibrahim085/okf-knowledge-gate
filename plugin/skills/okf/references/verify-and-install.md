@@ -40,7 +40,8 @@ Concepts carrying no checkable claim are listed as **unverifiable, not verified*
 
 ## What counts as a claim, and how each is judged
 
-`okf-verify` checks three kinds of claim: a cited commit SHA, a code citation (`path:line @sha`) and an absolute file path.
+`okf-verify` checks four kinds of claim: a cited commit SHA, a code citation pinned to a commit (`path:line @sha`), a line
+citation into a living document (`name.md:N`, no commit) and an absolute file path.
 
 **Which repositories are searched.** A cited commit SHA is looked up in each `--repo` folder and in each repository the
 bundle declares once in its `okf-base.yaml`:
@@ -58,6 +59,15 @@ okf_check:
 - An `okf-base.yaml` that cannot be read, is not valid YAML, or whose `okf_check.verify.repos` is not a list of
   `{path: <string>}` stops the run with one error line and exit 2.
 - In a shallow clone (the `actions/checkout` default), commits older than the clone are missing: use `fetch-depth: 0`.
+- `--remote` (or `okf_check.verify.remote: true`, okf-knowledge-gate#6): a SHA that no searched clone holds is looked up
+  on the forge the clone's `origin` names, through its API, read-only; the clone is never fetched into. A forge is
+  `github.com`, `gitlab.com`, or a self-hosted GitLab named in `OKF_GITLAB_HOSTS` (comma-separated), matched exactly: an
+  origin on `gitlab.com.evil.com` is not asked. Found there, it is CONFIRMED (`--json` `"source": "remote"`) and the detail
+  gives the commit's title and date and says the local clone is behind. Not on the forge (or not visible without a token), a
+  failed request, a redirect (never followed), an answer that does not name the commit, or an origin that is no known forge:
+  it stays UNRESOLVED and the detail says which; a host that failed once is not asked again in the run. A SHA the clone holds
+  is never sent. `GITHUB_TOKEN` or `GH_TOKEN` goes to github.com only, `GITLAB_TOKEN` to a GitLab host only. The SHA part of
+  a `path:line @sha` citation is not looked up remotely: its lines are read from the local commit.
 
 **Code citations.** `path:line @sha`, `path:first-last @sha` or `path:line at sha` (for example
 `` `src/a.py:10 @d084956` ``) is ONE claim: the commit is looked up as above, then the path in that commit's files.
@@ -88,6 +98,54 @@ the words before it spell a file that exists at that commit:
 Quote the path (`` `my w.py`:3 @sha ``, also `".."` and `'..'`) to make the boundary explicit: it is then never cut,
 so with only `w.py` present it is REFUTED. A cut that ends a longer name while the words before it do not spell it
 (`a dir/w.py:1` for `my dir/w.py`) is UNRESOLVED, never REFUTED.
+
+**Line citations into living documents** (okf-knowledge-gate#14). `decision-12.md:94`, `spec.md:40-42` and the short form
+`decision-12:94` cite a line of a document that keeps changing, with no commit:
+
+- a path is read from the citing note's folder, then from the bundle root, then as the end of one bundle path, then from
+  the root of each searched repository (`docs/guide.md:3` in a `--repo` folder's working tree);
+- the short form `name:N` is a claim only when a note named `name.md` exists, so prose such as `Step:2` or `localhost:8080`
+  is not read as a citation; a time such as `10:30` never is;
+- CONFIRMED when the file has that line, REFUTED when the file was found and is shorter (or the line is 0), UNRESOLVED when
+  the file is missing, two candidates match (`ambiguous`: two notes share the name, or a bundle note and a repository
+  document both end with the path), or the path leaves the bundle and every searched repository, in which case it is not
+  looked up at all; a symlink is judged by where it points, so a link inside the bundle to a file outside it is not read;
+- inside a code block it is a literal; a citation pinned with `@sha` stays a code citation.
+
+A note with no checkable claim is listed with the number of strings in it that look like citations (`word:12`) but match
+no checkable form, with an example (`--json` `unrecognized_citations`), so a writer learns which forms are checked.
+
+**Content anchors and MOVED.** A citation may carry a quoted text, the first words of the cited line:
+`decision-12.md:94 "shadow, canary"` (straight or curly quotes). The text is compared with the raw line, whitespace
+collapsed and case as written (`**shadow**, canary` does not contain `shadow, canary`); a text that wraps onto the next line
+is found too. Two anchors on the same citation are two claims.
+
+| Where the quoted text is | Verdict |
+|---|---|
+| on the cited line(s) | CONFIRMED |
+| on other lines of the same file | MOVED, with the new line in the detail and in `--json` `moved_to` |
+| nowhere in the file | REFUTED |
+
+MOVED fails the run (exit 1), like REFUTED: the citation was checked and its line number is wrong, and the right one is
+known. A citation pinned to a commit (`path:line @sha "text"`) is history: its anchor is checked at that commit, on the cited
+lines only, and it is never MOVED. `okf-verify` never rewrites a note.
+
+**`--since <ref>`.** For a line citation without an anchor into a file that changed since `<ref>` (the bundle must be in a
+git repository), the cited lines at `<ref>` are looked for in the file as it is now: found on other lines, the citation is
+MOVED with the new line; changed in place, the verdict stays and a warning says the cited line changed. Only a citation the
+note already had at `<ref>` is compared, so a branch that moved the text and corrected the citation passes. Use it on a
+branch (`--since main`) to see which inbound citations an edit shifted; a renamed file is not followed. An unknown ref, or a
+bundle outside a repository, is exit 2.
+
+**Generated notes.** `okf_check.verify.generated` lists, as `.okfignore` globs, the notes a script regenerates (their line
+numbers move on every rebuild). A line citation into one without an anchor keeps its verdict and carries a warning to add
+an anchor:
+
+```yaml
+okf_check:
+  verify:
+    generated: ["registers/**"]
+```
 
 **Absolute file paths.** Paths in backticks or quotes (and paths that start with `~`) are checked on disk, but only
 inside the bundle or a `--repo` folder: a path elsewhere on the machine is UNRESOLVED, so a bundle you did not write

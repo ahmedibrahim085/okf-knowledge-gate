@@ -9,6 +9,29 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.34] - 2026-10-19
+
+OKF Knowledge Gate 0.9.34 closes the open public requests: `okf-verify` checks line citations into living documents (with content anchors and a MOVED verdict) and can confirm a commit that exists only on the forge; `okf-check` gains declared facts and a conservation check; and the CI runner runs suites in parallel.
+
+### Added
+- **`okf-verify` checks line citations into living documents** (okf-knowledge-gate#14, all three slices). `decision-12.md:94`, `spec.md:40-42` and `decision-12:94` (by unique note name) are claims of a new kind, `line`: CONFIRMED when the file has that line, REFUTED when the file was found and is shorter, UNRESOLVED when it is missing, ambiguous or outside the bundle and the searched repositories (never looked up there). The short form counts only when a note of that name exists, so `Step:2` and `10:30` stay prose. A note with no checkable claim reports how many strings look like citations but match no checkable form (`--json` `unrecognized_citations`).
+- **Content anchors and the MOVED verdict.** `decision-12.md:94 "shadow, canary"`: the quoted text on the cited lines is CONFIRMED; on other lines of the file the citation is MOVED with the new line (`--json` `moved_to`), which fails the run like REFUTED; nowhere, REFUTED. A citation pinned to a commit checks its anchor at that commit and is never MOVED.
+- **`okf-verify --since <ref>`** compares each unanchored line citation into a file changed since the ref with the file at the ref: cited text that moved is MOVED with the new line, text changed in place keeps its verdict with a warning. **`okf_check.verify.generated`** lists notes a script regenerates; a line citation into one without an anchor warns.
+
+- **Declared facts, `okf_check.facts`** (okf-knowledge-gate#15, both slices). The bundle declares a fact's value once, with the regular expressions that find where it is stated (group 1 is the value) and optionally its source note. A note that states another value is a `FACT-CONFLICT`, a house-rule error (exit 1) naming the note, the line, the fact and both values; `--json` `facts[]` lists every statement. `okf-check <bundle> --facts [NAME]` is the dry run: every occurrence with its line, the differing ones marked, exit 0. The shared schema gains `required` keys, `{min: N}` for lists and a `regex` type, so a bad pattern is exit 2 in both tools. `--selftest` has a Facts probe.
+
+- **The conservation check, `okf-check <bundle> --conserve <ref>`** (okf-knowledge-gate#16, all three slices). Every line removed since the ref must reappear: MOVED when it is anywhere in the bundle now, CHANGED when a line added at the same place replaces it (shown old -> new, paired by position, so compression shows as LOST), DECLARED when the deletion was declared (`--deleted FILE` or an `OKF-Deleted: <note>` trailer), LOST otherwise with its note and old line. Blank, whitespace-only, markup-only and frontmatter lines are not counted. Advisory (exit 0); `--fail-lost` exits 1 on a LOST line; `--json` gives every entry.
+
+- **`okf-verify --remote`: commits that exist only on the forge** (okf-knowledge-gate#6, first comment). A SHA no searched clone holds is asked of the clone's `origin` on GitHub or GitLab, read-only (the clone is never fetched into). Found there it is CONFIRMED, and the detail gives the title and date and says the local clone is behind; otherwise it stays UNRESOLVED and says whether the forge lacked it, the request failed or the origin is no known forge. Opt-in with the flag or `okf_check.verify.remote: true`; `GITHUB_TOKEN`/`GH_TOKEN` and `GITLAB_TOKEN` each go only to their own forge.
+
+
+### Changed
+- **The CI suite runner runs suites in parallel** (gate speed). `.github/ci/run-suites.sh` runs `OKF_SUITE_JOBS` suites at a time (default: the CPU count, at most 4), the two heavy halves of the okf-check tests first, and still reports in suite-list order by the gates' verdict rule. Each suite already has its own temporary folder, so they share no state; a freed slot is refilled at once and the largest suites start first. Measured on a 4-CPU Linux machine (Ubuntu 24.04, same tree): the public suite list took 1,268 s one at a time and 581 s with 4 jobs, the private list 581 s too, which is the length of its longest suite (`okf-check.test.sh`, 574 s): the run now ends when that suite does.
+
+**Review of the 0.9.34 work (three reviewers, one per feature): three blockers and the should-fix findings fixed before release.** Line citations: a symlink inside the bundle that points outside it is judged by its target and not read (an anchor had made the verdict an oracle on the target's text); `--since` compares only a citation the note already had at the ref; a bundle note and a repository document that both match are ambiguous; a wrapped anchor is found; two anchors on one citation are two claims; the hint for citation-shaped text no longer backtracks for minutes on a long line. `--remote`: a GitLab token goes only to gitlab.com or a host named in `OKF_GITLAB_HOSTS`, matched exactly; redirects are not followed; an answer that does not name the commit, or a broken one, is a failed lookup; a host that failed is not asked again. Facts: the patterns run under a time limit; brackets are not part of a value; two patterns on the same text count once; CRLF notes read as LF. Conservation: names with spaces or accents, a removed line starting with `-- ` and the user's diff settings no longer hide removed lines; only notes are compared; `OKF-Deleted` counts only as a trailer. The CI runner writes no bytecode and fails a suite whose result is missing.
+
+**Upgrade note:** a bundle that already writes `name.md:N` citations now has them checked. One that points past the end of its file is REFUTED and makes `okf-verify` exit 1 where 0.9.33 ignored it. Check with `okf-verify <bundle>` before you update a CI pin.
+
 ## [0.9.33] - 2026-10-19
 
 OKF Knowledge Gate 0.9.33 adds CI on GitHub's runner for the public repository, finishes the body-size budget (exclude globs and per-note sizes) and stops `okf-verify` from blaming a history rewrite it cannot prove.
@@ -680,7 +703,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.33...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.34...HEAD
+[0.9.34]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.33...v0.9.34
 [0.9.33]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.32...v0.9.33
 [0.9.32]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.31...v0.9.32
 [0.9.31]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.30...v0.9.31

@@ -75,6 +75,14 @@ as an agent) into exit 1; it changes severity only, never what is found.
   section to a companion note. Never compress the text to get under the number, never raise the limit and never add the
   note to `okf_check.size.exclude` to pass a run (`exclude` is for notes a script generates, set by the owner).
 
+- Before you commit a reorganisation of notes (a split, a move to a companion note, a merge), run
+  `okf-check <bundle> --conserve HEAD`: every removed line should be MOVED. Put back each LOST line, or move it to the
+  note where it belongs; declare a deletion only when the owner asked for it (`OKF-Deleted: <note>` in the commit).
+
+- A `Facts` line means the bundle declares facts in `okf_check.facts`: a `FACT-CONFLICT` names a note that states a fact
+  with another value (exit 1). Fix the note to the declared value; if the value itself changed, the owner changes it in
+  `okf-base.yaml`, and `okf-check <bundle> --facts NAME` lists every place that must follow.
+
 - A `Refused notes` line means a `*.md` is a device, pipe or socket, or is above `okf_check.max_note_bytes` (default
   5242880 bytes): no layer opened it, and the run exits 1. Remove or replace it, or leave it out with `.okfignore`. Never
   point a symlink named like a note at a device. A folder named like a note gets a `Skipped folders  WARN` line and the
@@ -96,10 +104,10 @@ as an agent) into exit 1; it changes severity only, never what is found.
 ## okf-verify: is what a note SAYS still true?
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/okf-verify" <bundle> [--repo DIR]... [--host-paths] [--json] [--strict]   # plain `okf-verify` also works while the plugin is enabled
+"${CLAUDE_PLUGIN_ROOT}/scripts/okf-verify" <bundle> [--repo DIR]... [--host-paths] [--since REF] [--json] [--strict]   # plain `okf-verify` also works while the plugin is enabled
 ```
 
-It resolves the commit SHAs and file paths each concept cites. Three verdicts, and the difference matters:
+It resolves the commit SHAs, file paths and line citations (`decision-12.md:94`) each concept cites. Three verdicts, and the difference matters:
 
 ```
 CONFIRMED   checked, and it holds
@@ -110,6 +118,10 @@ UNRESOLVED  could NOT be checked   (never a soft REFUTED: nobody looked)
 A missing SHA is never REFUTED (it depends on which repositories were searched and does not survive a history
 rewrite); a missing path is REFUTED only when its parent folder exists. `--strict` also fails on UNRESOLVED and on
 notes with no checkable claim (those are listed as unverifiable, not verified).
+
+A citation with a quoted anchor (`decision-12.md:94 "shadow, canary"`) whose text now sits on another line is MOVED
+(exit 1): fix the line number to the one the detail (or `--json` `moved_to`) gives, unless the citation is pinned with
+`@sha` (history is never renumbered). When you add a line citation, add the first words of the line as its anchor.
 
 ## One note: `--file`
 
@@ -140,7 +152,7 @@ empty, inside the vault, or cannot be written). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.33`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.34`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

@@ -84,11 +84,25 @@ PATH_RE = re.compile(r"([`\"'])((?:~|/)[A-Za-z0-9._/ -]*[A-Za-z0-9._-]\.[A-Za-z0
 # (an absolute path is a PATH_RE claim); the lookbehind keeps a match from starting mid-token, so a Windows path (`C:\x\y.py:3`)
 # or a URL is not cut into a citation of its last piece. A path cut at a SPACE cannot be told from prose here: check_citation
 # answers UNRESOLVED when the cut is the end of a longer file name.
-CITE_RE = re.compile(r"(?<![\w./\\-])([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?`?(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:@|at(?:[ \t]+|[ \t]*\r?\n[ \t]*))`?([0-9a-f]{7,40})\b`?", re.I)
+CITE_RE = re.compile(r"(?<![\w./\\-])([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?`?(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:@|at(?:[ \t]+|[ \t]*\r?\n[ \t]*))`?([0-9a-f]{7,40})\b`?(?:[ \t]+[\"“]([^\"”\n]{1,200})[\"”])?", re.I)
 # The gap between `path:line` and `@sha` may hold ONE line break (a wrapped line) but never a blank line: across a paragraph break the two
 # are separate statements and one was read as the other's citation. (audit R058)
 # The same claim with a path that holds a space, QUOTED: the quotes say where the path starts, so nothing is cut and nothing is guessed.
-QCITE_RE = re.compile(r"(?<![\w./\\-])([`\"'])([A-Za-z0-9_][A-Za-z0-9_./-]*(?: [A-Za-z0-9_./-]+)+\.[A-Za-z0-9]{1,8})\1:(\d+)(?:-(\d+))?`?(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:@|at(?:[ \t]+|[ \t]*\r?\n[ \t]*))`?([0-9a-f]{7,40})\b`?", re.I)
+QCITE_RE = re.compile(r"(?<![\w./\\-])([`\"'])([A-Za-z0-9_][A-Za-z0-9_./-]*(?: [A-Za-z0-9_./-]+)+\.[A-Za-z0-9]{1,8})\1:(\d+)(?:-(\d+))?`?(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:@|at(?:[ \t]+|[ \t]*\r?\n[ \t]*))`?([0-9a-f]{7,40})\b`?(?:[ \t]+[\"“]([^\"”\n]{1,200})[\"”])?", re.I)
+# A line citation into a living document, with no commit (okf-knowledge-gate#14): `decision-12.md:94`, `spec.md:40-42`. The
+# lookbehind keeps a URL, a Windows path or a glued token from being cut into a citation of its tail; the lookahead lets a
+# sentence's full stop follow (`spec.md:42.`) but not a longer token (`d.md:3x`, `d.md:3:4`).
+LINE_RE = re.compile(r"(?<![\w./\\:-])((?:\.{1,2}/)*[A-Za-z0-9_][A-Za-z0-9_./-]*\.md):(\d+)(?:-(\d+))?(?![\w:/-]|\.\w)(?:[ \t]+[\"“]([^\"”\n]{1,200})[\"”])?")
+# The short form `decision-12:94` names a note by its file name. Prose holds the same shape (`Step:2`, `localhost:8080`), so
+# it is a claim only when a note of that name exists in the bundle; a time (`10:30`) has no letter and never matches.
+NAME_RE = re.compile(r"(?<![\w./\\:-])([A-Za-z0-9_-]{1,120}):(\d+)(?:-(\d+))?(?![\w:/-]|\.\w)(?:[ \t]+[\"“]([^\"”\n]{1,200})[\"”])?")
+# What a writer may have meant as a citation, counted for a note with no checkable claim so the writer learns which forms
+# are checkable (okf-knowledge-gate#14, part 3). A hint, never a verdict.
+LOOKS_TOKEN = re.compile(r"[^`'\"()\[\]<>:]{1,120}:\d+(?:-\d+)?")   # one whitespace-separated token; see looks_like()
+# A content anchor (slice b): the quoted text after a citation must be on the cited lines. Elsewhere in the same file the
+# citation is MOVED (checked: the text is there, the line number is wrong, and the new one is known); nowhere, REFUTED. A
+# citation pinned to a commit is history: its anchor is checked at that commit, on its lines, and it is never MOVED.
+MOVED = "MOVED"
 QUOTED = re.compile(r"[\"“]([^\"”\n]{12,120})[\"”]")
 RESERVED = {"index.md", "log.md"}
 FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})")
@@ -197,8 +211,132 @@ def repo_usable(repo: Path) -> tuple[bool, str]:
     return True, ""
 
 
-def check_sha(sha: str, repos: list[Path], subjects: list[str]):
+def forge_of(repo: Path):
+    """(kind, host, path) of the repository's `origin` when it is on GitHub or GitLab, else None (okf-knowledge-gate#6).
+
+    The host is matched exactly: github.com, gitlab.com, or a self-hosted GitLab named in OKF_GITLAB_HOSTS (comma-separated).
+    A name that only contains "gitlab" (gitlab.com.evil.com, an ssh alias) is not a forge: it is not asked and gets no token.
+    """
+    rc, url = git(repo, "remote", "get-url", "origin")
+    if rc != 0 or not url:
+        return None
+    m = (re.match(r"^(?:https?|ssh|git)://(?:[^@/]+@)?([^/:]+)(?::\d+)?/(.+?)(?:\.git)?/?$", url)
+         or re.match(r"^(?:[^@/]+@)?([^/:]+):(.+?)(?:\.git)?/?$", url))
+    if not m or not re.fullmatch(r"[A-Za-z0-9._/-]+", m.group(2)) or ".." in m.group(2):
+        return None
+    host, path = m.group(1).lower(), m.group(2)
+    gitlabs = {"gitlab.com"} | {h.strip().lower() for h in os.environ.get("OKF_GITLAB_HOSTS", "").split(",") if h.strip()}
+    if host == "github.com" and path.count("/") == 1:
+        return "github", host, path
+    if host in gitlabs:
+        return "gitlab", host, path
+    return None
+
+
+_REMOTE: dict = {}
+_DEAD_HOSTS: dict = {}   # a host whose lookup failed: not asked again in this run (a dead network would cost 10 s per SHA)
+
+
+def remote_commit(forge: tuple, sha: str):
+    """Ask the forge's API, read-only, for one commit: ("found", title, date), ("absent",) or ("failed", why).
+
+    The clone is never fetched into. GITHUB_TOKEN or GH_TOKEN goes to github.com only, GITLAB_TOKEN to a GitLab host only, and
+    a redirect is refused, so no header follows it elsewhere. A 200 counts only when its body names this commit.
+    OKF_FORGE_API_BASE replaces the API host, for tests; tokens go to it only when it is this machine (127.0.0.1, localhost).
+    """
+    import http.client
+    import urllib.error
+    import urllib.parse
+    import urllib.request
+    key = (forge, sha)
+    if key in _REMOTE:
+        return _REMOTE[key]
+    kind, host, path = forge
+    if host in _DEAD_HOSTS:
+        return ("failed", f"{_DEAD_HOSTS[host]}, earlier in this run")
+    override = os.environ.get("OKF_FORGE_API_BASE")
+    base = override or ("https://api.github.com" if kind == "github" else f"https://{host}")
+    local = urllib.parse.urlparse(base).hostname in ("127.0.0.1", "localhost")
+    send_tokens = not override or local
+    headers = {"User-Agent": "okf-verify"}
+    if kind == "github":
+        url = f"{base}/repos/{path}/commits/{sha}?per_page=1"   # one page of files: a commit with a large diff fits the read
+        headers["Accept"] = "application/vnd.github+json"
+        token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if token and send_tokens:
+            headers["Authorization"] = f"Bearer {token}"
+    else:
+        url = f"{base}/api/v4/projects/{urllib.parse.quote(path, safe='')}/repository/commits/{sha}"
+        token = os.environ.get("GITLAB_TOKEN")
+        if token and send_tokens:
+            headers["PRIVATE-TOKEN"] = token
+
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, req, fp, code, msg, hdrs, newurl):
+            raise urllib.error.HTTPError(req.full_url, code, "redirect", hdrs, fp)
+    handlers = [NoRedirect()] + ([urllib.request.ProxyHandler({})] if local else [])
+    try:
+        with urllib.request.build_opener(*handlers).open(urllib.request.Request(url, headers=headers), timeout=10) as r:
+            body = json.loads(r.read(5_000_000).decode("utf-8", "replace"))
+        if not isinstance(body, dict):
+            out = ("failed", "the answer is not a commit")
+        elif kind == "github" and str(body.get("sha", "")).lower().startswith(sha):
+            c = body.get("commit") if isinstance(body.get("commit"), dict) else {}
+            date = ((c.get("committer") if isinstance(c.get("committer"), dict) else {}).get("date") or "")
+            out = ("found", str(c.get("message") or "").split("\n")[0], str(date)[:10])
+        elif kind == "gitlab" and str(body.get("id", "")).lower().startswith(sha):
+            out = ("found", str(body.get("title") or ""), str(body.get("committed_date") or "")[:10])
+        else:
+            out = ("failed", "the answer does not name this commit")
+    except urllib.error.HTTPError as e:
+        if e.code in (404, 422):
+            out = ("absent",)
+        elif 300 <= e.code < 400:
+            out = ("failed", f"redirect {e.code}, not followed")
+        else:
+            out = ("failed", f"HTTP {e.code}")
+    except Exception as e:   # a dead network, a bad TLS handshake, a broken answer: nobody could look, never a crash
+        out = ("failed", type(e).__name__)
+        if not isinstance(e, (ValueError, http.client.IncompleteRead)):
+            _DEAD_HOSTS[host] = type(e).__name__
+    if out[0] == "failed" and out[1].startswith("HTTP 5"):
+        _DEAD_HOSTS[host] = out[1]
+    _REMOTE[key] = out
+    return out
+
+
+def remote_sha(sha: str, usable: list[Path]):
+    """--remote (okf-knowledge-gate#6): (CONFIRMED, detail) when a searched repository's forge has the commit, else (None, note)."""
+    notes = []
+    for r in usable:
+        forge = forge_of(r)
+        if forge is None:
+            notes.append(f"{r.name} has no GitHub or GitLab origin to ask")
+            continue
+        where = f"{forge[1]}/{forge[2]}"
+        got = remote_commit(forge, sha)
+        if got[0] == "found":
+            return CONFIRMED, (f"not in the local clone {r.name}, but on the remote {where}: {got[1][:60]}"
+                               f"{' (' + got[2] + ')' if got[2] else ''}; the local clone {r.name} is behind (git fetch)")
+        notes.append(f"not on the remote {where} either (or not visible without a token)" if got[0] == "absent"
+                     else f"remote lookup on {where} failed ({got[1]})")
+    return None, "; ".join(notes)
+
+
+def check_sha(sha: str, repos: list[Path], subjects: list[str], remote: bool = False):
     """A SHA is CONFIRMED or UNRESOLVED. Never REFUTED — see the module docstring."""
+    v, d = _check_sha(sha, repos, subjects)
+    if v != CONFIRMED and remote and repos:
+        usable = [r for r in repos if repo_usable(r)[0]]
+        rv, note = remote_sha(sha, usable)
+        if rv == CONFIRMED:
+            return rv, note
+        if note:
+            return v, f"{d}; {note}"
+    return v, d
+
+
+def _check_sha(sha: str, repos: list[Path], subjects: list[str]):
     if not repos:
         return UNRESOLVED, "no repository searched (pass --repo to check SHAs)"
 
@@ -313,7 +451,7 @@ def tree_listing(repo: Path, sha: str):
 
 
 def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects: list[str], prefix: str = "", quoted: bool = False,
-                   named: list | None = None):
+                   named: list | None = None, anchor: str | None = None):
     """`path:lines @sha`: the sha must resolve, then the path must exist in THAT commit's tree.
 
     REFUTED only when the commit was found and its tree lacks the path: then we looked in the right place. A sha that
@@ -375,6 +513,14 @@ def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects:
         if first < 1 or last > count:
             return REFUTED, (f"line part failed: {n} has {count} lines at {sha}, line {lines} "
                              f"{'does not exist (lines start at 1)' if first < 1 else 'is past the end'}")
+        if anchor:
+            try:
+                p = subprocess.run(["git", "-C", str(r), "cat-file", "blob", f"{sha}:{n}"], capture_output=True, timeout=15)
+            except (OSError, subprocess.SubprocessError):
+                return UNRESOLVED, f"sha {sha} and path {n} exist in {r.name}, but the quoted text was not checked (git did not run)"
+            if p.returncode != 0:
+                return UNRESOLVED, f"sha {sha} and path {n} exist in {r.name}, but the quoted text was not checked"
+            return anchor_check(p.stdout.decode("utf-8", "replace"), lines, anchor, f"{n} at {sha}", may_move=False)[:2]
         return CONFIRMED, f"sha {sha} resolves in {r.name}; path {n} has {count} lines at that commit; line {lines} is within it"
     if cut:
         return UNRESOLVED, (f"{path} is the end of {cut[0]} at {sha}, not a whole path: the cited path may be cut at a space "
@@ -382,6 +528,203 @@ def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects:
     if not absent:  # the sha resolved a moment ago and now nowhere: a failed look is not a missing path
         return UNRESOLVED, f"{sha} no longer resolves in the searched repos"
     return REFUTED, f"path part failed: {path} does not exist at {sha} in {', '.join(absent)}"
+
+
+def looks_like(body: str) -> list:
+    """The tokens of `body` that look like a citation (`word:12`) but matched no checkable form (okf-knowledge-gate#14, part 3), in order.
+
+    A token scan, not a regular expression over the body: the pattern it replaced backtracked cubically on a long line (a
+    20 KB inline image took minutes)."""
+    out = []
+    for tok in body.split():
+        tok = tok.strip("(").rstrip(".,;)")
+        if LOOKS_TOKEN.fullmatch(tok) and any(c.isalpha() for c in tok.split(":")[0]):
+            out.append(tok)
+    return out
+
+
+def real_inside(p, roots) -> bool:
+    """Is the REAL path of `p` (symlinks resolved) inside one of `roots` (also resolved)? A link in the bundle that points
+    outside it must not be read: an anchor would make CONFIRMED / REFUTED an oracle on the target's text (review B1)."""
+    rp = os.path.realpath(str(p))
+    for r in roots:
+        rr = os.path.realpath(str(r))
+        if rp == rr or rp.startswith(rr.rstrip(os.sep) + os.sep):
+            return True
+    return False
+
+
+def line_range(lines: str, count: int, shown: str):
+    """The verdict of `lines` (`N` or `N-M`) against a file of `count` lines; `shown` names the file in the detail."""
+    lo, _, hi = lines.partition("-")
+    if len(lo) > 9 or len(hi) > 9:   # int() of thousands of digits raises on current Pythons; no file has 10^9 lines
+        return REFUTED, f"line part failed: line number out of range ({shown} has {count} lines)"
+    first, last = int(lo), max(int(lo), int(hi or lo))
+    if first < 1 or last > count:
+        return REFUTED, (f"{shown} has {count} lines, line {lines} "
+                         f"{'does not exist (lines start at 1)' if first < 1 else 'is past the end'}")
+    return CONFIRMED, f"{shown} has {count} lines; line {lines} is within it"
+
+
+def anchor_check(text: str, lines: str, anchor: str, shown: str, may_move: bool = True):
+    """The verdict of a content anchor: (verdict, detail, moved_to). Whitespace is compared collapsed, case as written."""
+    want = " ".join(anchor.split())
+    rows = text.split("\n")
+    if text.endswith("\n"):
+        rows = rows[:-1]
+    lo, _, hi = lines.partition("-")
+    first = int(lo) if len(lo) <= 9 else 10 ** 9
+    last = max(first, int(hi) if hi and len(hi) <= 9 else first)
+    span = min(last - first + 1, max(len(rows), 1))
+    if 1 <= first and last <= len(rows) and want in " ".join(" ".join(rows[first - 1:last]).split()):
+        return CONFIRMED, f"{shown}: the quoted text is on line {lines}", None
+    if not may_move:
+        return REFUTED, f"{shown}: the quoted text \"{want}\" is not on line {lines} (pinned to a commit: never moved)", None
+    starts = [i + 1 for i in range(len(rows) - span + 1) if want in " ".join(" ".join(rows[i:i + span]).split())]
+    if not starts:
+        # The text may wrap over more lines than the citation names: look in the whole file, collapsed, and name the line
+        # it starts on (review S2).
+        parts = [" ".join(r.split()) for r in rows]
+        offs, pos = [], 0
+        for part in parts:
+            offs.append(pos)
+            pos += len(part) + 1
+        joined, k = " ".join(parts), 0
+        while True:
+            k = joined.find(want, k)
+            if k < 0:
+                break
+            line = max(i for i, o in enumerate(offs) if o <= k) + 1
+            if line not in starts:
+                starts.append(line)
+            k += 1
+    if not starts:
+        return REFUTED, f"{shown}: the quoted text \"{want}\" is not in the file", None
+    at = [str(i) if span == 1 else f"{i}-{i + span - 1}" for i in starts]
+    shown_at = " or ".join(at[:3]) + (f" (and {len(at) - 3} more)" if len(at) > 3 else "")
+    return MOVED, f"{shown}: the quoted text is not on line {lines}; it is now on line {shown_at}", at[0]
+
+
+def since_check(found: Path, text: str, lines: str, since: tuple):
+    """--since (okf-knowledge-gate#14, slice c): did the cited lines of `found` move or change since the ref? ("moved", [starts]), ("changed", None) or None.
+
+    The cited block is taken from `git show <ref>:<path>` (output not stripped: a stripped leading blank line would shift every
+    line number) and looked for in the file as it is now, compared with whitespace collapsed.
+    """
+    top, ref = since[0], since[1]
+    rel = os.path.relpath(os.path.realpath(str(found)), os.path.realpath(str(top)))
+    if rel.startswith(".."):
+        return None
+    try:
+        p = subprocess.run(["git", "-C", str(top), "show", f"{ref}:{rel}"], capture_output=True, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if p.returncode != 0:
+        return None   # the file is new since the ref: nothing to compare
+    def rows(t):
+        r = t.split("\n")
+        return r[:-1] if t.endswith("\n") else r
+    old, new = rows(p.stdout.decode("utf-8", "replace")), rows(text)
+    lo, _, hi = lines.partition("-")
+    if len(lo) > 9 or len(hi) > 9:
+        return None
+    first, last = int(lo), max(int(lo), int(hi or lo))
+    if first < 1 or last > len(old):
+        return None   # the citation was already outside the file at the ref
+    norm = lambda block: [" ".join(x.split()) for x in block]
+    cited = norm(old[first - 1:last])
+    if norm(new[first - 1:last]) == cited:
+        return None
+    span = last - first + 1
+    starts = [i + 1 for i in range(len(new) - span + 1) if norm(new[i:i + span]) == cited]
+    return ("moved", starts) if starts else ("changed", None)
+
+
+def check_line(target: str, lines: str, by_name: bool, note_dir: Path, bundle: Path, repos: list[Path],
+               docs: list[str], guard, anchor: str | None = None, since: tuple | None = None,
+               generated: frozenset = frozenset()):
+    """A line citation into a living document (okf-knowledge-gate#14): the file must exist with that many lines.
+
+    `target` is a path (`notes/d.md`) or, with `by_name`, a note's file name without `.md`. A path is read from the citing
+    note's folder, then the bundle root, then as the end of one bundle path, then from the root of each searched repository.
+    REFUTED only when the file was found and is shorter. A file that is missing or ambiguous is UNRESOLVED, and a path that
+    leaves the bundle and every searched repository is not even looked up: a bundle you did not write must not learn, through
+    this check, which files exist on your machine. Returns None when a short-form name matches no note: it is prose.
+    """
+    found = None
+    roots = [bundle, *repos]
+    outside_msg = "outside the bundle and the searched repositories, so it was not looked up"
+    if by_name:
+        hits = [d for d in docs if os.path.basename(d) == target + ".md"]
+        if not hits:
+            return None
+        if len(hits) > 1:
+            return UNRESOLVED, f"ambiguous: {len(hits)} notes are named {target}.md ({', '.join(sorted(hits)[:3])})"
+        if not real_inside(bundle / hits[0], roots):
+            return UNRESOLVED, outside_msg
+        found, shown = bundle / hits[0], hits[0]
+    else:
+        outside = False
+        for base in (note_dir, bundle):   # an exact path from the note's folder or the bundle root decides
+            p = Path(os.path.normpath(str(base / target)))
+            if not inside_any(str(p), [bundle]) or not real_inside(p, roots):
+                outside = True
+                continue
+            if p.is_file():
+                found, shown = p, os.path.relpath(p, bundle)
+                break
+        if found is None:
+            # Otherwise the end of a bundle path, or a document of a searched repository: one candidate in all, or ambiguous.
+            cands = []
+            if not target.startswith("../"):
+                cands += [(bundle / d, d) for d in docs if d == target or d.endswith("/" + target)]
+            for r in repos:
+                p = Path(os.path.normpath(str(r / target)))
+                if inside_any(str(p), [r]) and real_inside(p, roots) and p.is_file():
+                    cands.append((p, f"{r.resolve().name or r}/{os.path.relpath(p, r)}"))
+            cands = [(p, n) for p, n in cands if real_inside(p, roots)]
+            if len(cands) > 1:
+                return UNRESOLVED, (f"ambiguous: {len(cands)} documents match {target} "
+                                    f"({', '.join(sorted(n for _, n in cands)[:3])})")
+            if cands:
+                found, shown = cands[0]
+        if found is None:
+            if outside and not any(inside_any(os.path.normpath(str(r / target)), [r]) for r in repos):
+                return UNRESOLVED, outside_msg
+            where = ", ".join(r.resolve().name or str(r) for r in repos)   # `--repo .` has no name of its own
+            return UNRESOLVED, f"not found in the bundle{' or the searched repositories (' + where + ')' if repos else ''}"
+    why = guard.refusal(found)
+    if why:
+        return UNRESOLVED, f"{shown} was not opened: {why}"
+    try:
+        text = guard.read_note(found, "utf-8", "replace")
+    except OSError as e:
+        return UNRESOLVED, f"{shown} cannot be read ({type(e).__name__})"
+    count = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
+    extra = {}
+    try:
+        in_bundle = os.path.relpath(found, bundle)
+    except ValueError:
+        in_bundle = ".."
+    if not anchor and in_bundle in generated:
+        extra["warning"] = (f"{shown} is a generated note (okf_check.verify.generated): its line numbers change on every "
+                            f"rebuild, so add a quoted anchor to the citation")
+    if anchor:
+        v, d, extra["moved_to"] = anchor_check(text, lines, anchor, shown)
+        return v, d, extra
+    v, d = line_range(lines, count, shown)
+    # Only a citation the note already had at the ref: one the branch corrected along with the move is right as it is (B2).
+    shifted = since_check(found, text, lines, since) if since and since[2](f"{target}:{lines}") else None
+    if shifted and shifted[0] == "moved":
+        span = max(int(lines.partition("-")[2] or lines.partition("-")[0]) - int(lines.partition("-")[0]), 0)
+        at = [str(i) if not span else f"{i}-{i + span}" for i in shifted[1]]
+        extra["moved_to"] = at[0]
+        return MOVED, (f"{shown}: the cited text was on line {lines} at {since[1]} and is now on line "
+                       f"{' or '.join(at[:3])}"), extra
+    if shifted:
+        extra["warning"] = (f"the cited line {lines} of {shown} changed since {since[1]}: check that the citation still says "
+                            f"what it meant")
+    return v, d, extra
 
 
 def case_exact(p: Path) -> bool:
@@ -490,6 +833,9 @@ def check_node(value, node: dict, where: str, bundle: Path | None = None) -> Non
         for k in value:
             if str(k) not in node["keys"]:
                 raise BaseConfigError(f"{where}.{k} is not a known key (known: {', '.join(known)})")
+        for k in node.get("required", []):   # {required: [names]} (okf_check.facts, okf-knowledge-gate#15)
+            if k not in value:
+                raise BaseConfigError(f"{where} needs {k}")
         for k, v in value.items():
             check_node(v, node["keys"][str(k)], f"{where}.{k}", bundle)
             # {requires: {sibling: value}}: this key only makes sense when a sibling key has that value.
@@ -548,12 +894,24 @@ def check_node(value, node: dict, where: str, bundle: Path | None = None) -> Non
         # {type: integer, min, max}: a whole number within the bounds (inclusive); 40.5 and true are not.
         if isinstance(value, bool) or not isinstance(value, int) or not node["min"] <= value <= node["max"]:
             raise BaseConfigError(f"{where} must be a whole number from {node['min']} to {node['max']}")
+    elif node.get("type") == "regex":
+        # {type: regex}: a pattern that finds a statement; group 1 is the stated value (okf_check.facts)
+        if not isinstance(value, str) or not value:
+            raise BaseConfigError(f"{where} must be a non-empty string")
+        try:
+            groups = re.compile(value).groups
+        except re.error as e:
+            raise BaseConfigError(f"{where}: {json.dumps(value)} is not a regular expression ({e})")
+        if groups < 1:
+            raise BaseConfigError(f"{where}: {json.dumps(value)} needs a capture group (group 1 is the stated value)")
     elif node.get("type") == "boolean":
         if not isinstance(value, bool):
             raise BaseConfigError(f"{where} must be true or false")
     elif "list" in node:
         if not isinstance(value, list):
             raise BaseConfigError(f"{where} must be a list")
+        if len(value) < node.get("min", 0):
+            raise BaseConfigError(f"{where} needs at least {node['min']} item(s)")
         for i, v in enumerate(value):
             check_node(v, node["list"], f"{where}[{i}]", bundle)
             # {item_no_prefix: "!"}: list items that are .okfignore globs (size.exclude) have no negation, as map keys (owners).
@@ -690,10 +1048,28 @@ def not_ignored(bundle: Path):
     return {x for x in r.stdout.decode("utf-8", "replace").split("\0") if x}
 
 
-def verify(bundle: Path, repos: list[Path], host_paths: bool = False):
-    results, no_claims = [], []
+def generated_notes(bundle: Path, docs: list[str]) -> frozenset:
+    """The notes okf_check.verify.generated names (okf-knowledge-gate#14, slice c), through the shared .okfignore matcher (ignore-lib.sh --match)."""
+    pats = [p.strip() for p in (load_block(bundle).get("verify", {}).get("generated") or []) if isinstance(p, str) and p.strip()]
+    if not pats or not docs:
+        return frozenset()
+    lib = Path(__file__).resolve().parent / "ignore-lib.sh"
+    try:
+        r = subprocess.run(["bash", str(lib), "--match", *pats], input="\0".join(docs).encode() + b"\0",
+                           capture_output=True, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return frozenset()
+    return frozenset(x for x in r.stdout.decode("utf-8", "replace").split("\0") if x)
+
+
+def verify(bundle: Path, repos: list[Path], host_paths: bool = False, since: tuple | None = None, remote: bool = False):
+    results, no_claims, unrecognized = [], [], []
     guard = _guard()
     keep = not_ignored(bundle)
+    # The bundle's documents, the targets of line citations: every *.md, ignored or not (an ignored note still exists).
+    docs = sorted(str(f.relative_to(bundle)) for f in bundle.rglob("*.md") if f.is_file())
+    names = {os.path.basename(d) for d in docs}
+    generated = generated_notes(bundle, docs)
     for f in sorted(bundle.rglob("*.md")):
         if f.name in RESERVED:
             continue
@@ -728,28 +1104,69 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False):
                             "verdict": UNRESOLVED,
                             "detail": ("an unclosed code fence swallowed the rest of this "
                                        "concept — any claim after it was NOT checked")})
-        subjects = QUOTED.findall(body)
         # A citation is ONE claim: blank it out before the SHA and path scans so its sha is not also counted on its own.
         cites = []
         def take(m):
             g = m.groups()
-            quoted = len(g) == 5
-            cites.append((g[1:] if quoted else g) + (m.string[m.string.rfind("\n", 0, m.start()) + 1:m.start()], quoted))
+            quoted = len(g) == 6   # QCITE_RE has the quote character first; both end with the optional anchor
+            core = g[1:5] if quoted else g[0:4]
+            cites.append(core + (m.string[m.string.rfind("\n", 0, m.start()) + 1:m.start()], quoted, g[-1]))
             return " " * len(m.group(0))
         body = CITE_RE.sub(take, QCITE_RE.sub(take, body))
+        # Line citations into living documents, after the pinned ones above have been blanked out.
+        lcites = []
+        def take_line(m):
+            lcites.append((m.group(1), m.group(2), m.group(3), False, m.group(4)))
+            return " " * len(m.group(0))
+        def take_name(m):
+            if m.group(1) + ".md" not in names or not any(c.isalpha() for c in m.group(1)):
+                return m.group(0)   # names no note: prose, left for the hint below
+            lcites.append((m.group(1), m.group(2), m.group(3), True, m.group(4)))
+            return " " * len(m.group(0))
+        body = NAME_RE.sub(take_name, LINE_RE.sub(take_line, body))
+        # Commit subjects quoted in the note, for the rewrite hint: after the citations are blanked, so an anchor is not one.
+        subjects = QUOTED.findall(body)
         found = 0
         seen: set[tuple] = set()
         checked: dict = {}
+        old_note: list = []
+        def had_at_ref(claim):
+            """Did this note already cite `claim` at the --since ref? (Read once per note, only when asked.)"""
+            if not old_note:
+                rel_top = os.path.relpath(os.path.realpath(str(f)), os.path.realpath(str(since[0])))
+                try:
+                    p = subprocess.run(["git", "-C", str(since[0]), "show", f"{since[1]}:{rel_top}"], capture_output=True, timeout=15)
+                    old_note.append(p.stdout.decode("utf-8", "replace") if p.returncode == 0 else "")
+                except (OSError, subprocess.SubprocessError):
+                    old_note.append("")
+            return re.search(r"(?<![\w./-])" + re.escape(claim) + r"(?![\d-])", old_note[0]) is not None
 
-        for path, lo, hi, sha, prefix, quoted in cites:
+        for target, lo, hi, by_name, anchor in lcites:
+            lines = f"{lo}-{hi}" if hi else lo
+            claim = f"{target}:{lines}"
+            if ("line", claim, anchor) in seen:   # the same citation with two anchors is two claims
+                continue
+            seen.add(("line", claim, anchor))
+            note_since = (since[0], since[1], had_at_ref) if since else None
+            v, d, extra = (check_line(target, lines, by_name, f.parent, bundle, repos, docs, guard, anchor, note_since, generated)
+                           + ({},))[:3]
+            found += 1
+            res = {"concept": rel, "kind": "line", "claim": claim, "verdict": v, "detail": d}
+            if extra.get("moved_to"):
+                res["moved_to"] = extra["moved_to"]   # the line number a tool or a person can write instead
+            if extra.get("warning"):
+                res["warning"] = extra["warning"]
+            results.append(res)
+
+        for path, lo, hi, sha, prefix, quoted, anchor in cites:
             sha = sha.lower()
             lines = f"{lo}-{hi}" if hi else lo
             claim = f"{path}:{lines} @{sha}"
             # The words before the cut can change which file is named, so only the RESULT can say two citations are the same claim.
-            ck = (claim, quoted, tuple(() if quoted else spaced_names(path, prefix)))
+            ck = (claim, quoted, tuple(() if quoted else spaced_names(path, prefix)), anchor)
             if ck not in checked:
                 named: list = []
-                checked[ck] = (*check_citation(path, lines, sha, repos, subjects, prefix, quoted, named), named)
+                checked[ck] = (*check_citation(path, lines, sha, repos, subjects, prefix, quoted, named, anchor), named)
             v, d, named = checked[ck]
             if named:
                 claim = f"{named[0]}:{lines} @{sha}"
@@ -791,9 +1208,11 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False):
                 continue
             seen.add(("sha", sha))
             found += 1
-            v, d = check_sha(sha, repos, subjects)
-            results.append({"concept": rel, "kind": "sha", "claim": sha,
-                            "verdict": v, "detail": d})
+            v, d = check_sha(sha, repos, subjects, remote)
+            res = {"concept": rel, "kind": "sha", "claim": sha, "verdict": v, "detail": d}
+            if remote and v == CONFIRMED and d.startswith("not in the local clone"):
+                res["source"] = "remote"   # CONFIRMED (remote): the local copy is behind
+            results.append(res)
 
         for _delim, raw in PATH_RE.findall(body):
             if ("path", raw) in seen:
@@ -806,7 +1225,10 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False):
 
         if found == 0:
             no_claims.append(rel)
-    return results, no_claims
+            looks = looks_like(body)
+            if looks:
+                unrecognized.append({"concept": rel, "count": len(looks), "examples": looks[:3]})
+    return results, no_claims, unrecognized
 
 
 def main() -> int:
@@ -822,6 +1244,11 @@ def main() -> int:
     ap.add_argument("--manifest-dir", type=Path, default=None,
                     help="with --check-config: read okf-base.yaml from this folder (okf-check's frozen copy); the paths it names are still resolved against the bundle")
     ap.add_argument("--strict", action="store_true", help="also fail on UNRESOLVED")
+    ap.add_argument("--remote", action="store_true",
+                    help="ask the GitHub or GitLab API (read-only) for a SHA no searched clone holds; also okf_check.verify.remote")
+    ap.add_argument("--since", metavar="REF", default=None,
+                    help="compare each line citation into a file changed since this git ref with the file at the ref: "
+                         "text that moved is MOVED, text that changed in place gets a warning")
     a = ap.parse_args()
 
     if not a.bundle.is_dir():
@@ -883,23 +1310,41 @@ def main() -> int:
         if left == 0:
             print("error: .okfignore excludes every note - nothing was verified (not a pass)", file=sys.stderr)
             return 2
-    results, no_claims = verify(a.bundle, repos, a.host_paths)
+    since = None
+    if a.since:
+        rc, top = git(a.bundle, "rev-parse", "--show-toplevel")
+        if rc != 0 or not top:
+            print(f"error: --since needs the bundle inside a git repository: {a.bundle} is not inside one", file=sys.stderr)
+            return 2
+        rc, _ = git(Path(top), "rev-parse", "--verify", "--quiet", f"{a.since}^{{commit}}")
+        if rc != 0:
+            print(f"error: --since {a.since}: not a commit in {top}", file=sys.stderr)
+            return 2
+        since = (Path(top), a.since)
+    remote = a.remote or load_block(a.bundle).get("verify", {}).get("remote") is True
+    results, no_claims, unrecognized = verify(a.bundle, repos, a.host_paths, since, remote)
     results = [*declared_problems, *results]
 
     counts = {v: sum(1 for r in results if r["verdict"] == v)
               for v in (CONFIRMED, REFUTED, UNRESOLVED)}
+    moved = sum(1 for r in results if r["verdict"] == MOVED)
+    if moved:   # present only when an anchored citation moved, so a report without one is unchanged
+        counts[MOVED] = moved
     # --strict is sold as "for a corpus that must stay checkable", yet a corpus
     # with NOTHING checkable passed it — precisely the corpus it exists to catch.
     # Under --strict an unverifiable concept is a failure, not a free pass. (D-9)
-    failed = (counts[REFUTED] > 0
+    failed = (counts[REFUTED] > 0 or moved > 0
               or (a.strict and (counts[UNRESOLVED] > 0 or bool(no_claims))))
 
     if a.json:
-        print(json.dumps({"bundle": str(a.bundle), "counts": counts,
-                          "no_checkable_claims": no_claims,
-                          "repos_searched": [str(r) for r in repos],
-                          "repos_skipped_not_git": skipped,
-                          "passed": not failed, "results": results}, indent=2))
+        report = {"bundle": str(a.bundle), "counts": counts,
+                  "no_checkable_claims": no_claims,
+                  "repos_searched": [str(r) for r in repos],
+                  "repos_skipped_not_git": skipped,
+                  "passed": not failed, "results": results}
+        if unrecognized:   # present only when a no-claim note holds citation-shaped text (okf-knowledge-gate#14, part 3)
+            report["unrecognized_citations"] = unrecognized
+        print(json.dumps(report, indent=2))
         return 0 if not failed else 1
 
     print(f"okf-verify — {a.bundle}")
@@ -907,7 +1352,7 @@ def main() -> int:
     for s in skipped:
         print(f"  ! not a git repo, skipped: {s}")
     for r in results:
-        mark = {CONFIRMED: "ok  ", REFUTED: "REFUTED", UNRESOLVED: "unresolved"}[r["verdict"]]
+        mark = {CONFIRMED: "ok  ", REFUTED: "REFUTED", UNRESOLVED: "unresolved", MOVED: "MOVED"}[r["verdict"]]
         # Ellipsis, not a bare cut: a claim sliced at 48 characters read as the
         # whole claim, which matters when the reader is deciding whether the
         # verdict addressed what they wrote. (U-4)
@@ -915,16 +1360,22 @@ def main() -> int:
         print(f"  {mark:11s} {r['concept']}  [{r['kind']}] {claim}")
         if r["verdict"] != CONFIRMED:
             print(f"              {r['detail']}")
+        if r.get("warning"):
+            print(f"              ! {r['warning']}")
     if no_claims:
         print(f"  {len(no_claims)} concept(s) carry no checkable claim — unverifiable, not verified:")
+        hint = {u["concept"]: u for u in unrecognized}
         for n in no_claims[:8]:
-            print(f"              {n}")
+            u = hint.get(n)
+            print(f"              {n}" + (f"  ({u['count']} string(s) look like citations but match no checkable form, "
+                                            f"e.g. {u['examples'][0]})" if u else ""))
         # A list that stops at 8 without saying so reads as the whole list.
         # Same class as a gate that skips a layer silently. (D-13)
         if len(no_claims) > 8:
             print(f"              ... and {len(no_claims) - 8} more "
                   f"(use --json for the full list)")
-    print(f"\n  CONFIRMED {counts[CONFIRMED]}   REFUTED {counts[REFUTED]}   UNRESOLVED {counts[UNRESOLVED]}")
+    print(f"\n  CONFIRMED {counts[CONFIRMED]}   REFUTED {counts[REFUTED]}   UNRESOLVED {counts[UNRESOLVED]}"
+          + (f"   MOVED {moved}" if moved else ""))
     if counts[UNRESOLVED]:
         print("  UNRESOLVED means NOT CHECKED — it is not a soft REFUTED and must not be read as one.")
     print("  FAILED" if failed else "  no refuted claims")
