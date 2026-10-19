@@ -24,8 +24,11 @@ from pathlib import Path
 
 import yaml
 
+sys.dont_write_bytecode = True   # a direct run must not leave scripts/__pycache__ in the installed plugin (plugin.test.sh Z-2)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
 from okf_validate import load_frontmatter, split_frontmatter  # noqa: E402  (the validator's own splitter, so both agree)
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from okf_guard import read_note  # noqa: E402  (bounded read, #109)
 
 # `<producer>/<version>` or an `agent:<id>` actor; `human:` and `process:` are never agents.
 AGENT_FORM = re.compile(r"^(?:agent:\S+|[^\s:/]+/\S+|[^\s:/]+)$")   # a bare token (`claudebot`) is an agent too; `team:<id>` is not
@@ -100,7 +103,7 @@ def main():
             continue
         try:
             # utf-8-sig: a BOM would hide the opening fence, and L1 counts such a note.
-            raw, _ = split_frontmatter(path.read_text(encoding="utf-8-sig"))
+            raw, _ = split_frontmatter(read_note(path, "utf-8-sig", "strict"))
             meta = load_frontmatter(raw) if raw is not None else None
         except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError):
             continue  # L1 reports an unreadable or malformed note; this layer has nothing to add

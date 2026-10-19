@@ -30,7 +30,7 @@ Do not just test for zero. `2` ("could not run") is distinct from `1` ("not conf
 | Exit | Meaning | What to do |
 |---|---|---|
 | 0 | All gates pass (advisories and skipped layers are printed above the last line) | Proceed. A skipped layer is not a pass. |
-| 1 | L1: the bundle is not conformant OKF, or an `okf_check` house-rule error (`deprecated_requires`, `require_owner`, a body above `size.max_body_chars`). With `--strict-trust`: a Trust (C4) policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite a file | Read the output. Fix the notes it names. |
+| 1 | L1: the bundle is not conformant OKF, or an `okf_check` house-rule error (`deprecated_requires`, `require_owner`, a body above `size.max_body_chars`, a note that is not a regular file or is above `max_note_bytes`). With `--strict-trust`: a Trust (C4) policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite a file | Read the output. Fix the notes it names. |
 | 2 | A gate COULD NOT RUN (missing dependency, crashed scan, hung tool) | Run `okf-check --doctor`. Report what is missing. Do not install anything without the owner's consent. Never report a pass. |
 | 3 | L2: house rules broken, or `index.md` miscounts its own bundle | Fix the notes it names. Never edit `okf-base.yaml` to make a run pass. |
 | 4 | L3: stale concepts (only with `--fail-stale`) | List them and ask the owner. Never bump `stale_after` to silence it. |
@@ -73,6 +73,15 @@ as an agent) into exit 1; it changes severity only, never what is found.
 - A `Size` line means the bundle sets `okf_check.size` in `okf-base.yaml`: a note body above `max_body_chars` is exit 1
   (a house-rule error), above `warn_body_chars` an advisory (exit 0). Fix it by splitting the note or moving a
   section to a companion note. Never compress the text to get under the number and never raise the limit to pass a run.
+
+- A `Refused notes` line means a `*.md` is a device, pipe or socket, or is above `okf_check.max_note_bytes` (default
+  5242880 bytes): no layer opened it, and the run exits 1. Remove or replace it, or leave it out with `.okfignore`. Never
+  point a symlink named like a note at a device. A folder named like a note gets a `Skipped folders  WARN` line and the
+  exit code is unchanged. Every layer reads a bounded, frozen copy of the notes, never the bundle itself. If `okflint` is
+  stopped with `exceeded N MB`, the bundle is the cause, not the limit (`OKF_L2_MAX_RSS_MB`, default 2048); `killed (out
+  of memory or time limit)` means something outside `okf-check` stopped it. `okflint` never outlives
+  `okf-check`: a `timeout`, TERM, INT or even SIGKILL to `okf-check` or to its `okf-limit.py` watchdog stops it (a process
+  that calls `setsid` leaves the group and is not reached; `okflint` starts none).
 
 ## What this never does
 
@@ -130,7 +139,7 @@ empty or inside the vault). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.26`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.27`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

@@ -53,7 +53,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.26"
+VERSION="0.9.27"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -73,13 +73,18 @@ done
 HERE=$(cd -P "$(dirname "$_self")" && pwd)
 # A gate that cannot load its helper must not reach a verdict: with the lib absent the awk
 # program failed, stderr went to /dev/null, and the empty report read as "PASS nothing expired".
+# l3-lib.sh and ignore-lib.sh source note-guard-lib.sh, the one rule for which note files may be opened (#109).
+[ -r "$HERE/note-guard-lib.sh" ] || { echo "okf-check: $HERE/note-guard-lib.sh is missing - cannot tell which notes are safe to open; reinstall the plugin" >&2; exit $EXIT_DEP; }
 [ -r "$HERE/l3-lib.sh" ] || { echo "okf-check: $HERE/l3-lib.sh is missing - cannot run L3; reinstall the plugin" >&2; exit $EXIT_DEP; }
 . "$HERE/l3-lib.sh"
 [ -r "$HERE/ignore-lib.sh" ] || { echo "okf-check: $HERE/ignore-lib.sh is missing - cannot read .okfignore; reinstall the plugin" >&2; exit $EXIT_DEP; }
 . "$HERE/ignore-lib.sh"
 # The okf_check rules (successor, owner, duplicates) import their note reader from okf_notes.py inside a try: without the
 # file they would switch themselves off with exit 0 (LT-56m).
+[ -r "$HERE/okf_guard.py" ] || { echo "okf-check: $HERE/okf_guard.py is missing - cannot tell which notes are safe to open; reinstall the plugin" >&2; exit $EXIT_DEP; }
 [ -r "$HERE/okf_notes.py" ] || { echo "okf-check: $HERE/okf_notes.py is missing - cannot run the okf_check rules; reinstall the plugin" >&2; exit $EXIT_DEP; }
+# okflint runs under okf-limit.py (time, memory, the whole process tree): without it L2 failed as "manifest rejected by okflint".
+[ -r "$HERE/okf-limit.py" ] || { echo "okf-check: $HERE/okf-limit.py is missing - cannot run okflint under its limits; reinstall the plugin" >&2; exit $EXIT_DEP; }
 ROOT=$(cd -P "$HERE/.." && pwd)
 VALIDATOR="$ROOT/vendor/okf_validate.py"
 # PyYAML is vendored (pure-python, no C extension) so L1 needs nothing installed.
@@ -334,6 +339,50 @@ report_folder_links() {
   printf '%s\n' "$links" | say_capped 10 "                   "
 }
 
+# resolve_note_cap <bundle>: put the effective okf_check.max_note_bytes in OKF_MAX_NOTE_BYTES for every layer and helper
+# (the bundle's setting, else the default in config/okf-check-block.json). The value is recomputed, never trusted from the
+# caller's environment. A schema that cannot be read is exit 2: without the cap no note can be judged safe to open.
+resolve_note_cap() {
+  local cap
+  [ -n "$PY" ] || { echo "okf-check: python3 is missing - the note size cap cannot be resolved" >&2; return $EXIT_DEP; }
+  cap=$(OKF_SCRIPTS_DIR="$HERE" OKF_VENDOR_DIR="$ROOT/vendor" py_with_vendor -c '
+import os, sys
+sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
+import okf_guard
+print(okf_guard.note_cap(sys.argv[1], env=False))' "$1" 2>/dev/null)
+  case "$cap" in ''|*[!0-9]*) echo "okf-check: cannot read okf_check.max_note_bytes (config/okf-check-block.json is unreadable)" >&2; return $EXIT_DEP ;; esac
+  OKF_MAX_NOTE_BYTES="$cap"; export OKF_MAX_NOTE_BYTES
+}
+
+# report_refused <list>: the one place a refused note is reported (okf_refused_notes writes the list). They are findings of
+# their own, not L1 errors of a layer, because no layer opened them: each is named once, exit 1 like any bundle defect.
+# A FOLDER named like a note is not a defect (it cannot hang a reader and is not a note): it is a WARN line and an advisory,
+# and the exit code does not change (lead decision on #109).
+report_refused() {
+  local rec why rel nfail=0 nwarn=0
+  [ -s "$1" ] || return 0
+  : > "$TMP/refused.fail"; : > "$TMP/refused.warn"
+  while IFS= read -r -d '' rec; do
+    why=${rec%%$'\t'*}; rel=${rec#*$'\t'}
+    rel=$(printf '%s' "$rel" | tr '\n\r\t' '   ')
+    if [ "$why" = "$OKF_FOLDER_WHY" ]; then
+      nwarn=$((nwarn+1)); printf '%s — %s: skipped\n' "$rel" "$why" >> "$TMP/refused.warn"
+    else
+      nfail=$((nfail+1)); record error "$rel — $why: skipped"; printf '%s — %s: skipped\n' "$rel" "$why" >> "$TMP/refused.fail"
+    fi
+  done < "$1"
+  if [ "$nfail" -gt 0 ]; then
+    say "  Refused notes    FAIL   $nfail path(s) no layer opened (not a regular file, or over $OKF_MAX_NOTE_BYTES bytes):"
+    say_capped 12 "                   " < "$TMP/refused.fail"
+    worse_other $EXIT_CONFORM
+  fi
+  if [ "$nwarn" -gt 0 ]; then
+    ADVISORIES=$((ADVISORIES + nwarn))
+    say "  Skipped folders  WARN   $nwarn folder(s) named like a note are not notes and were skipped (the exit code is unchanged):"
+    say_capped 12 "                   " < "$TMP/refused.warn"
+  fi
+}
+
 # run_scoped <bundle> <note>: `--file` mode (#60; the edit hook of #61 calls it). L1 and Trust for one note through
 # okf-scoped.py: one line per finding, nothing for a clean note, no other layer. Exit codes keep their meaning:
 # 1 an L1 error (or, with --strict-trust, a Trust warning or near-miss actor), 0 otherwise, 2 could not run,
@@ -348,14 +397,15 @@ run_scoped() {
   bundle=$(cd -P "$1" && pwd) || return 64
   note="$(cd -P "$(dirname -- "$2")" && pwd)/$(basename -- "$2")"
   case "$note" in "$bundle"/*) rel=${note#"$bundle"/} ;; *) echo "error: --file '$2' is not inside $1" >&2; return 64 ;; esac
-  if [ -f "$bundle/.okfignore" ]; then
+  if okfignore_present "$bundle"; then
     okfignore_load "$bundle"; [ $? -eq 2 ] && return $EXIT_DEP
     okfignore_match "$rel" && { echo "$rel: not checked (.okfignore excludes it)"; return 0; }
   fi
   [ -n "$PY" ] || { echo "okf-check: python3 is missing - $rel was not checked" >&2; return $EXIT_DEP; }
+  resolve_note_cap "$bundle" || return $EXIT_DEP
   # The full run checks links against the notes .okfignore keeps (a filtered mirror), so the scoped run does too.
   keep=""
-  if [ -f "$bundle/.okfignore" ]; then okfignore_list "$bundle" > "$TMP/scoped-keep.lst" 2>/dev/null && keep="$TMP/scoped-keep.lst"; fi
+  if okfignore_present "$bundle"; then okfignore_list "$bundle" > "$TMP/scoped-keep.lst" 2>/dev/null && keep="$TMP/scoped-keep.lst"; fi
   out=$(OKF_KEEP_LIST="$keep" py_with_vendor "$HERE/okf-scoped.py" "$bundle" "$rel" $([ "$STRICT_TRUST" -eq 1 ] && echo --strict-trust)); rc=$?
   [ -n "$out" ] && printf '%s\n' "$out"
   case "$rc" in
@@ -541,21 +591,33 @@ install_deps() {  # install_deps [yes]  — "yes" is the caller's consent (the O
   return $EXIT_DEP
 }
 
-# run_limited SECS OUTFILE CMD...: run CMD, stdout in OUTFILE and stderr in OUTFILE.err; kill it
-# after SECS. (A crash is "no stdout"; merging stderr would make a traceback look like a verdict.)
-# macOS has no `timeout`. Returns CMD's status, or 143 when it was killed.
+# run_limited SECS OUTFILE CMD...: run CMD, stdout in OUTFILE and stderr in OUTFILE.err; stop it after SECS, or when its
+# process tree holds more than OKF_L2_MAX_RSS_MB (default 2048). (A crash is "no stdout"; merging stderr would make a
+# traceback look like a verdict.) macOS has no `timeout`. Returns CMD's status, 143 when it was stopped for time and 137 when
+# it was stopped for memory; OUTFILE.limit then says `timeout` or `rss <held> <limit>`.
+# okf-limit.py does the work: it puts CMD in its own process group and stops the WHOLE group (okflint starts through a uv
+# shim, so the python that holds the memory can be a grandchild: killing the direct child left it running, #109), and it
+# stops the group when okf-check goes away. RL_PID lets the exit trap stop it when okf-check itself is told to stop.
+RL_PID=""
 run_limited() {
-  local secs="$1" out="$2" pid wd rc
+  local secs="$1" out="$2" rss="${OKF_L2_MAX_RSS_MB:-2048}" rc
   shift 2
-  "$@" >"$out" 2>"$out.err" &
-  pid=$!
-  ( sleep "$secs"; kill -TERM "$pid" 2>/dev/null; sleep 1; kill -KILL "$pid" 2>/dev/null ) >/dev/null 2>&1 &
-  wd=$!
-  wait "$pid" 2>/dev/null; rc=$?
-  # The timer's own `sleep` is a child of $wd: kill it too, or every run leaves one behind.
-  pkill -P "$wd" 2>/dev/null
-  kill "$wd" 2>/dev/null; wait "$wd" 2>/dev/null
+  case "$rss" in ''|*[!0-9]*|0) rss=2048 ;; esac
+  rm -f "$out.limit"
+  "$PY" "$HERE/okf-limit.py" "$secs" "$rss" "$out" -- "$@" &
+  RL_PID=$!
+  wait "$RL_PID" 2>/dev/null; rc=$?
+  RL_PID=""
   return $rc
+}
+# stop_limited: on any way out, stop the limited command's tree. okf-limit.py stops its own group on TERM and waits for it.
+stop_limited() {
+  [ -n "$RL_PID" ] || return 0
+  kill -TERM "$RL_PID" 2>/dev/null
+  local i=0
+  while [ "$i" -lt 30 ] && kill -0 "$RL_PID" 2>/dev/null; do sleep 0.1; i=$((i+1)); done
+  kill -KILL "$RL_PID" 2>/dev/null
+  RL_PID=""
 }
 
 doctor() {
@@ -843,10 +905,10 @@ run_trust() {
 # silence: exit 2. The rules live ONCE, in config/okf-check-block.json, and okf-verify enforces them; this calls it
 # (`okf-verify --check-config`), so the two tools cannot disagree (LT-52 is the parity table). No okf-base.yaml or
 # no block: nothing is printed (LT-51c).
-run_config() {
+run_config() {   # $1 the real bundle (paths in the block resolve against it), $2 the frozen copy whose manifest is read
   local out
-  [ -f "$1/okf-base.yaml" ] && [ -n "$PY" ] || return 0
-  out=$(py_with_vendor "$ROOT/scripts/okf-verify" --check-config "$1" 2>&1) && return 0
+  [ -f "${2:-$1}/okf-base.yaml" ] && [ -n "$PY" ] || return 0
+  out=$(py_with_vendor "$ROOT/scripts/okf-verify" --check-config "$1" --manifest-dir "${2:-$1}" 2>&1) && return 0
   # The shortest prefix: a value that itself names okf-base.yaml must stay in the message.
   out=$(printf '%s' "$out" | tail -n 1); out=${out#error: }; out=${out#*okf-base.yaml }
   say "  Config           COULD NOT RUN — okf-base.yaml: $out"
@@ -859,15 +921,16 @@ run_config() {
 # superseded_by. A violation is a house-rule error (exit 1). Option off: nothing is printed.
 run_successor() {
   local bundle="$1" out ec n
-  [ -f "$BUNDLE/okf-base.yaml" ] && [ -n "$PY" ] || return 0
-  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$BUNDLE/okf-base.yaml" <<'PYEOF'
+  [ -f "$bundle/okf-base.yaml" ] && [ -n "$PY" ] || return 0
+  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$bundle/okf-base.yaml" <<'PYEOF'
 import os, pathlib, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter
-    from okf_notes import meta, resolve
-    # The bounded loader for the manifest too: an alias bomb in okf-base.yaml must not expand here (LT-35a).
-    cfg = load_frontmatter(open(sys.argv[2], encoding="utf-8", errors="replace").read())
+    from okf_notes import meta, resolve, read_note
+    # The bounded loader for the manifest too: an alias bomb in okf-base.yaml must not expand here (LT-35a), and a bounded
+    # read: the manifest is judged like a note (a device or a file over the cap is not read).
+    cfg = load_frontmatter(read_note(sys.argv[2], "utf-8", "replace"))
 except Exception:
     sys.exit(0)
 opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}
@@ -926,17 +989,18 @@ PYEOF
 # okf_check.owners. A note with neither is a house-rule error (exit 1). Option off: nothing is printed.
 run_owner() {
   local bundle="$1" out ec pats f rel def pat own
-  [ -f "$BUNDLE/okf-base.yaml" ] && [ -n "$PY" ] || return 0
+  [ -f "$bundle/okf-base.yaml" ] && [ -n "$PY" ] || return 0
   # An okf_check block that failed the schema is already the Config line's exit 2. Its owners are not trusted:
   # a folder default of 3 would otherwise become an owner error that outranks that exit 2 (LT-52 own-int).
   [ "${CONFIG_RC:-0}" -eq 0 ] || return 0
   # Folder defaults: okf_check.owners maps a glob to an owner, in file order. The globs are matched by the .okfignore
   # matcher (ignore-lib.sh), so the two cannot disagree about what a pattern covers; the LAST matching pattern wins.
-  pats=$(OKF_VENDOR_DIR="$ROOT/vendor" py_with_vendor - "$BUNDLE/okf-base.yaml" <<'PY' 2>/dev/null
+  pats=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle/okf-base.yaml" <<'PY' 2>/dev/null
 import os, sys
-sys.path.insert(0, os.environ["OKF_VENDOR_DIR"])
+sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
 from okf_validate import load_frontmatter   # bounded: an alias bomb in okf-base.yaml must not expand (LT-35a)
-d = load_frontmatter(open(sys.argv[1], encoding="utf-8", errors="replace").read())
+from okf_notes import read_note   # and so is the read itself: the manifest is judged like a note
+d = load_frontmatter(read_note(sys.argv[1], "utf-8", "replace"))
 o = (d.get("okf_check") or {}) if isinstance(d, dict) else {}
 w = o.get("owners") if isinstance(o, dict) and o.get("require_owner") is True else None
 for k, v in (w.items() if isinstance(w, dict) else []):
@@ -959,13 +1023,13 @@ PY
       done < <(okf_md_files "$bundle") ) > "$TMP/owner-defaults.tsv"
   fi
   # $TMP/owners.tsv (relative path, TAB, owner) is what L3 reads to show the owner on its findings.
-  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$BUNDLE/okf-base.yaml" "$TMP/owners.tsv" "$TMP/owner-defaults.tsv" <<'PYEOF'
+  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$bundle/okf-base.yaml" "$TMP/owners.tsv" "$TMP/owner-defaults.tsv" <<'PYEOF'
 import json, os, pathlib, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter, check_actor, Report
-    from okf_notes import meta, INVALID
-    cfg = load_frontmatter(open(sys.argv[2], encoding="utf-8", errors="replace").read())
+    from okf_notes import meta, INVALID, read_note
+    cfg = load_frontmatter(read_note(sys.argv[2], "utf-8", "replace"))
 except Exception:
     sys.exit(0)
 opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}
@@ -1025,18 +1089,18 @@ PYEOF
 # Option off: nothing is printed.
 run_size() {
   local bundle="$1" out ec
-  [ -f "$BUNDLE/okf-base.yaml" ] && [ -n "$PY" ] || return 0
+  [ -f "$bundle/okf-base.yaml" ] && [ -n "$PY" ] || return 0
   # A block that failed the schema is already the Config line's exit 2; its numbers are not trusted here (as run_owner).
   [ "${CONFIG_RC:-0}" -eq 0 ] || return 0
   # The notes by the one rule every walker shares (okf_md_files), so a symlinked folder is not entered.
   okf_md_files "$bundle" > "$TMP/size-files.lst" 2>/dev/null
-  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$BUNDLE/okf-base.yaml" "$TMP/size-files.lst" <<'PYEOF'
+  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$bundle/okf-base.yaml" "$TMP/size-files.lst" <<'PYEOF'
 import os, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter
-    from okf_notes import body_chars
-    cfg = load_frontmatter(open(sys.argv[2], encoding="utf-8", errors="replace").read())
+    from okf_notes import body_chars, read_note
+    cfg = load_frontmatter(read_note(sys.argv[2], "utf-8", "replace"))
 except Exception:
     sys.exit(0)
 opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}
@@ -1095,7 +1159,10 @@ run_duplicates() {
   run_owner "$bundle" >/dev/null 2>&1
   # .okfignore: the notes it leaves in, NUL-separated, as the L3 derived layer reads them (OKF_KEEP_LIST).
   local keep=""
-  if [ -f "$bundle/.okfignore" ]; then okfignore_list "$bundle" > "$TMP/dup-keep.lst" 2>/dev/null && keep="$TMP/dup-keep.lst"; fi
+  if okfignore_present "$bundle"; then
+    okfignore_load "$bundle"; [ $? -eq 2 ] && { say "  Duplicates       COULD NOT RUN — .okfignore could not be applied (see the message above)"; return $EXIT_DEP; }
+    okfignore_list "$bundle" > "$TMP/dup-keep.lst" 2>/dev/null && keep="$TMP/dup-keep.lst"
+  fi
   OKF_KEEP_LIST="$keep" OKF_OWNERS_TSV="$TMP/owners.tsv" OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor "$HERE/okf-duplicates.py" "$bundle" "$ROOT/config/okf-check-block.json" "$JSON" "$DUP_BODY"
   rc=$?
   [ "$rc" -eq 0 ] || { say "  Duplicates       COULD NOT RUN — okf-duplicates.py exited $rc"; return $EXIT_DEP; }
@@ -1122,6 +1189,17 @@ l2_say_dangling() {
   while IFS= read -r -d '' f; do
     printf '%s — dangling symlink: the link target does not exist\n' "$(printf '%s' "$f" | tr '\n\r\t' '   ')"
   done < "$1" | say_capped 12 "                   "
+}
+
+# l2_say_stopped <exit status>: okflint ended with 143 or 137. Only okf-limit.py's own marker proves a time limit; an exit
+# without it is a kill from outside (the kernel's out-of-memory killer, a cgroup limit, an operator), and "timed out" would
+# send the reader to the wrong setting.
+l2_say_stopped() {
+  if grep -q '^timeout' "$TMP/l2.out.limit" 2>/dev/null; then
+    say "  L2 profile       COULD NOT RUN — okflint timed out after ${l2limit} s (set OKF_L2_TIMEOUT to raise the limit)"
+  else
+    say "  L2 profile       COULD NOT RUN — okflint was killed (out of memory or time limit); exit status $1 (OKF_L2_TIMEOUT and OKF_L2_MAX_RSS_MB set the limits okf-check itself applies)"
+  fi
 }
 
 # l2_isolate: okflint crashed on the whole bundle. Find the notes it crashes on (one run per note,
@@ -1155,10 +1233,11 @@ l2_isolate() {
   # stay, so okflint sees the same tree), then one run on it.
   rm -rf "$mirror"; mkdir -p "$mirror"
   while IFS= read -r -d '' f; do
+    [ -f "$f" ] || continue   # cp would read a device or pipe behind a link for ever: a file, or nothing (#109)
     rel=${f#"$bundle"/}; skip=0
     for c in "${crashed[@]}"; do [ "$c" = "$rel" ] && { skip=1; break; }; done
     [ "$skip" -eq 1 ] && continue
-    mkdir -p "$mirror/$(dirname "$rel")" && cp -p "$f" "$mirror/$rel" 2>/dev/null
+    mkdir -p "$mirror/$(dirname "$rel")" && cp -pP "$f" "$mirror/$rel" 2>/dev/null   # -P: a link in the frozen copy (an image) stays a link, never read through
   done < <(find -H "$bundle" -name .git -prune -o \( -type f -o -type l \) -print0 2>/dev/null)   # -H, links: as okf_md_files
   run_limited "$l2limit" "$TMP/l2.out" sh -c 'cd "$1" && exec okflint validate . --manifest okf-base.yaml --json' _ "$mirror"; ec=$?
   cat "$TMP/l2.out" "$TMP/l2.out.err" > "$TMP/l2.txt" 2>/dev/null
@@ -1173,9 +1252,9 @@ l2_isolate() {
 # l2_wikilink_root <bundle>: okf_check.wikilink_root of the bundle's okf-base.yaml as an absolute path, else nothing. The
 # value is read through okf-verify's load_block, the same schema check as run_config, so a value that failed it (exit 2
 # there) is not used here.
-l2_wikilink_root() {
-  grep -qs 'wikilink_root' "$1/okf-base.yaml" || return 0
-  OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$1" <<'PYEOF' 2>/dev/null
+l2_wikilink_root() {   # $1 the real bundle (the root is resolved against it), $2 the frozen copy (the manifest is read there)
+  grep -qs 'wikilink_root' "${2:-$1}/okf-base.yaml" || return 0
+  OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$1" "${2:-$1}" <<'PYEOF' 2>/dev/null
 import importlib.util, os, sys
 from importlib.machinery import SourceFileLoader
 from pathlib import Path
@@ -1183,7 +1262,7 @@ try:
     loader = SourceFileLoader("okf_verify", os.path.join(os.environ["OKF_SCRIPTS_DIR"], "okf-verify"))
     verify = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_verify", loader))
     loader.exec_module(verify)
-    rel = verify.load_block(Path(sys.argv[1])).get("wikilink_root")
+    rel = verify.load_block(Path(sys.argv[1]), Path(sys.argv[2])).get("wikilink_root")
     if rel:
         print(os.path.realpath(os.path.join(sys.argv[1], rel)))
 except Exception:
@@ -1270,18 +1349,25 @@ __l2_core() {
   # a missing binary (127), a signal, an internal error. Previously only `2` was
   # handled, so a crashed validator produced "L2 PASS" and ALL GATES PASS. That
   # is lessons/shell-or-swallows-errors.md: one status carrying two meanings. (R-1)
+  if [ -s "$TMP/l2.out.limit" ] && grep -q '^rss ' "$TMP/l2.out.limit"; then
+    L2_PROFILE=could_not_run
+    read -r _ _rss_held _rss_cap < "$TMP/l2.out.limit"
+    say "  L2 profile       COULD NOT RUN — okflint exceeded ${_rss_cap} MB of memory (it held ${_rss_held} MB) and was stopped; the limit is OKF_L2_MAX_RSS_MB"
+    say "                   NOT a pass: house rules were never evaluated."
+    return $EXIT_DEP
+  fi
   case "$ec" in
     0|1) ;;
     2)   say "  L2 profile       COULD NOT RUN — manifest rejected by okflint"
          say_capped 3 "                   " < "$TMP/l2.txt"
          return $EXIT_DEP ;;
-    143|137) say "  L2 profile       COULD NOT RUN — okflint timed out after ${l2limit} s (set OKF_L2_TIMEOUT to raise the limit)"
+    143|137) l2_say_stopped "$ec"
          say "                   NOT a pass: house rules were never evaluated."
          return $EXIT_DEP ;;
     *)   if l2_isolate; then :   # ec/bundle now describe the survivors; the crashed notes are in L2_CRASHED
          else
          case "$ec" in
-           143|137) say "  L2 profile       COULD NOT RUN — okflint timed out after ${l2limit} s (set OKF_L2_TIMEOUT to raise the limit)";;
+           143|137) l2_say_stopped "$ec";;
            *)       say "  L2 profile       COULD NOT RUN — okflint exited $ec (crashed or missing)";;
          esac
          say "                   NOT a pass: house rules were never evaluated."
@@ -1293,7 +1379,7 @@ __l2_core() {
   # Parse the structured report. If okflint signalled findings (exit 1) but we
   # cannot parse them, that is COULD NOT RUN — never a pass.
   local counts errs warns
-  counts=$("$PY" - "$TMP/l2.txt" "$bundle" "$dlst" "$(l2_wikilink_root "$_src")" <<'PY' 2>/dev/null
+  counts=$("$PY" - "$TMP/l2.txt" "$bundle" "$dlst" "$(l2_wikilink_root "$_src" "$bundle")" <<'PY' 2>/dev/null
 import json, os, re, sys
 raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 
@@ -1582,7 +1668,7 @@ PYEOF
 # never silently counted as verified, which is the failure this layer exists to
 # remove. Nothing here touches the network.
 run_derived_stale() {
-  local bundle="$1"
+  local bundle="$1"   # the frozen copy: every note is read there. Sources are resolved against the real bundle ($BUNDLE).
   if [ -z "$PY" ]; then
     say "  L3 derived       SKIPPED — no python3; recorded sources are NOT compared"
     return $EXIT_OK
@@ -1591,7 +1677,7 @@ run_derived_stale() {
   # py_with_vendor, unlike the index reconciler: `sources` is nested structure,
   # and hand-rolling a YAML list-of-mappings parser with regexes is how a gate
   # starts quietly disagreeing with the validator standing above it.
-  out=$(OKF_VENDOR_DIR="$ROOT/vendor" py_with_vendor - "$bundle" <<'PYEOF'
+  out=$(OKF_VENDOR_DIR="$ROOT/vendor" py_with_vendor - "$bundle" "${REAL_BUNDLE:-$bundle}" <<'PYEOF'
 import datetime, pathlib, sys
 try:
     import yaml
@@ -1602,11 +1688,12 @@ except Exception:
     print("NOYAML")
     sys.exit(0)
 
-bundle = pathlib.Path(sys.argv[1])
+frozen = pathlib.Path(sys.argv[1])   # where the notes are read
+bundle = pathlib.Path(sys.argv[2])   # where sources are looked for
 RESERVED = {"index.md", "log.md"}
 stale, unmeasurable = [], []
-# .okfignore: the notes it leaves in (NUL-separated, relative). Sources are resolved against the
-# REAL bundle, so this layer reads the real tree and skips ignored notes itself.
+# .okfignore: the notes it leaves in (NUL-separated, relative). Sources are resolved against the REAL bundle, the notes
+# are read from the frozen copy, which holds only the notes .okfignore keeps.
 import os
 _kl = os.environ.get("OKF_KEEP_LIST")
 keep = None
@@ -1616,13 +1703,13 @@ if _kl:
     except OSError:
         keep = None
 
-for p in sorted(bundle.rglob("*.md")):
+for p in sorted(frozen.rglob("*.md")):
     if p.name in RESERVED or not p.is_file():
         continue
-    if keep is not None and str(p.relative_to(bundle)) not in keep:
+    if keep is not None and str(p.relative_to(frozen)) not in keep:
         continue
     try:
-        text = p.read_text(encoding="utf-8", errors="replace")
+        text = p.read_text(encoding="utf-8", errors="replace")   # a regular file of at most the cap: the frozen copy holds nothing else
     except OSError:
         continue
     if not text.startswith("---"):
@@ -1639,7 +1726,7 @@ for p in sorted(bundle.rglob("*.md")):
     srcs = meta.get("sources")
     if not isinstance(srcs, list):
         continue
-    rel = str(p.relative_to(bundle))
+    rel = str(p.relative_to(frozen))
     for src in srcs:
         if not isinstance(src, dict):
             continue
@@ -1649,7 +1736,7 @@ for p in sorted(bundle.rglob("*.md")):
             # Nothing to compare against. Not a finding — a concept may cite a
             # source without dating it, and guessing would invent staleness.
             continue
-        cand = [p.parent / res, bundle / res, pathlib.Path(res)]
+        cand = [(bundle / rel).parent / res, bundle / res, pathlib.Path(res)]
         target = next((c for c in cand if c.is_file()), None)
         if target is None:
             unmeasurable.append((rel, res))
@@ -1950,6 +2037,21 @@ selftest() {
   _scoped_probe() { run_scoped "$1" "$1/bad.md"; }
   probe "note without frontmatter" "bad.md: L1 error: " _scoped_probe "bad.md" 'no frontmatter here\n'
 
+  say "  Refused notes (#109):"
+  # A note that is a device, a pipe or a folder is named and never listed for a layer. The probe plants /dev/null behind a
+  # link (it returns EOF at once) and a folder named x.md, and reads NEITHER: it asks only for the lists. The control leg:
+  # the regular notes stay listed, so a rule that refuses everything does not pass.
+  _refuse_probe() {
+    local d="$TMP/selftest-refuse" named listed
+    rm -rf "$d"; mkdir -p "$d/dir.md"
+    cp -p "$1/index.md" "$1/good.md" "$d/"; "$PY" -c 'import os, sys; os.symlink("/dev/null", sys.argv[1])' "$d/dev.md"   # no `ln` on a minimal PATH
+    named=$(okf_refused_notes "$d" | tr '\0' '\n'); listed=$(okf_md_files "$d" | tr '\0' '\n')
+    printf '%s\n' "$named" | grep -q 'not a regular file.*dev.md' && printf '%s\n' "$named" | grep -q "$OKF_FOLDER_WHY.*dir.md" \
+      && ! printf '%s\n' "$named" | grep -q 'good.md' && ! printf '%s\n' "$listed" | grep -q 'dev.md' && printf '%s\n' "$listed" | grep -q 'good.md' \
+      && echo "refusal probe: device and folder named and not listed, regular notes listed"
+  }
+  probe "device and folder refused" "refusal probe: device and folder named and not listed, regular notes listed" _refuse_probe "" ""
+
   say ""
   # A skipped probe is a gate nobody watched fire: the verdict names it instead of saying "every gate" (S3-E1).
   if [ "$fails" -eq 0 ] && [ -n "$skipped" ]; then
@@ -1962,7 +2064,10 @@ selftest() {
 
 # ---------------------------------------------------------------------- main
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t okfcheck)
-trap 'rm -rf "$TMP"' EXIT
+# Before anything writes "$TMP/...": with an empty TMP each of those paths is at the filesystem root (/refused.lst).
+[ -n "$TMP" ] && [ -d "$TMP" ] || { echo "okf-check: cannot make a temporary folder (TMPDIR=${TMPDIR:-unset}) - no verdict is possible" >&2; exit $EXIT_DEP; }
+# On every way out, including an outside TERM or Ctrl-C, the limited command's tree is stopped first (#109).
+trap 'stop_limited; rm -rf "$TMP"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -2058,40 +2163,20 @@ if [ -n "$_unreadable" ]; then
 fi
 
 if ! doctor >/dev/null 2>&1; then doctor; echo "L1 cannot run — fix the above." >&2; exit $EXIT_DEP; fi
+resolve_note_cap "$BUNDLE" || exit $EXIT_DEP   # every layer and helper below judges a note by this one cap (#109)
 # --duplicates (#69) is a report of its own, not a gate: it runs instead of the layers and always exits 0 once it ran.
-if [ "$MODE" = duplicates ]; then run_duplicates "$BUNDLE"; exit $?; fi
+# Its readers are all bounded (okf_notes.read_note), and the manifest is judged first: a device or pipe named okf-base.yaml
+# is refused up front, never opened (the plain open().read() of review round 1 ran a real /dev/zero out of memory).
+if [ "$MODE" = duplicates ]; then
+  _mwhy=$(okf_note_refusal "$BUNDLE/okf-base.yaml")
+  [ -z "$_mwhy" ] || { echo "okf-check: $BUNDLE/okf-base.yaml — $_mwhy: not read, so --duplicates cannot run" >&2; exit $EXIT_DEP; }
+  run_duplicates "$BUNDLE"; exit $?
+fi
 
 say "okf-check $VERSION — $BUNDLE"
 report_folder_links "$BUNDLE"
 worst=0
-# .okfignore: every layer sees a filtered COPY of the notes and config; the bundle
-# itself is never touched. No file: LAYER_BUNDLE is the bundle and nothing below changes.
-LAYER_BUNDLE="$BUNDLE"; IGNORED=""
-if [ -f "$BUNDLE/.okfignore" ]; then
-  [ -n "$TMP" ] || exit $EXIT_DEP
-  _ml=$(okfignore_mirror "$BUNDLE" "$TMP/okfmirror"); _mrc=$?
-  if [ "$_mrc" -ne 0 ]; then
-    say "  IGNORE           could not apply .okfignore (see the message above) - no verdict is possible"
-    exit $EXIT_DEP
-  fi
-  read -r _kept _exnotes _exall <<< "$_ml"
-  IGNORED="$_exall"
-  if [ "${_exall:-0}" -gt 0 ]; then
-    say "  ignore           .okfignore: $IGNORED file(s) excluded, $_kept checked"
-  else
-    say "  ignore           .okfignore: 0 file(s) excluded"
-  fi
-  if [ "${_exall:-0}" -gt 0 ]; then   # an ignore file that excludes nothing changes nothing (#15)
-    okfignore_list "$BUNDLE" > "$TMP/keep.lst" 2>/dev/null
-    export OKF_KEEP_LIST="$TMP/keep.lst"
-    LAYER_BUNDLE="$TMP/okfmirror"; MIRROR_ROOT="$LAYER_BUNDLE"
-    if [ "${_kept:-0}" -eq 0 ] && [ "${_exnotes:-0}" -gt 0 ]; then
-      say "  IGNORE           .okfignore excludes every note - nothing was checked (not a pass)"
-      [ "$JSON" -eq 1 ] && emit_json "$EXIT_DEP"
-      exit $EXIT_DEP
-    fi
-  fi
-fi
+# E-7 change detection starts BEFORE the frozen copy is made: a write that lands while it is copied is a change too.
 FP_BEFORE=$(bundle_fingerprint "$BUNDLE")
 # A fingerprint that comes back EMPTY over a bundle that has concepts means the
 # comparison below is ""=="" — E-7 change detection silently OFF, every mid-scan
@@ -2104,6 +2189,43 @@ FP_DEGRADED=0
 if [ -z "$FP_BEFORE" ] && [ -n "$(okf_md_files "$BUNDLE" | tr -d '\0' | head -c 1)" ]; then
   FP_DEGRADED=1
 fi
+# Paths no layer may open (#109): found by stat alone, before any layer reads the bundle.
+okf_refused_notes "$BUNDLE" > "$TMP/refused.lst" 2>/dev/null
+# THE FROZEN COPY (#109 round 2). Every layer reads a copy of the notes and config that okf_guard.py made with a bounded
+# read judged on the opened descriptor, never the bundle itself: the pre-scan above judges a path by stat, and a note that
+# turned into a link to /dev/zero a moment later was read for ever by L1 (container case C9). The copy also leaves out what
+# .okfignore excludes and every refused path, so L1 and okflint (which walk the folder themselves) never meet them. The
+# bundle itself is never touched. It costs one python start and one copy of the notes (measured in the commit message).
+LAYER_BUNDLE="$BUNDLE"; IGNORED=""; REAL_BUNDLE="$BUNDLE"
+_keep_other=0; [ -s "$TMP/refused.lst" ] || _keep_other=1   # #15: no refused path and no note excluded: an ignored image stays linked
+_ml=$(okfignore_mirror "$BUNDLE" "$TMP/okfmirror" "$_keep_other"); _mrc=$?
+if [ "$_mrc" -ne 0 ]; then
+  if okfignore_present "$BUNDLE"; then say "  IGNORE           could not apply .okfignore (see the message above) - no verdict is possible"
+  else say "  FREEZE           could not copy the bundle for the layers (see the message above) - no verdict is possible"; fi
+  exit $EXIT_DEP
+fi
+read -r _kept _exnotes _exall <<< "$_ml"
+cat "$TMP/okfmirror.refused" >> "$TMP/refused.lst" 2>/dev/null   # refused while copying: the same report as the pre-scan's
+if okfignore_present "$BUNDLE"; then
+  IGNORED="$_exall"
+  if [ "${_exall:-0}" -gt 0 ]; then
+    say "  ignore           .okfignore: $IGNORED file(s) excluded, $_kept checked"
+  elif [ -s "$TMP/refused.lst" ]; then
+    say "  ignore           .okfignore: no file matched its patterns (the path(s) named below are left out for their own reason)"
+  else
+    say "  ignore           .okfignore: 0 file(s) excluded"
+  fi
+fi
+if [ "${_exall:-0}" -gt 0 ] || [ -s "$TMP/refused.lst" ]; then   # an ignore file that excludes nothing changes nothing (#15)
+  okfignore_list "$BUNDLE" > "$TMP/keep.lst" 2>/dev/null
+  export OKF_KEEP_LIST="$TMP/keep.lst"
+fi
+LAYER_BUNDLE="$TMP/okfmirror"; MIRROR_ROOT="$LAYER_BUNDLE"
+if okfignore_present "$BUNDLE" && [ "${_kept:-0}" -eq 0 ] && [ "${_exnotes:-0}" -gt 0 ]; then
+  say "  IGNORE           .okfignore excludes every note - nothing was checked (not a pass)"
+  [ "$JSON" -eq 1 ] && emit_json "$EXIT_DEP"
+  exit $EXIT_DEP
+fi
 # PRECEDENCE, not max(). `worst=max(rc)` returned 2 ("could not run") for a
 # bundle that had BOTH a real §11 conformance error and an unusable manifest,
 # so CI would retry or reinstall instead of failing the bundle. A verdict that
@@ -2115,7 +2237,8 @@ worse() { [ "$(rank "$1")" -gt "$(rank "$worst")" ] && worst="$1"; return 0; }
 OTHER_FAIL=0
 worse_other() { [ "$1" -ne 0 ] && OTHER_FAIL=1; worse "$1"; }
 
-run_config "$BUNDLE"; CONFIG_RC=$?; worse_other $CONFIG_RC
+report_refused "$TMP/refused.lst"
+run_config "$BUNDLE" "$LAYER_BUNDLE"; CONFIG_RC=$?; worse_other $CONFIG_RC
 run_conformance "$LAYER_BUNDLE"; worse_other $?
 run_trust       "$LAYER_BUNDLE"; worse_other $?
 # --strict-trust: severity only. A C4 finding or an L1 near-miss actor warning becomes blocking (exit 1).
@@ -2136,7 +2259,7 @@ run_successor   "$LAYER_BUNDLE"; worse_other $?
 run_owner       "$LAYER_BUNDLE"; worse_other $?
 run_size        "$LAYER_BUNDLE"; worse_other $?
 run_staleness   "$LAYER_BUNDLE"; worse_other $?
-run_derived_stale "$BUNDLE"; worse_other $?
+run_derived_stale "$LAYER_BUNDLE"; worse_other $?
 FP_AFTER=$(bundle_fingerprint "$BUNDLE")
 
 # The readability guard is check-then-act: it walks the tree once, and the layers

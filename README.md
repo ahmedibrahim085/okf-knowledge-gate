@@ -159,7 +159,7 @@ Read the exit code, do not just test for zero:
 | Exit | Meaning |
 |---|---|
 | 0 | No gate failed. Skipped layers and warnings print above the verdict: read them |
-| 1 | L1: the bundle is not conformant OKF, an `okf_check` house-rule error (`deprecated_requires`, `require_owner`, a body above `size.max_body_chars`), or (with `--strict-trust`) a trust policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite an existing file |
+| 1 | L1: the bundle is not conformant OKF, an `okf_check` house-rule error (`deprecated_requires`, `require_owner`, a body above `size.max_body_chars`, a note that is not a regular file or is above `max_note_bytes`), or (with `--strict-trust`) a trust policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite an existing file |
 | 2 | A gate could not run. Never treat as a pass |
 | 3 | L2: house rules broken, or `index.md` miscounts |
 | 4 | L3: stale concepts (with `--fail-stale`) |
@@ -238,6 +238,38 @@ okf_check:
     warn_body_chars: 38000
 ```
 
+**Notes that are not regular files, and the byte cap:** a note is opened only when, after symlinks are resolved, it is a
+regular file of at most `okf_check.max_note_bytes` bytes (a whole number from 1, default `5242880`, 5 MB; a bad value
+is exit 2). A `*.md` that is a device, a pipe or a socket, or is above the cap, is not read by any layer or by
+`okf-verify`, `okf-export`, `--duplicates`, `--file` or the edit hook. `okf-check` names it once (`z.md — not a regular
+file (device/pipe/...): skipped`, in `--json` `errors[]`), checks the other notes, and exits 1; `.okfignore` leaves it
+out as it does any path. A *folder* named like a note is not a note and cannot hang a reader: it gets one `Skipped
+folders  WARN` line (`d.md — a folder, not a note: skipped`, counted as an advisory) and the exit code does not change.
+A device or pipe named `okf-base.yaml` is refused the same way, in every mode: `--duplicates` stops with exit 2 and
+names it, a full run exits 1. Why: a symlink to `/dev/zero` named like a note made `okflint` read for ever and grow to
+112 GB (2026-10-18).
+
+**What every layer reads:** `okf-check` judges the paths by `stat` first, then copies the notes and config it will read
+into a private frozen copy with a bounded read that checks the type and size of the file it actually opened (at most the
+cap, never waiting on a pipe). L1, Trust, the `okf_check` rules, L2 (`okflint`) and L3 read that copy only, so a note that
+turns into a link to a device after the pre-scan is refused in the copy and reported, never read; the only live reads
+left are `stat` calls, the bounded copy itself and the bounded read of a derived-staleness source. A run reports the
+state of the bundle at the moment of the copy; a write during the run is still reported as `CONCURRENT`.
+
+**The `okflint` watchdog:** `okflint` runs under `okf-limit.py`: it is stopped, with its whole process tree, at
+`OKF_L2_TIMEOUT` seconds (`COULD NOT RUN — okflint timed out after N s`) or when it holds more than `OKF_L2_MAX_RSS_MB`
+megabytes (`COULD NOT RUN — okflint exceeded N MB`), both exit 2. An `okflint` killed from outside (the out-of-memory
+killer, a container limit) is reported as `killed (out of memory or time limit)`, not as timed out. It never outlives
+`okf-check`: a `timeout`, TERM, INT or HUP stops it, and so does a SIGKILL to `okf-check` or to the watchdog itself (a
+small watcher in a session of its own kills the command's group when the watchdog disappears). One limit remains: a
+process that calls `setsid` leaves the group and is not reached; `okflint` starts none. Test such cases (a real device,
+a pipe, a memory-eating stub) only in a container with memory, swap and pids caps, never on a real machine.
+
+```yaml
+okf_check:
+  max_note_bytes: 5242880
+```
+
 **Duplicates:** `okf-check <bundle> --duplicates` lists pairs of notes that may record the same knowledge: the same
 title (case, punctuation and spacing ignored), the same `sources[].resource`, or descriptions whose words overlap at or
 above `okf_check.duplicates.threshold` (default `1.0`, identical word sets; on our labelled sample, lower values
@@ -253,6 +285,7 @@ and then checked exactly, within the same time limit.
 | Variable | Default | Effect |
 |---|---|---|
 | `OKF_L2_TIMEOUT` | 120 | Seconds before a hung `okflint` is cut off in L2 (exit 2, named). `0` or a non-number means the default. |
+| `OKF_L2_MAX_RSS_MB` | 2048 | Megabytes `okflint` and its children may hold before they are stopped (exit 2, named). Sampled four times a second with `ps`. `0` or a non-number means the default. |
 | `OKF_L2_ISOLATE_MAX` | 200 | When okflint crashes on a bundle of at most this many notes, L2 finds the crashing notes (one run each), names them and checks the rest. Larger bundles keep the plain "crashed" report. |
 | `OKF_INSTALL_TIMEOUT` | 200 | Seconds before `--install-deps` stops the installer. |
 | `OKF_AUTO_INSTALL` | off | `1` lets the session-start check run the install plan itself. |
@@ -276,7 +309,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.26
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.27
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -292,7 +325,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.26
+    rev: v0.9.27
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -414,6 +447,14 @@ fix. A change is reviewed on two axes (standards and spec) before it is released
 2. Add a `## [x.y.z] - YYYY-MM-DD` section to [`CHANGELOG.md`](CHANGELOG.md).
 3. Run the suites and `--selftest`, on macOS and on Linux: `tools/linux-gate.sh` streams the committed tree
    into a Debian container (settings in `tools/linux-gate.conf`; Docker context from `OKF_DOCKER_CONTEXT`).
+   Two rules for whoever runs them (the full text, to paste into an agent's brief, is `docs/agents/safe-probe-brief.md`):
+   - **Dangerous probes never run on the machine you work on.** A real device, a pipe, a socket, a file over 10 MB, an
+     alias or zip bomb or a fork loop runs only in a throwaway container with hard caps
+     (`docker run --rm --memory=1g --memory-swap=1g --pids-limit=256 --cpus=2 ...`) on another machine. The only device a
+     host test may use is `/dev/null`. `timeout` is not a memory cap.
+   - **Heavy suites take turns.** `okf-check.test.sh` and `okf-check-l3.test.sh` take seven minutes or more. Wait for the
+     lock with `until mkdir /tmp/okf-heavy.lock 2>/dev/null; do sleep 20; done`, run each once on the final tree, and
+     release it with `rmdir /tmp/okf-heavy.lock` (also after a failure).
 4. Tag `vx.y.z` on the private release commit and push the tag there.
 5. Publish to the public repository (`ahmedibrahim085/okf-knowledge-gate`). It holds one squashed commit per release,
    so do not push the private history. The examples above pin `vx.y.z`, so the tag must exist there:

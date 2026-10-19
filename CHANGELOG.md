@@ -9,6 +9,26 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.27] - 2026-10-19
+
+OKF Knowledge Gate 0.9.27 makes `okf-check` and the other tools safe to run on a folder that holds a note which is not a regular file. On 2026-10-18 a note that was a symbolic link to `/dev/zero` made the L2 profile tool grow to more than 100 GB of memory and brought a 24 GB Mac down.
+
+### Fixed
+- **A note that is a device file, a pipe, a socket or a folder, or that is larger than a limit, is refused before any layer reads it.** `okf-check` names the file and the reason, skips it, and carries on with the rest; the exit code is the exit code of a refusal. `okf_check.max_note_bytes` sets the limit; the default is 5,242,880 bytes (5 MiB). A folder named like a note (`x.md/`) is a warning, not an error.
+- **Every layer now reads a frozen copy, not the live folder.** The check used to look at a file once and open it later, so a file swapped for a device in between could still reach a reader. `okf-check` now copies each note once, with a non-blocking open, the type and size judged on the open file and at most the limit plus one byte read, and L1, L2, L3, Trust and the house rules read only that copy. The same bounded read protects `okf-verify`, `okf-export`, `--duplicates`, `okf-trust`, `okf-scoped`, the edit hook, `okf-base.yaml` and `.okfignore`.
+- **The L2 tool runs under a supervisor (`okf-limit.py`).** It gets its own process group, a time limit (`OKF_L2_TIMEOUT`, default 120 s) and a memory limit (`OKF_L2_MAX_RSS_MB`, default 2048 MB), and it is stopped with `okf-check`, including when `okf-check` is killed with SIGKILL. A timeout and an out-of-memory stop are reported as such. A missing supervisor is a `COULD NOT RUN` with exit 2, never a pass.
+- **`.okfignore` that is a device, a pipe, a folder or too large is refused** with exit 2 and a message, instead of being treated as absent or read without a limit.
+- **A bad `TMPDIR` is reported before anything is written** (a line was written to the root of the disk before).
+
+### Added
+- **`--selftest` probe "device and folder refused"**: a crippled copy of the refusal makes `--selftest` exit 5.
+- **`docs/agents/safe-probe-brief.md`**: the rules for any probe that can use up memory, disk or processes (only in a memory-capped container, never on a developer's machine), and the heavy-suite lock protocol in the README release section.
+
+### Changed
+- The Debian gate runs its container with hard limits (memory 4 GB, 1024 processes, 4 CPUs) and a new suite, `tools/capped-container-tests.sh`, runs the device, pipe and race cases inside a 1 GB container (38 cases).
+- Cost: on 300 ordinary notes a run takes about 0.7 s longer (measured: 3.4 s to 4.1 s and 4.0 s to 4.8 s in two independent runs on a loaded machine). The output for ordinary input is byte-identical to 0.9.26 (checked on four bundles in text, `--json`, `--strict-trust` and `--fail-stale`).
+- Known limits, documented: a program started by `okflint` that creates a new session (`setsid`) escapes the group kill; a `.okfignore` of exactly the limit on one line makes the check spin for a long time (it was so before this release and is on the backlog).
+
 ## [0.9.26] - 2026-10-18
 
 OKF Knowledge Gate 0.9.26 adds a size budget for notes, so a note that grows past what an agent can read in one pass is caught before it is compressed in a hurry.
@@ -578,7 +598,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.26...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.27...HEAD
+[0.9.27]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.26...v0.9.27
 [0.9.26]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.25...v0.9.26
 [0.9.25]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.24...v0.9.25
 [0.9.24]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.23...v0.9.24

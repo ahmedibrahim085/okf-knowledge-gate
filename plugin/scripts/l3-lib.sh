@@ -5,6 +5,7 @@
 # program ("$L3_AWK_LIB"'...program...'). One copy, because two hand-written parsers
 # drifted apart once already (code-review round 1, 2026-10-14).
 # `read -d ''` not `$(cat <<EOF)`: bash 3.2 mis-parses unbalanced quotes inside a heredoc in $(...).
+. "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/note-guard-lib.sh"   # okf_note_cap, okf_note_refusal (ticket #109)
 IFS= read -r -d '' L3_AWK_LIB <<'AWKEOF' || :
 # okfval: YAML scalar value. A quoted value keeps its text (a " #" inside quotes is data,
 # not a comment); an unquoted one loses a trailing " # comment".
@@ -52,11 +53,17 @@ AWKEOF
 # already in the bundle (its notes count once, under their real path) or it points outside (not bundle notes).
 # A note-file link counts wherever it points; a dangling link is skipped. `-H`: the root itself may be a
 # symlink (E-6a). `find -L` here listed one note twice and counted notes outside the bundle (#62).
+# A note that is not a regular file within okf_check.max_note_bytes is not listed (note-guard-lib.sh): a layer that is
+# handed the list must be able to open every entry. `-size` keeps an oversize file out without a process per note; only a
+# link, whose target find does not measure, is judged by okf_note_refusal. okf_refused_notes (ignore-lib.sh) names them.
 okf_md_files() {
-  local f
+  local f cap
+  cap=$(okf_note_cap)
   while IFS= read -r -d '' f; do
-    [ -f "$f" ] && printf '%s\0' "$f"
-  done < <(find -H "$1" -name '*.md' \( -type f -o -type l \) -print0 2>/dev/null)
+    [ -f "$f" ] || continue
+    [ -L "$f" ] && [ -n "$(okf_note_refusal "$f")" ] && continue
+    printf '%s\0' "$f"
+  done < <(find -H "$1" -name '*.md' \( \( -type f ! -size +"${cap}"c \) -o -type l \) -print0 2>/dev/null)
 }
 
 # okf_folder_links <root>: the symlinked folders below <root> that okf_md_files does not enter, one

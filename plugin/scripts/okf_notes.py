@@ -5,6 +5,7 @@ points at. Needs the vendored okf_validate on sys.path (its bounded loader refus
 """
 import os
 
+from okf_guard import NoteRefused, note_cap, read_note, refusal  # noqa: F401  (re-exported: one reader for every tool)
 from okf_validate import load_frontmatter, split_frontmatter
 
 
@@ -15,7 +16,7 @@ def meta(p, invalid=None):
     """The frontmatter of note `p` as a dict; {} when it has none, `invalid` (default {}) when it does not parse."""
     try:
         # utf-8-sig: a note that starts with a BOM is read as L1 reads it (0.9.8 review G-1)
-        t = open(p, encoding="utf-8-sig", errors="replace").read()
+        t = read_note(p, "utf-8-sig", "replace")
     except OSError:
         return {}
     end = t.find("\n---", 3) if t.startswith("---") else -1
@@ -36,7 +37,7 @@ def body_chars(p):
     text mode, so CRLF counts as one character: the same note checked out with LF or CRLF line endings measures the same.
     """
     try:
-        t = open(p, encoding="utf-8").read().lstrip("\ufeff")   # as the validator's _read_text: a BOM is not content
+        t = read_note(p, "utf-8", "strict").lstrip("\ufeff")   # as the validator's _read_text: a BOM is not content
     except (OSError, UnicodeDecodeError):
         return None   # L1 reports a file it cannot read; the size rule does not report it a second time
     return len(split_frontmatter(t)[1])

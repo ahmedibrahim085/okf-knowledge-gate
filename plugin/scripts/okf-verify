@@ -511,14 +511,27 @@ def check_node(value, node: dict, where: str, bundle: Path | None = None) -> Non
         raise BaseConfigError(f"{where} must be a non-empty string")
 
 
-def load_block(bundle: Path) -> dict:
+def _guard():
+    """okf_guard, the bounded note reader shared with okf-check (#109). Imported late; the vendored PyYAML is put on the path for the manifest."""
+    here = Path(__file__).resolve().parent
+    vendor = here.parent / "vendor"
+    sys.dont_write_bytecode = True   # an import must not leave scripts/__pycache__ in the installed plugin (plugin.test.sh Z-2)
+    sys.path[:0] = [str(here)] + ([str(vendor)] if "yaml" in sys.modules else [str(vendor / "pyyaml"), str(vendor)])
+    import okf_guard
+    return okf_guard
+
+
+def load_block(bundle: Path, source: Path | None = None) -> dict:
     """The validated okf_check block of <bundle>/okf-base.yaml ({} when there is none).
+
+    `source` names a folder holding a copy of the manifest to read instead (okf-check reads its frozen copy); paths the
+    block names, such as wikilink_root, are still resolved against `bundle`.
 
     A file that cannot be read, a block of the wrong shape and a key nobody knows all raise BaseConfigError:
     ignoring any of them reads as "nothing was declared". A typo such as `verify.repo` ran with "repos searched:
     NONE" and exit 0. okf-check validates the same block by calling `okf-verify --check-config`. (#53, #66)
     """
-    base = bundle / "okf-base.yaml"
+    base = (source or bundle) / "okf-base.yaml"
     if not base.is_file():
         return {}
     # PyYAML and the bounded loader ship beside the scripts in the plugin. The loader refuses a YAML alias bomb (a
@@ -533,9 +546,9 @@ def load_block(bundle: Path) -> dict:
     except (OSError, ValueError) as e:
         raise BaseConfigError(f"cannot be checked: the schema {schema_file} is unreadable ({type(e).__name__})")
     try:
-        data = load_frontmatter(base.read_text(encoding="utf-8"))
+        data = load_frontmatter(_guard().read_note(base, "utf-8", "strict"))   # bounded: a manifest is not exempt from the cap
     except OSError as e:
-        raise BaseConfigError(f"cannot read: {e.strerror or type(e).__name__}")
+        raise BaseConfigError(f"cannot read: {e.strerror or str(e) or type(e).__name__}")
     except UnicodeDecodeError:
         raise BaseConfigError("is not valid UTF-8")
     except yaml.YAMLError as e:
@@ -600,9 +613,10 @@ def not_ignored(bundle: Path):
 
 def verify(bundle: Path, repos: list[Path], host_paths: bool = False):
     results, no_claims = [], []
+    guard = _guard()
     keep = not_ignored(bundle)
     for f in sorted(bundle.rglob("*.md")):
-        if not f.is_file() or f.name in RESERVED:
+        if f.name in RESERVED:
             continue
         if keep is not None:
             try:
@@ -616,8 +630,15 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False):
             rel = str(f.relative_to(bundle))
         except ValueError:
             rel = f.name
+        why = guard.refusal(f)
+        if why:   # a device, pipe, folder or oversize file is never opened (#109); nobody looked, so UNRESOLVED
+            results.append({"concept": rel, "kind": "file", "claim": str(f), "verdict": UNRESOLVED,
+                            "detail": f"refused: {why}"})
+            continue
+        if not f.is_file():
+            continue   # a dangling link
         try:
-            text = f.read_text(encoding="utf-8")
+            text = guard.read_note(f, "utf-8", "strict")
         except (OSError, UnicodeDecodeError):
             results.append({"concept": rel, "kind": "file", "claim": str(f),
                             "verdict": UNRESOLVED, "detail": "unreadable"})
@@ -708,6 +729,8 @@ def main() -> int:
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--check-config", action="store_true",
                     help="only check the okf_check block of okf-base.yaml (okf-check calls this): silent and exit 0 when fine, else one error line and exit 2")
+    ap.add_argument("--manifest-dir", type=Path, default=None,
+                    help="with --check-config: read okf-base.yaml from this folder (okf-check's frozen copy); the paths it names are still resolved against the bundle")
     ap.add_argument("--strict", action="store_true", help="also fail on UNRESOLVED")
     a = ap.parse_args()
 
@@ -717,7 +740,7 @@ def main() -> int:
 
     if a.check_config:
         try:
-            load_block(a.bundle)
+            load_block(a.bundle, a.manifest_dir)
         except BaseConfigError as e:
             print(f"error: {a.bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
             return 2
@@ -745,6 +768,8 @@ def main() -> int:
         return 2
 
     try:
+        # One cap for this process and for ignore-lib.sh, which not_ignored() runs: the bundle's setting, else the default.
+        os.environ["OKF_MAX_NOTE_BYTES"] = str(_guard().note_cap(a.bundle))
         declared, declared_problems = declared_repos(a.bundle)
     except BaseConfigError as e:
         print(f"error: {a.bundle / 'okf-base.yaml'} {e}", file=sys.stderr)

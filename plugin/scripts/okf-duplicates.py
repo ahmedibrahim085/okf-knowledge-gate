@@ -20,8 +20,9 @@ import sys
 import time
 import unicodedata
 
+sys.dont_write_bytecode = True   # a direct run must not leave scripts/__pycache__ in the installed plugin (plugin.test.sh Z-2)
 sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
-from okf_notes import meta, resolve  # noqa: E402
+from okf_notes import meta, read_note, refusal, resolve  # noqa: E402
 from okf_validate import load_frontmatter  # noqa: E402
 
 bundle, as_json = sys.argv[1], sys.argv[3] == "1"
@@ -31,7 +32,9 @@ root = pathlib.Path(bundle)
 # run that schema over the block (run_config), so the values here are valid.
 schema = json.load(open(sys.argv[2], encoding="utf-8"))["keys"]["duplicates"]["keys"]
 try:
-    cfg = load_frontmatter(open(root / "okf-base.yaml", encoding="utf-8").read()) or {}
+    # read_note: a bounded read of a regular file (okf-check has refused a device or pipe named okf-base.yaml up front;
+    # this is the second wall, for one that appeared after that check). NoteRefused is an OSError.
+    cfg = load_frontmatter(read_note(root / "okf-base.yaml", "utf-8", "strict")) or {}
 except OSError:
     cfg = {}
 opt = ((cfg.get("okf_check") or {}).get("duplicates") or {}) if isinstance(cfg, dict) else {}
@@ -60,12 +63,20 @@ if os.environ.get("OKF_KEEP_LIST"):
 # One entry per real path (#62): a symlink alias is the same note as its target, so a third note that duplicates it is
 # one pair. The real file wins over an alias whatever the walk order (LT-56r).
 by_real = {}
+refused = []
 for p in sorted(root.rglob("*.md")):
     if p.name in ("index.md", "log.md") or (keep is not None and str(p.relative_to(root)) not in keep):
+        continue
+    why = refusal(p)   # a device, pipe, folder or oversize file is never opened (#109); stderr, because stdout may be --json
+    if why:
+        refused.append("%s — %s: skipped" % (p.relative_to(root), why))
         continue
     r = os.path.realpath(str(p))
     if r not in by_real or (by_real[r].is_symlink() and not p.is_symlink()):
         by_real[r] = p
+
+for line in refused:
+    print("okf-duplicates: " + line, file=sys.stderr)
 
 notes = []
 for p in sorted(by_real.values()):
@@ -80,7 +91,7 @@ for p in sorted(by_real.values()):
     shingles = set()
     if with_body:
         try:
-            t = open(p, encoding="utf-8-sig", errors="replace").read()   # a BOM note, as L1 reads it (0.9.8 review G-1)
+            t = read_note(p, "utf-8-sig", "replace")   # a BOM note, as L1 reads it (0.9.8 review G-1)
         except OSError:
             t = ""   # a dangling symlink, an unreadable file or a folder named x.md: no body, not a crash (advisory report)
         e = t.find("\n---", 3) if t.startswith("---") else -1

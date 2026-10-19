@@ -26,9 +26,11 @@ from urllib.parse import quote
 VENDOR = Path(__file__).resolve().parent.parent / "vendor"
 # The pinned copies go FIRST: a yaml module inherited from the environment must not outrank the pin
 # (plugin/vendor/VENDOR.md, "The vendored copy wins, on purpose").
-sys.path[:0] = [str(VENDOR / "pyyaml"), str(VENDOR)]
+sys.dont_write_bytecode = True   # an import must not leave scripts/__pycache__ in the installed plugin (plugin.test.sh Z-2)
+sys.path[:0] = [str(VENDOR / "pyyaml"), str(VENDOR), str(Path(__file__).resolve().parent)]
 import yaml  # noqa: E402
 from okf_validate import OKF_VERSION, load_frontmatter, split_frontmatter  # noqa: E402  (the validator's own reader, so both agree)
+from okf_guard import read_note, refusal  # noqa: E402  (a note is opened only when regular and within the cap, #109)
 
 # `[[target#heading|alias]]`. An embed `![[x]]` transcludes x, which a Markdown link cannot say, so it is left as written.
 WIKILINK = re.compile(r"(?<!!)\[\[([^\[\]]+)\]\]")
@@ -77,9 +79,10 @@ def body_lines(lines: list[str]):
 
 
 def read_text(path: Path) -> str:
-    """The note as written: no newline translation (a CRLF note stays CRLF), a BOM kept. Raises UnicodeDecodeError."""
-    with open(path, encoding="utf-8", newline="") as fh:
-        return fh.read()
+    """The note as written: no newline translation (a CRLF note stays CRLF), a BOM kept. Raises UnicodeDecodeError.
+
+    Bounded (#109): main() leaves a refused note out of `files`, and this refuses one that changed after that."""
+    return read_note(path, "utf-8", "strict", newline="")
 
 
 @functools.lru_cache(maxsize=None)   # one read per target, however many links point at it
@@ -275,6 +278,12 @@ def main() -> int:
     # Dot files and folders hold note-tool settings (.obsidian), VCS data (.git) or OS clutter (.DS_Store), not knowledge.
     files = sorted(rel for rel in (p.relative_to(vault) for p in vault.rglob("*") if p.is_file())
                    if not any(part.startswith(".") for part in rel.parts))
+    # A *.md that is not a regular file (device, pipe, folder) or is over okf_check.max_note_bytes is not exported and is
+    # never opened; it is reported with the other problems (#109). rglob("*") would list an oversize note, so it goes here.
+    refused = sorted((rel, why) for rel, why in ((p.relative_to(vault), refusal(p)) for p in vault.rglob("*.md")) if why
+                     and not any(part.startswith(".") for part in rel.parts))
+    skip = {rel for rel, _ in refused}
+    files = [rel for rel in files if rel not in skip]
     fileset = set(files)
     by_name: dict[str, list[Path]] = {}
     for p in files:
@@ -308,7 +317,7 @@ def main() -> int:
     if clashes or shared:
         return 2
 
-    problems: list[str] = []
+    problems: list[str] = [f"{rel.as_posix()} — {why}: skipped" for rel, why in refused]
     for rel in files:
         dest = out / out_rel(rel)
         dest.parent.mkdir(parents=True, exist_ok=True)

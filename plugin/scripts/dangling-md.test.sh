@@ -36,6 +36,9 @@ run() { local b="$1"; shift; : > "$TMP/spy.txt"; SPY="$TMP/spy.txt" PATH="$TMP/b
 runjson() { local b="$1"; shift; : > "$TMP/spy.txt"; SPY="$TMP/spy.txt" PATH="$TMP/bin:$PATH" "$CHECK" --json "$b" "$@" >"$TMP/out.json" 2>/dev/null; printf '%s' "$?"; }
 jget() { "$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps('"$1"', sort_keys=True))' "$TMP/out.json"; }
 # ran_on_bundle <bundle>: 0 when every okflint start was in the bundle folder itself (no mirror).
+# Every layer reads the frozen copy (#109 round 2), so okflint runs in <tmp>/okfmirror and never in the bundle; a dangling link
+# is already absent from that copy, so there is no second mirror (okfmirror alone, never l2dangling).
+ran_on_frozen() { [ -s "$TMP/spy.txt" ] && [ "$(sort -u "$TMP/spy.txt" | sed 's#.*/##')" = okfmirror ]; }
 ran_on_bundle() { local want; want=$(cd -P "$1" && pwd); [ -s "$TMP/spy.txt" ] && [ "$(sort -u "$TMP/spy.txt")" = "$want" ]; }
 
 if [ -z "$REALOKF" ]; then
@@ -57,11 +60,11 @@ else
     || bad "S14-DL-H2 text names the link" "$(grep -n 'L2\|dead' "$TMP/out.txt" | head -4 | tr '\n' '|')"
 
   section "S14-DL negative"
-  # S14-DL-N1: no dangling link -> okflint runs on the bundle itself (no mirror), as before.
+  # S14-DL-N1: no dangling link -> okflint runs once, on the frozen copy.
   B="$TMP/n1"; mkb "$B"
   rc=$(runjson "$B")
-  { [ "$rc" = 0 ] && ran_on_bundle "$B" && [ "$(jget 'd["l2_warnings"]')" = 0 ] && [ "$(jget 'd["l2_by_rule"]')" = '{}' ]; } \
-    && ok "S14-DL-N1 a bundle with no dangling link: okflint runs on the bundle itself, no advisory" \
+  { [ "$rc" = 0 ] && ran_on_frozen && [ "$(jget 'd["l2_warnings"]')" = 0 ] && [ "$(jget 'd["l2_by_rule"]')" = '{}' ]; } \
+    && ok "S14-DL-N1 a bundle with no dangling link: okflint runs once, on the frozen copy, no advisory" \
     || bad "S14-DL-N1 no dangling link" "rc=$rc spy=$(sort -u "$TMP/spy.txt" | tr '\n' ' ') warnings=$(jget 'd["l2_warnings"]')"
 
   # S14-DL-N2: a dangling link in a folder .okfignore excludes is no finding (the ignore mirror never held it).
@@ -71,11 +74,11 @@ else
     && ok "S14-DL-N2 a dangling link inside an ignored folder is not reported" \
     || bad "S14-DL-N2 ignored dangling link" "rc=$rc warnings=$(jget 'd["l2_warnings"]') by_rule=$(jget 'd["l2_by_rule"]')"
 
-  # S14-DL-N3: a dangling link that is not a *.md file (an image, a *.MD name okflint does not read) builds no mirror.
+  # S14-DL-N3: a dangling link that is not a *.md file (an image, a *.MD name okflint does not read) builds no second mirror.
   B="$TMP/n3"; mkb "$B"; ln -s nowhere.png "$B/pic.png"; ln -s nowhere.MD "$B/UP.MD"; ln -s nowhere.markdown "$B/m.markdown"
   rc=$(runjson "$B")
-  { [ "$rc" = 0 ] && ran_on_bundle "$B" && [ "$(jget 'd["l2_warnings"]')" = 0 ]; } \
-    && ok "S14-DL-N3 a dangling .png, .MD and .markdown link does not trigger the mirror" \
+  { [ "$rc" = 0 ] && ran_on_frozen && [ "$(jget 'd["l2_warnings"]')" = 0 ]; } \
+    && ok "S14-DL-N3 a dangling .png, .MD and .markdown link does not trigger a dangling-link mirror" \
     || bad "S14-DL-N3 non-note dangling links" "rc=$rc spy=$(sort -u "$TMP/spy.txt" | tr '\n' ' ') warnings=$(jget 'd["l2_warnings"]')"
 
   section "S14-DL edge"
@@ -121,13 +124,13 @@ else
     && ok "S14-DL-E5 a link loop (loop.md -> loop.md) is reported like a dangling link (exit 0)" \
     || bad "S14-DL-E5 link loop" "rc=$rc $(grep -n 'L2\|loop' "$TMP/out.txt" | head -3 | tr '\n' '|')"
 
-  # S14-DL-E6: an unreadable note is not a dangling link: no mirror, no advisory (what it does to L1 is not this case).
+  # S14-DL-E6: an unreadable note is not a dangling link: no advisory. It is a refused path (fail closed, exit 1).
   B="$TMP/e6"; mkb "$B"; cp "$B/a.md" "$B/b.md"; chmod 000 "$B/b.md"
   if [ -r "$B/b.md" ]; then skip "S14-DL-E6 unreadable note (chmod 000 is still readable here, running as root)"
   else
     run "$B" >/dev/null
-    { ran_on_bundle "$B" && ! grep -q 'dangling' "$TMP/out.txt"; } \
-      && ok "S14-DL-E6 an unreadable note is not treated as a dangling link: okflint runs on the bundle itself" \
+    { ran_on_frozen && ! grep -q 'dangling' "$TMP/out.txt" && grep -q 'b.md — cannot be read' "$TMP/out.txt"; } \
+      && ok "S14-DL-E6 an unreadable note is not treated as a dangling link: it is named as unreadable and okflint runs on the frozen copy" \
       || bad "S14-DL-E6 unreadable note" "spy=$(sort -u "$TMP/spy.txt" | tr '\n' ' ') $(grep -c dangling "$TMP/out.txt") dangling lines"
   fi
   chmod 644 "$TMP/e6/b.md" 2>/dev/null
