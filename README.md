@@ -105,7 +105,7 @@ okf-check <bundle>                 # all layers
 okf-check <bundle> --fail-stale    # staleness blocks (exit 4)
 okf-check <bundle> --strict-trust  # unauthenticated human verification and near-miss actors block (exit 1)
 okf-check <bundle> --fail-on-change   # exit 6 if the bundle changes during the scan
-okf-check <bundle> --json          # machine-readable summary (`l2_findings[]` lists house-rule errors; `l2_advisories[]` the advisories behind `l2_warnings`, as `RULE file — message`, cut at 200 with a count; `warnings[]` also lists the `okf_check.size` warnings; `misplaced_keys[]` appears only when an `okf_check` option sits at the top level of `okf-base.yaml`)
+okf-check <bundle> --json          # machine-readable summary (`l2_findings[]` lists house-rule errors; `l2_advisories[]` the advisories behind `l2_warnings`, as `RULE file — message`, cut at 200 with a count; `warnings[]` also lists the `okf_check.size` warnings; `misplaced_keys[]` appears only when an `okf_check` option sits at the top level of `okf-base.yaml`; `sizes[]` only when `okf_check.size` is set)
 okf-check <bundle> --duplicates    # list candidate duplicate notes (a report, always exit 0)
 okf-check <bundle> --duplicates-body   # the same, plus notes whose bodies are similar
 okf-check <bundle> --file <note>   # L1 + Trust for one note: one line per finding, nothing when clean (for edit hooks)
@@ -135,8 +135,19 @@ $ okf-check notes
 
 A Trust warning counts as an advisory in the last line, so the run still passes (exit 0) unless you pass `--strict-trust`.
 
-`okf-verify` checks three kinds of claim: a cited commit SHA, a code citation (`path:line @sha`) and an absolute file path. A cited commit SHA is looked up in each `--repo` folder and in each repository the bundle declares once in its `okf-base.yaml` under `okf_check.verify.repos` (each entry has a `path`: relative to the bundle, absolute, or starting with `~`; `--repo` adds to them, and a repository named twice is searched once). A declared path that is missing or is not a git repository is reported as UNRESOLVED with that reason; it does not change the exit code unless you pass `--strict`. An `okf-base.yaml` that cannot be read, is not valid YAML, or whose `okf_check.verify.repos` is not a list of `{path: <string>}` stops the run with one error line and exit 2. A code citation written `path:line @sha`, `path:first-last @sha` or `path:line at sha` (for example `` `src/a.py:10 @d084956` ``) is ONE claim: the commit is looked up as above, then the path is looked up in that commit's files. The path is repo-relative and may be only its end (`a.py` for `src/a.py`). It is CONFIRMED when the file exists at that commit, REFUTED when the commit is found and the file is not in it (the detail says the path part failed), and UNRESOLVED when the commit is in no searched repository or the end of the path matches more than one file. The line (or the end of the range) must also exist in that file at that commit: a line past the end is REFUTED and the detail gives the file's line count; line 0 is REFUTED (lines start at 1); an empty file has 0 lines; a reversed range such as `20-10` is read as the lines up to the larger number; a binary file or a symlink is UNRESOLVED because its lines cannot be checked; a line number of more than 9 digits is REFUTED as out of range. A drive-letter path with backslashes (`C:\x\y.py:3`), a URL or a version number is not a citation. A citation is cut at the first space before the path, so `my w.py:3 @sha` names `w.py` unless the words before it spell a file that exists at that commit: when `my w.py` exists and `w.py` does not, the line is checked in `my w.py` (CONFIRMED, or REFUTED when past the end); when both exist, or two such names do, the claim is UNRESOLVED naming them, because the writer's intent cannot be told; when only `w.py` exists, `my` is read as prose and the claim is CONFIRMED against `w.py`. Quote the path (`` `my w.py`:3 @sha ``, also `".."` and `'..'`) to make the boundary explicit: it is then never cut, so with only `w.py` present it is REFUTED. A cut that ends a longer name while the words before it do not spell it (`a dir/w.py:1` for `my dir/w.py`) is UNRESOLVED, never REFUTED. `path:line` and `@sha` may be split by one line break but not by a blank line: across a paragraph break they are not one citation. Absolute file paths
-in backticks or quotes (and paths that start with `~`) are checked on disk, but only inside the bundle or a `--repo` folder: a path elsewhere on the machine is UNRESOLVED, so a bundle you did not write cannot use the check to learn which files exist on your machine. Add `--host-paths` to look those up too. Relative paths are not read. In a shallow clone (the `actions/checkout` default), commits older than the clone are missing: use `fetch-depth: 0`.
+`okf-verify` checks three kinds of claim and answers CONFIRMED, REFUTED or UNRESOLVED for each:
+
+- **A commit SHA** is looked up in each `--repo` folder and in the repositories the bundle lists under
+  `okf_check.verify.repos` in `okf-base.yaml`. A SHA that is in no searched repository is UNRESOLVED, never REFUTED.
+- **A code citation**, `path:line @sha` (also `path:first-last @sha` and `path:line at sha`), is one claim: the commit
+  must exist, the file must exist at that commit, and the line must be in that file.
+- **Absolute file paths** in backticks or quotes (and paths that start with `~`) are checked on disk, but only inside
+  the bundle or a `--repo` folder, so a bundle you did not write cannot use the check to learn which files exist on your
+  machine. `--host-paths` looks up the others too. Relative paths are not read.
+
+In a shallow clone (the `actions/checkout` default), commits older than the clone are missing: use `fetch-depth: 0`.
+The full rules (declared repositories, line ranges, paths that contain a space, what is not a citation) are in
+[the okf-verify reference](plugin/skills/okf/references/verify-and-install.md#what-counts-as-a-claim-and-how-each-is-judged).
 
 `okf-export` is for a team that edits in an Obsidian-style vault, whose backlinks and graph count only `[[wikilinks]]`.
 The vault stays the source; the export is a bundle `okf-check` can gate. Body `[[note]]`, `[[note|alias]]`,
@@ -230,14 +241,18 @@ none, and the final newline counts. A note with no frontmatter is all body. A bo
 error (exit 1, like `require_owner`); above `warn_body_chars` it is a warning (exit 0, counted as an advisory in the
 verdict). Each finding names the note, its size and the limit, and says to split the note or move a section to a
 companion note, not to compress it. `index.md` and `log.md` are measured like any note (a log only grows); leave a
-note out with `.okfignore`. A note that is not valid UTF-8 is reported by L1 only. Findings are in the text and, for
-errors, in `--json` `errors[]`.
+note out with `.okfignore`, or from this rule alone with `exclude`: a list of globs in the `.okfignore` syntax (a pattern
+that starts with `!` exits 2), for example generated notes. The Size line counts the notes it left out. A note that is
+not valid UTF-8 is reported by L1 only. Findings are in the text and in `--json` (`errors[]`, `warnings[]`); with the
+option on, `--json` `sizes[]` also gives every measured note its body size and the two limits, so CI can show the trend
+before a note breaks.
 
 ```yaml
 okf_check:
   size:
     max_body_chars: 40000
     warn_body_chars: 38000
+    exclude: ["generated/**"]
 ```
 
 **Notes that are not regular files, and the byte cap:** a note is opened only when, after symlinks are resolved, it is a
@@ -311,7 +326,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.32
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.33
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -327,7 +342,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.32
+    rev: v0.9.33
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -385,7 +400,7 @@ The full behaviour contract, one row per scenario with its test, is
 | Platform | Status |
 |---|---|
 | macOS | The 0.9.2 test suites passed here, on bash 3.2 and the BSD tools. The gate was built and measured on this platform. |
-| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.2 suites passed on Debian 12 (aarch64, GNU coreutils 9.1, gawk 5.2.1, bash 5.2.15, non-root user) with `okflint` and pre-commit 4.7.0 installed in a Python 3.12 environment. 0 tests failed. 6 tests were skipped because they cannot apply there: no `claude` CLI, no installed plugin to compare, a case-sensitive filesystem, no lesson file as a fixture, and no Pillow to render the demo. Debian 12 ships Python 3.11, which cannot install `okflint`. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). |
+| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.2 suites passed on Debian 12 (aarch64, GNU coreutils 9.1, gawk 5.2.1, bash 5.2.15, non-root user) with `okflint` and pre-commit 4.7.0 installed in a Python 3.12 environment. 0 tests failed. 6 tests were skipped because they cannot apply there: no `claude` CLI, no installed plugin to compare, a case-sensitive filesystem, no lesson file as a fixture, and no Pillow to render the demo. Debian 12 ships Python 3.11, which cannot install `okflint`. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). In the public repository, every pull request and every push to `main` also runs the suites and `--selftest` on GitHub's Ubuntu 24.04 runner, once with gawk and once with mawk, and runs the GitHub Action on a valid and an invalid bundle (`.github/workflows/ci.yml`). |
 | Windows | There is no native Windows support: the gate is a set of bash scripts. WSL (Windows Subsystem for Linux) is the only path, and nothing has been run under it: UNVERIFIED, as are the Action and the pre-commit hook on Windows. |
 | Claude Code | The plugin form (hooks and the skill) needs Claude Code. The command line, the GitHub Action and the pre-commit hook do not. |
 
@@ -437,7 +452,7 @@ fix. A change is reviewed on two axes (standards and spec) before it is released
 | `plugin/vendor/` | The vendored validator and PyYAML, with `VENDOR.md` (source, pin, licence) |
 | `docs/demo.gif`, `tools/demo/` | The README demo and the scripts that record and render it |
 | `docs/comparison-2026-10-17.md` | The evidence behind the comparison claim in "Why use it" |
-| `.github/` | Issue templates and the pull-request template |
+| `.github/` | Issue templates, the pull-request template, and CI: `workflows/ci.yml` runs the suites and the Action, `ci/run-suites.sh` is its suite runner |
 | `CHANGELOG.md` | Dated history of every release |
 
 ## Release

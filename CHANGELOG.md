@@ -9,6 +9,22 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.33] - 2026-10-19
+
+OKF Knowledge Gate 0.9.33 adds CI on GitHub's runner for the public repository, finishes the body-size budget (exclude globs and per-note sizes) and stops `okf-verify` from blaming a history rewrite it cannot prove.
+
+### Added
+- **CI on GitHub's runner, in the public repository.** `.github/workflows/ci.yml` runs on every pull request and every push to `main` of the public repository (`.github/` is exported whole). In a private repository its jobs are skipped, because Actions minutes are billed there; a skipped job is not a pass. It runs the release suites and `--selftest` on Ubuntu 24.04 as a non-root user, with the pinned `okflint` and pre-commit installed in a Python 3.12 environment, once with gawk and once with mawk (the README claims both; the release gate runs gawk only). A second job runs the repository's own Action (`uses: ./`) and checks that it passes a valid bundle and fails a bundle with an L1 error and a `require-house-rules` run without `okflint`. The suite runner, `.github/ci/run-suites.sh`, judges each suite by the release gates' own rule (exit 0 and a final summary of at least 1 passed and 0 failed). It reads the suite list from `tools/linux-gate.conf` when the tree has one and otherwise runs every `*.test.sh`. `tools/ci-workflow.test.sh` fails if the runner's copy of that rule, or the workflow's default versions, drift from `tools/lib/suite-verdict.sh` and `tools/linux-gate.conf`.
+- **`okf_check.size.exclude` and `--json` `sizes[]`, the rest of the body-size budget** (okf-knowledge-gate#17). `exclude` is a list of globs in the `.okfignore` syntax whose notes the size rule does not measure (generated notes, for example); the globs go through the same matcher as `.okfignore` and `owners`, a pattern that starts with `!` is refused (exit 2, in `okf-check` and `okf-verify --check-config`), and the Size line counts the notes it left out. With the option on, `--json` `sizes[]` gives every measured note its body size and both limits, so CI can show the trend before a note breaks. Without `okf_check.size` the output is unchanged; with it, `--json` differs from 0.9.32 only by the new `sizes` key. The schema gains `{item_no_prefix: "!"}` for list items, as map keys already had `key_no_prefix`; spaces around a pattern are dropped, as `.okfignore` drops them, and a pattern holding a tab or a line break is refused (exit 2).
+
+### Changed
+- **The README's `okf-verify` paragraph is a short summary now; the full rules moved to the skill's reference.** The paragraph had grown to about 600 words of edge cases in one block. The README keeps the three kinds of claim, the `--host-paths` boundary and the shallow-clone advice, and links `plugin/skills/okf/references/verify-and-install.md`, which now holds every rule (declared repositories, the verdict for each citation case as a table, paths that contain a space, what is not a citation). The reference ships with the plugin, so an agent reading the skill gets the same rules. LT-36j fails if the link, the heading or a rule goes missing. No behaviour changed.
+- **`okf-verify` no longer calls a missing SHA "likely a history rewrite" just because a commit with the same subject exists** (okf-knowledge-gate#6, second comment). In the reported cases the commit lived in a repository that was not searched, and a short subject matches unrelated commits. The search matches the quoted text anywhere in a commit message, so the detail now says that and names three explanations: a rewritten history, a repository that was not searched, or an unrelated match. It lists the repositories searched and any that could not be queried. The verdict stays UNRESOLVED.
+
+### Fixed
+- **`plugin.test.sh` Z-2 no longer fails after `okf-export.test.sh` has run.** That suite loads `okf-export` through Python, which writes `plugin/scripts/__pycache__/`; Z-2 then reported the `.pyc` file as a dead file that "ships to every install". `__pycache__` never ships (`.gitignore`, and the export excludes it), so Z-2 now leaves it out. A real unreferenced script is still reported. Found because the public tree runs its suites in name order, where `okf-export.test.sh` comes before `plugin.test.sh`.
+- **`plugin.test.sh` no longer fails LT-36b on a machine without `okflint`.** The README sample shows the L2 line a machine with `okflint` prints (`SKIPPED — no okf-base.yaml in notes`); without `okflint` the run prints `okflint not installed` there, so the line-by-line compare failed although the README was right. Every other sample line is still compared; the L2 line is compared only when `okflint` is on PATH, and otherwise is reported as a SKIP (UNVERIFIED), never as a pass. A failure now prints the missing lines instead of the first two lines of a Python traceback.
+
 ## [0.9.32] - 2026-10-19
 
 OKF Knowledge Gate 0.9.32 shows three findings that `okf-check` already had but the user could not see.
@@ -664,7 +680,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.32...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.33...HEAD
+[0.9.33]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.32...v0.9.33
 [0.9.32]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.31...v0.9.32
 [0.9.31]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.30...v0.9.31
 [0.9.30]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.29...v0.9.30

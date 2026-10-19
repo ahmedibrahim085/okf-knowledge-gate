@@ -1,5 +1,5 @@
 {
-  "_comment": "The schema of the okf_check: block in okf-base.yaml. okf-verify enforces it (okf-verify --check-config) and okf-check calls that, so the two tools cannot disagree. A node is {keys: {name: node}} (a mapping with exactly those keys), {map: node} (a mapping with free non-empty string keys, each value a node), {list: node} (a list whose items are node), {enum: [values]} (one of those strings), {type: boolean} (true or false), {type: number, min, max, default} (a number within min..max; default is the value used when the key is absent), {type: integer, min, max} (a whole number within min..max; default is the value used when the key is absent) or {type: string} (a non-empty string). A node under keys may add {requires: {sibling: value}}: the key is only valid when that sibling has that value; or {below: sibling}: when that sibling is set, the value is smaller than it. A map node may add {key_no_prefix: !}: no key may start with that text. To add an option, add its key under the top-level keys.",
+  "_comment": "The schema of the okf_check: block in okf-base.yaml. okf-verify enforces it (okf-verify --check-config) and okf-check calls that, so the two tools cannot disagree. A node is {keys: {name: node}} (a mapping with exactly those keys), {map: node} (a mapping with free non-empty string keys, each value a node), {list: node} (a list whose items are node), {enum: [values]} (one of those strings), {type: boolean} (true or false), {type: number, min, max, default} (a number within min..max; default is the value used when the key is absent), {type: integer, min, max} (a whole number within min..max; default is the value used when the key is absent) or {type: string} (a non-empty string). A node under keys may add {requires: {sibling: value}}: the key is only valid when that sibling has that value; or {below: sibling}: when that sibling is set, the value is smaller than it. A map node may add {key_no_prefix: !}: no key may start with that text. A list node may add {item_no_prefix: !}: no item may start with that text. To add an option, add its key under the top-level keys.",
   "keys": {
     "edit_hook": {"type": "boolean"},
     "max_note_bytes": {"type": "integer", "min": 1, "max": 1073741824, "default": 5242880},
@@ -21,7 +21,8 @@
     "size": {
       "keys": {
         "max_body_chars": {"type": "integer", "min": 1, "max": 1000000000},
-        "warn_body_chars": {"type": "integer", "min": 1, "max": 1000000000, "below": "max_body_chars"}
+        "warn_body_chars": {"type": "integer", "min": 1, "max": 1000000000, "below": "max_body_chars"},
+        "exclude": {"list": {"type": "string"}, "item_no_prefix": "!"}
       }
     },
     "duplicates": {

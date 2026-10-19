@@ -53,7 +53,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.32"
+VERSION="0.9.33"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -194,7 +194,7 @@ PY
   _t="[]"; [ -s "$TMP/trust.json" ] && _t=$(cat "$TMP/trust.json"); [ "${TRUST_RAN:-1}" -eq 0 ] && _t=null
   if [ -n "$PY" ]; then
     _b=$(printf '%s' "$BUNDLE" | "$PY" -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))')
-    _f=$("$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
+    _f=$(OKF_SIZES_JSONL="$TMP/sizes.jsonl" "$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
 import json, os, sys
 # Layers that read a filtered copy (.okfignore, crash isolation) hand okflint the copy's path, and some of its messages
 # print it (R201: "reserved file missing in <root>"). The report names the bundle the user pointed at; the copy is
@@ -245,6 +245,12 @@ for k, v in out.items():
 # Present only when a key was found, so a report without one is unchanged.
 if misplaced:
     out["misplaced_keys"] = [{"key": m, "belongs": "okf_check." + m} for m in misplaced]
+# Present only when okf_check.size is on: each measured note's body size and the limits (okf-knowledge-gate#17).
+try:
+    rows = open(os.environ.get("OKF_SIZES_JSONL", ""), encoding="utf-8").read().splitlines()
+    out["sizes"] = [json.loads(r) for r in rows if r]
+except (OSError, ValueError):
+    pass
 print(json.dumps(out)[1:-1])
 PY
 )
@@ -1127,8 +1133,40 @@ run_size() {
   [ "${CONFIG_RC:-0}" -eq 0 ] || return 0
   # The notes by the one rule every walker shares (okf_md_files), so a symlinked folder is not entered.
   okf_md_files "$bundle" > "$TMP/size-files.lst" 2>/dev/null
-  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$bundle/okf-base.yaml" "$TMP/size-files.lst" <<'PYEOF'
+  # okf_check.size.exclude (okf-knowledge-gate#17): globs whose notes are not measured, matched by the .okfignore matcher
+  # (ignore-lib.sh) as the owners defaults are, so the three cannot disagree about what a pattern covers. The schema has
+  # already refused a negated pattern. One more python only when the manifest mentions the key.
+  local excl=0 pats
+  if grep -q 'exclude' "$bundle/okf-base.yaml" 2>/dev/null; then
+    pats=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle/okf-base.yaml" <<'PY' 2>/dev/null
 import os, sys
+sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
+from okf_validate import load_frontmatter
+from okf_notes import read_note
+d = load_frontmatter(read_note(sys.argv[1], "utf-8", "replace"))
+o = (d.get("okf_check") or {}) if isinstance(d, dict) else {}
+z = o.get("size") if isinstance(o, dict) else None
+for p in ((z.get("exclude") or []) if isinstance(z, dict) else []):
+    p = p.strip() if isinstance(p, str) else ""   # as .okfignore trims each line (ignore-lib.sh)
+    if p and not any(c in p for c in "\t\n"):
+        print(p)
+PY
+)
+    if [ -n "$pats" ]; then
+      # A subshell, so OKFIGNORE_PATTERNS (the loaded .okfignore) is untouched outside it; it prints the excluded count
+      # and writes the notes it keeps.
+      : > "$TMP/size-files.kept"
+      excl=$( n=0; OKFIGNORE_PATTERNS=()
+        while IFS= read -r p; do OKFIGNORE_PATTERNS+=("$p"); done <<< "$pats"
+        while IFS= read -r -d '' f; do
+          if okfignore_match "${f#"$bundle"/}"; then n=$((n + 1)); else printf '%s\0' "$f" >> "$TMP/size-files.kept"; fi
+        done < "$TMP/size-files.lst"
+        echo "$n" )
+      mv "$TMP/size-files.kept" "$TMP/size-files.lst"
+    fi
+  fi
+  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$bundle/okf-base.yaml" "$TMP/size-files.lst" <<'PYEOF'
+import json, os, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter
@@ -1152,6 +1190,9 @@ for f in sorted(files):
         continue
     n += 1
     rel = os.path.relpath(f, bundle).replace("\n", " ").replace("\t", " ")
+    # One row per measured note for --json sizes[] (okf-knowledge-gate#17): the trend shows before a note breaks.
+    print("S|" + json.dumps({"note": rel, "body_chars": c, "max_body_chars": mx if isinstance(mx, int) else None,
+                             "warn_body_chars": wn if isinstance(wn, int) else None}))
     if isinstance(mx, int) and c > mx:
         print("E|%s: body is %d characters, above okf_check.size.max_body_chars %d %s" % (rel, c, mx, fix))
     elif isinstance(wn, int) and c > wn:
@@ -1161,14 +1202,16 @@ PYEOF
   ); ec=$?
   [ "$ec" -eq 0 ] || { say "  Size             COULD NOT RUN — the size check exited $ec"; return $EXIT_DEP; }
   [ -n "$(printf '%s\n' "$out" | sed -n 's/^N|//p')" ] || return 0
-  local ne nw
+  printf '%s\n' "$out" | sed -n 's/^S|//p' > "$TMP/sizes.jsonl"
+  local ne nw xs=""
+  [ "$excl" -gt 0 ] && xs=", $excl excluded by okf_check.size.exclude"
   ne=$(printf '%s\n' "$out" | grep -c '^E|'); nw=$(printf '%s\n' "$out" | grep -c '^W|')
   if [ "$ne" -gt 0 ]; then
-    say "  Size             FAIL   ${ne} note(s) over the body budget, ${nw} over the warning limit"
+    say "  Size             FAIL   ${ne} note(s) over the body budget, ${nw} over the warning limit$xs"
   elif [ "$nw" -gt 0 ]; then
-    say "  Size             WARN   ${nw} note(s) over the warning limit (advisory)"
+    say "  Size             WARN   ${nw} note(s) over the warning limit (advisory)$xs"
   else
-    say "  Size             PASS   $(printf '%s\n' "$out" | sed -n 's/^N|//p') note(s) within the body budget"
+    say "  Size             PASS   $(printf '%s\n' "$out" | sed -n 's/^N|//p') note(s) within the body budget$xs"
     return 0
   fi
   ADVISORIES=$((ADVISORIES + nw))

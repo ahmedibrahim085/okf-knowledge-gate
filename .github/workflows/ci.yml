@@ -1,0 +1,115 @@
+# CI: the release suites on GitHub's Linux runner, and the repository's own Action on a valid and an invalid bundle.
+# The file ships in the public export too (.github ships whole). Every job runs only when the repository is public: Actions
+# minutes are billed for private repositories, so in the private one the jobs show as skipped, never as passed.
+# run-suites.sh reads tools/linux-gate.conf when the tree has it and otherwise uses the defaults below.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  suites:
+    # The README claims GNU awk and mawk on Linux. The release gate runs gawk (Debian 12); this runs both.
+    name: Suites on Linux (${{ matrix.awk }})
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        awk: [gawk, mawk]
+    env:
+      # Defaults for the public tree. The private tree takes its values from tools/linux-gate.conf, and
+      # tools/ci-workflow.test.sh fails when these differ from that file.
+      OKF_LINUX_PYTHON: "3.12"
+      OKF_LINUX_UV: "0.11.28"
+      OKF_LINUX_PRECOMMIT: "4.7.0"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Versions from tools/linux-gate.conf (private tree only)
+        run: |
+          [ -f tools/linux-gate.conf ] || { echo "no tools/linux-gate.conf: the defaults of this workflow apply"; exit 0; }
+          for k in OKF_LINUX_PYTHON OKF_LINUX_UV OKF_LINUX_PRECOMMIT; do
+            v=$(sed -n "s/^$k=//p" tools/linux-gate.conf)
+            if [ -n "$v" ]; then echo "$k=$v" >> "$GITHUB_ENV"; fi
+          done
+
+      - name: ${{ matrix.awk }} as awk, and the pinned okflint and pre-commit in a uv venv
+        env:
+          AWK_IMPL: ${{ matrix.awk }}
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq gawk mawk jq procps > /dev/null
+          mkdir -p "$HOME/awk-bin" && ln -sf "/usr/bin/$AWK_IMPL" "$HOME/awk-bin/awk"
+          echo "$HOME/awk-bin" >> "$GITHUB_PATH"
+          curl -LsSf "https://astral.sh/uv/$OKF_LINUX_UV/install.sh" | sh > /dev/null
+          export PATH="$HOME/.local/bin:$PATH"
+          uv venv -q --python "$OKF_LINUX_PYTHON" "$HOME/venv"
+          . "$HOME/venv/bin/activate"
+          # The supported okflint: the pinned source while upstream okflint#11 is unmerged, else the pinned release.
+          pins=plugin/config/pinned-versions.txt
+          okflint=$(awk '$1=="okflint_source"{print $2}' "$pins")
+          [ -n "$okflint" ] || okflint="okflint==$(awk '$1=="okflint"{print $2}' "$pins")"
+          uv pip install -q "$okflint" "pre-commit==$OKF_LINUX_PRECOMMIT"
+          echo "$HOME/venv/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$HOME/venv" >> "$GITHUB_ENV"
+
+      - name: Suites and --selftest
+        run: .github/ci/run-suites.sh
+
+  action:
+    name: The Action on itself
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Two bundles, one valid and one with an L1 error (no type)
+        run: |
+          for b in good bad; do
+            mkdir -p "$RUNNER_TEMP/$b"
+            printf -- '---\nokf_version: "0.2"\n---\n# Notes\n' > "$RUNNER_TEMP/$b/index.md"
+            printf -- '# Log\n\n## 2026-01-01\n* created\n' > "$RUNNER_TEMP/$b/log.md"
+          done
+          printf -- '---\ntype: Lesson\ntitle: Payment limits\ndescription: Limits for payouts.\nstatus: stable\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$RUNNER_TEMP/good/limits.md"
+          printf -- '---\ntitle: Payment limits\ndescription: Limits for payouts.\nstatus: stable\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$RUNNER_TEMP/bad/limits.md"
+
+      - name: A valid bundle passes
+        uses: ./
+        with:
+          bundle: ${{ runner.temp }}/good
+
+      - name: A bundle with an L1 error fails the step
+        id: bad
+        continue-on-error: true
+        uses: ./
+        with:
+          bundle: ${{ runner.temp }}/bad
+
+      - name: require-house-rules without okflint fails the step
+        id: house
+        continue-on-error: true
+        uses: ./
+        with:
+          bundle: ${{ runner.temp }}/good
+          require-house-rules: 'true'
+
+      - name: The two failing steps failed
+        env:
+          BAD: ${{ steps.bad.outcome }}
+          HOUSE: ${{ steps.house.outcome }}
+        run: |
+          [ "$BAD" = failure ] || { echo "::error::the Action passed a bundle with an L1 error (outcome: $BAD)"; exit 1; }
+          [ "$HOUSE" = failure ] || { echo "::error::require-house-rules passed although L2 was skipped (outcome: $HOUSE)"; exit 1; }
+          echo "the Action failed both bundles it had to fail"

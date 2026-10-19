@@ -72,7 +72,8 @@ as an agent) into exit 1; it changes severity only, never what is found.
 
 - A `Size` line means the bundle sets `okf_check.size` in `okf-base.yaml`: a note body above `max_body_chars` is exit 1
   (a house-rule error), above `warn_body_chars` an advisory (exit 0). Fix it by splitting the note or moving a
-  section to a companion note. Never compress the text to get under the number and never raise the limit to pass a run.
+  section to a companion note. Never compress the text to get under the number, never raise the limit and never add the
+  note to `okf_check.size.exclude` to pass a run (`exclude` is for notes a script generates, set by the owner).
 
 - A `Refused notes` line means a `*.md` is a device, pipe or socket, or is above `okf_check.max_note_bytes` (default
   5242880 bytes): no layer opened it, and the run exits 1. Remove or replace it, or leave it out with `.okfignore`. Never
@@ -139,7 +140,7 @@ empty, inside the vault, or cannot be written). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.32`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.33`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

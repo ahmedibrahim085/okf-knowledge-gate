@@ -913,6 +913,7 @@ here"*. Conformance is a question about form; this is a question about fact.
 | V-4 | SHA resolves in no searched repo | **UNRESOLVED**, never REFUTED, exit 0 | ✅ |
 | V-5 | Concept with no checkable claim | stated as unverifiable | ✅ |
 | V-6 | SHA orphaned by rewrite, subject survives | UNRESOLVED + names the surviving commit | ✅ |
+| V-6b | Same as V-6 (okf-knowledge-gate#6, comment 2: the commit lived in a repository that was not searched) | UNRESOLVED; the detail says a commit MESSAGE contains the quoted subject and names three explanations (rewritten history, a repository not searched, an unrelated match), with the searched and the unqueryable repositories; never "likely a history rewrite" alone | ✅ |
 | V-7 | Bundle path containing a space | works, claims still resolve | ✅ |
 | V-8 | No `--repo` given | UNRESOLVED with the scope stated | ✅ |
 | V-9 | `--json` | parseable | ✅ |

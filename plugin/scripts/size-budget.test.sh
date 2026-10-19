@@ -325,14 +325,16 @@ rc=$(runjson "$B")
   && ok "S20-IF-E3 --json: warnings holds the L1 warning then the size warning, l1_warnings stays 1" \
   || bad "S20-IF-E3 L1 and size warnings together" "rc=$rc l1=$(jget 'd["l1_warnings"]') warnings=$(jget 'd["warnings"]')"
 
-# S20-IF-N2: golden compare. A size block that nothing exceeds leaves the --json report byte-identical to the same
-# bundle without the block.
+# S20-IF-N2: golden compare. A size block that nothing exceeds leaves the --json report identical to the same bundle
+# without the block, except for the sizes key the block adds (okf-knowledge-gate#17: each note's size, so CI sees the trend).
 B="$TMP/if-n2"; mkb "$B"; mknote "$B/n.md" 10
 runjson "$B" >/dev/null; cp "$TMP/out.json" "$TMP/if-n2.before"
 printf '%s\n' "$(size_cfg 100 50)" >> "$B/okf-base.yaml"
 rc=$(runjson "$B")
+"$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); assert isinstance(d.pop("sizes"), list); open(sys.argv[1], "w").write(json.dumps(d) + "\n")' "$TMP/out.json" \
+  && "$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); open(sys.argv[1], "w").write(json.dumps(d) + "\n")' "$TMP/if-n2.before"
 { [ "$rc" = 0 ] && cmp -s "$TMP/if-n2.before" "$TMP/out.json"; } \
-  && ok "S20-IF-N2 a size block nothing exceeds leaves the --json report byte-identical" \
+  && ok "S20-IF-N2 a size block nothing exceeds changes the --json report only by its sizes key" \
   || bad "S20-IF-N2 golden compare" "rc=$rc $(diff "$TMP/if-n2.before" "$TMP/out.json" | head -3 | tr '\n' '|')"
 
 section "S20-IF misplaced okf_check keys"
@@ -368,6 +370,10 @@ B="$TMP/if-n3"; mkb "$B"; mknote "$B/n.md" 10
 runjson "$B" >/dev/null; cp "$TMP/out.json" "$TMP/if-n3.before"
 printf 'colour: red\nokf_check:\n  size:\n    max_body_chars: 100\n' >> "$B/okf-base.yaml"
 rc=$(runjson "$B"); run "$B" >/dev/null
+# sizes[] (okf-knowledge-gate#17) is the size option's own report, present whenever the option is on; it is not a
+# misplaced-key finding, so it is taken out before the compare.
+"$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); d.pop("sizes", None); open(sys.argv[1], "w").write(json.dumps(d) + "\n")' "$TMP/out.json"
+"$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); open(sys.argv[1], "w").write(json.dumps(d) + "\n")' "$TMP/if-n3.before"
 { [ "$rc" = 0 ] && cmp -s "$TMP/if-n3.before" "$TMP/out.json" && ! grep -q 'Config  *WARN' "$TMP/out.txt"; } \
   && ok "S20-IF-N3 size under okf_check and an unrelated top-level key are not misplaced (--json byte-identical, no WARN)" \
   || bad "S20-IF-N3 correct placement" "rc=$rc $(diff "$TMP/if-n3.before" "$TMP/out.json" | head -3 | tr '\n' '|')"
@@ -388,6 +394,69 @@ rc=$(run "$B"); rcj=$(runjson "$B"); got=$(jget '[m["key"] for m in d["misplaced
   && [ "$got" = '["size", "require_owner"]' ]; } \
   && ok "S20-IF-E6 a key present inside okf_check too is a duplicate to delete; a key only at the top level is still one to move" \
   || bad "S20-IF-E6 duplicate key" "rc=$rc keys=$got $(grep -n 'Config' "$TMP/out.txt" | head -3 | tr '\n' '|')"
+
+section "S16-SB rest: exclude globs and per-note sizes (okf-knowledge-gate#17)"
+# S16-SB-X1: okf_check.size.exclude lists globs (the .okfignore syntax) whose notes are not measured. A generated note
+# over the maximum is not an error when its folder is excluded; the Size line says how many notes were left out.
+B="$TMP/x1"; mkb "$B" "$(size_cfg 100)"$'\n    exclude: ["generated/**"]'; mknote "$B/generated/reg.md" 500; mknote "$B/n.md" 10
+rc=$(run "$B")
+{ [ "$rc" = 0 ] && ! grep -q 'reg.md: body is' "$TMP/out.txt" && grep -Eq 'Size +PASS .*1 excluded by okf_check.size.exclude' "$TMP/out.txt"; } \
+  && ok "S16-SB-X1 a note under an excluded glob is not measured; the Size line counts it as excluded (exit 0)" \
+  || bad "S16-SB-X1 exclude" "rc=$rc $(grep -n 'Size\|body is' "$TMP/out.txt" | head -3 | tr '\n' '|')"
+
+# S16-SB-X2: a glob that does not cover the note leaves it measured: the error stays.
+B="$TMP/x2"; mkb "$B" "$(size_cfg 100)"$'\n    exclude: ["generated/**"]'; mknote "$B/notes/big.md" 500
+rc=$(run "$B")
+{ [ "$rc" = 1 ] && grep -Fq 'notes/big.md: body is 500 characters, above okf_check.size.max_body_chars 100' "$TMP/out.txt"; } \
+  && ok "S16-SB-X2 a note outside every excluded glob is still measured (exit 1)" \
+  || bad "S16-SB-X2 exclude miss" "rc=$rc $(grep -n 'Size\|body is' "$TMP/out.txt" | head -3 | tr '\n' '|')"
+
+# S16-SB-X3: the same matcher as .okfignore and owners: "**/x.md" matches at any depth, the root included, and a bare name
+# such as "log.md" matches at any depth too, as in .gitignore.
+B="$TMP/x3"; mkb "$B" "$(size_cfg 100)"$'\n    exclude: ["**/huge.md", "log.md"]'; mknote "$B/a/b/huge.md" 500; mknote "$B/huge.md" 500
+"$REALPY" -c 'import sys; open(sys.argv[1], "a").write("x" * 300 + "\n")' "$B/log.md"; mknote "$B/a/log.md" 500
+rc=$(run "$B")
+{ [ "$rc" = 0 ] && ! grep -q 'body is' "$TMP/out.txt" && grep -Eq 'Size +PASS .*4 excluded' "$TMP/out.txt"; } \
+  && ok "S16-SB-X3 exclude globs follow the .okfignore matcher (**/ at any depth, the root included; a bare name at any depth, as in .gitignore)" \
+  || bad "S16-SB-X3 matcher" "rc=$rc $(grep -n 'Size\|body is' "$TMP/out.txt" | head -4 | tr '\n' '|')"
+
+# S16-SB-X4: a malformed exclude is the Config line's exit 2 naming the key, in okf-check and in okf-verify --check-config:
+# not a list, an item that is not a non-empty string, and a negated item ("!x", which the matcher cannot honour).
+for v in '"generated/**"' '[3]' '[""]' '["!keep.md"]'; do
+  B="$TMP/x4"; rm -rf "$B"; mkb "$B" "$(size_cfg 100)"$'\n'"    exclude: $v"; mknote "$B/n.md" 10
+  rc=$(run "$B"); "$HERE/okf-verify" "$B" --check-config >"$TMP/x4v.txt" 2>&1; rcv=$?
+  { [ "$rc" = 2 ] && grep -Fq 'okf_check.size.exclude' "$TMP/out.txt" && [ "$rcv" = 2 ] && grep -Fq 'okf_check.size.exclude' "$TMP/x4v.txt"; } \
+    && ok "S16-SB-X4 exclude: $v is refused by both tools (exit 2, names okf_check.size.exclude)" \
+    || bad "S16-SB-X4 exclude: $v" "rc=$rc rcv=$rcv $(grep -n 'Config\|exclude' "$TMP/out.txt" "$TMP/x4v.txt" | head -3 | tr '\n' '|')"
+done
+grep -Fq 'negation' "$TMP/x4v.txt" && ok "S16-SB-X4b a negated exclude item is refused as negation, not as a bad string" \
+  || bad "S16-SB-X4b negation message" "$(cat "$TMP/x4v.txt" | head -2)"
+
+# S16-SB-X5: spaces around a pattern are dropped, as .okfignore drops them from each line (0.9.33 review, finding 2); a pattern
+# holding a tab or a line break cannot be a path and is refused (exit 2), never dropped in silence (finding 3).
+B="$TMP/x5"; mkb "$B" "$(size_cfg 100)"$'\n    exclude: ["  other/**  "]'; mknote "$B/other/y.md" 500
+rc=$(run "$B")
+{ [ "$rc" = 0 ] && ! grep -q 'y.md: body is' "$TMP/out.txt" && grep -Eq '1 excluded' "$TMP/out.txt"; } \
+  && ok "S16-SB-X5 a pattern padded with spaces matches as .okfignore would" || bad "S16-SB-X5 trim" "rc=$rc $(grep -n 'Size\|body is' "$TMP/out.txt" | head -2 | tr '\n' '|')"
+B="$TMP/x5b"; mkb "$B" "$(size_cfg 100)"$'\n    exclude: ["a\\tb/**"]'; mknote "$B/n.md" 10
+rc=$(run "$B"); "$HERE/okf-verify" "$B" --check-config >"$TMP/x5v.txt" 2>&1; rcv=$?
+{ [ "$rc" = 2 ] && [ "$rcv" = 2 ] && grep -q 'tab or a line break' "$TMP/x5v.txt"; } \
+  && ok "S16-SB-X5b a pattern holding a tab is refused by both tools (exit 2)" || bad "S16-SB-X5b tab" "rc=$rc rcv=$rcv $(head -1 "$TMP/x5v.txt")"
+
+# S16-SB-J1: --json sizes[] lists every measured note with its body size and both limits (null when a limit is not set),
+# sorted by path; an excluded note is not in it.
+B="$TMP/j1"; mkb "$B" "$(size_cfg 100)"$'\n    exclude: ["generated/**"]'; mknote "$B/generated/reg.md" 500; mknote "$B/n.md" 10
+rc=$(runjson "$B"); got=$(jget '[(s["note"], s["body_chars"], s["max_body_chars"], s["warn_body_chars"]) for s in d["sizes"] if s["note"] == "n.md"]')
+notes=$(jget '[s["note"] for s in d["sizes"]]')
+{ [ "$rc" = 0 ] && [ "$got" = '[["n.md", 10, 100, null]]' ] && ! printf '%s' "$notes" | grep -q 'generated' \
+  && printf '%s' "$notes" | grep -q '"index.md"'; } \
+  && ok "S16-SB-J1 --json sizes[] gives each measured note its body size and the limits; excluded notes are absent" \
+  || bad "S16-SB-J1 sizes[]" "rc=$rc got=$got notes=$notes"
+
+# S16-SB-J2: without the size option there is no sizes key: --json is unchanged for every bundle that does not opt in.
+B="$TMP/j2"; mkb "$B"; mknote "$B/n.md" 10
+rc=$(runjson "$B"); has=$(jget '"sizes" in d')
+{ [ "$rc" = 0 ] && [ "$has" = false ]; } && ok "S16-SB-J2 no size option, no sizes key in --json" || bad "S16-SB-J2 sizes absent" "rc=$rc has=$has"
 
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

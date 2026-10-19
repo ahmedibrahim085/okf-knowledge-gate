@@ -34,8 +34,9 @@ Which is why SHAs and paths are treated ASYMMETRICALLY:
 
   * A missing SHA is NEVER refuted. It depends entirely on which repositories
     were searched, and it does not survive a history rewrite. Absence here is
-    ignorance, not falsehood. When the commit SUBJECT still resolves, that is
-    reported as the likely rewrite.
+    ignorance, not falsehood. When a commit whose message contains a quoted
+    SUBJECT is found, the detail names three explanations: a rewritten history,
+    a repository that was not searched, or an unrelated match (okf-knowledge-gate#6).
 
 Usage:
     okf-verify <bundle> [--repo DIR]... [--json] [--strict]
@@ -237,9 +238,15 @@ def check_sha(sha: str, repos: list[Path], subjects: list[str]):
                     unavailable.append(entry)
                 continue
             if out:
+                # A match does not prove a rewrite (okf-knowledge-gate#6): `log --grep -F` finds the text anywhere in a commit
+                # MESSAGE, so a commit in a repository nobody searched, or an unrelated commit that happens to contain a short
+                # subject, looks the same. All three are named, with what was searched and what could not be.
                 new_sha, found = (out.split("|", 1) + [""])[:2]
-                return UNRESOLVED, (f"SHA absent but the commit subject survives in {r.name} "
-                                    f"as {new_sha} — likely a history rewrite, not a false claim")
+                searched = ", ".join(x.name for x in usable) + (f"; could not query {'; '.join(unavailable)}" if unavailable else "")
+                return UNRESOLVED, (f"SHA absent, but a commit whose message contains the quoted subject is in {r.name} as "
+                                    f"{new_sha}: the history was rewritten (the claim is then probably true with a dead "
+                                    f"anchor), or the commit lives in a repository that was not searched, or the match is "
+                                    f"unrelated (searched: {searched})")
 
     # Never claim a completed search that did not complete.
     if unavailable:
@@ -549,6 +556,14 @@ def check_node(value, node: dict, where: str, bundle: Path | None = None) -> Non
             raise BaseConfigError(f"{where} must be a list")
         for i, v in enumerate(value):
             check_node(v, node["list"], f"{where}[{i}]", bundle)
+            # {item_no_prefix: "!"}: list items that are .okfignore globs (size.exclude) have no negation, as map keys (owners).
+            # Spaces around an item are dropped, as .okfignore drops them; a tab or a line break cannot be in a path, and the
+            # reader would drop such an item in silence, so it is refused here.
+            if node.get("item_no_prefix") and isinstance(v, str):
+                if v.strip().startswith(node["item_no_prefix"]):
+                    raise BaseConfigError(f"{where}[{i}]: a pattern that starts with {node['item_no_prefix']} (negation) is not supported")
+                if "\t" in v or "\n" in v:
+                    raise BaseConfigError(f"{where}[{i}]: a pattern may not hold a tab or a line break")
     elif "enum" in node:
         if not isinstance(value, str) or value not in node["enum"]:
             # JSON, not a Python repr: a YAML user wrote true/null/"x ", not True/None (review F-D)

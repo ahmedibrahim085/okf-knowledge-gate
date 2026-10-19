@@ -315,7 +315,9 @@ while IFS= read -r -d '' f; do
     grep -qF "$b" "$src" 2>/dev/null && { refs=1; break; }
   done
   [ "$refs" -eq 0 ] && orphans="$orphans $b"
-done < <(find "$PLUGIN/scripts" -type f -print0 2>/dev/null)
+# __pycache__ is left out: it never ships (.gitignore, and tools/export-public.sh excludes it), and okf-export.test.sh
+# writes one by loading okf-export, so Z-2 failed whenever that suite ran first (the CI order of the public tree).
+done < <(find "$PLUGIN/scripts" -type d -name __pycache__ -prune -o -type f -print0 2>/dev/null)
 [ -z "$orphans" ] \
   && ok "Z-2 every shipped script is reachable from a hook, a skill, or another script" \
   || bad "Z-2 dead files ship to every install" \
@@ -587,7 +589,7 @@ done
 # Nothing an agent needs may be lost when text moves out of SKILL.md into references/. Each phrase below was in
 # the old SKILL.md and must be in SKILL.md or a reference file.
 lost=""
-for needle in 'fenced code' 'var/folders' 'likely rewrite' 'stale_after. is required' '--migrate' 'previous okflint' 'no checkable claim'; do
+for needle in 'fenced code' 'var/folders' 'was rewritten, or' 'stale_after. is required' '--migrate' 'previous okflint' 'no checkable claim'; do
   grep -rq -- "$needle" "$PLUGIN/skills/okf/" || lost="$lost [$needle]"
 done
 [ -z "$lost" ] && ok "LT-31i every okf-verify, install and setup rule of the old SKILL.md is still in SKILL.md or a reference file" || bad "LT-31i rules lost in the move" "missing:$lost"
@@ -623,21 +625,32 @@ SAMPLE_BUNDLE="$TMP_W/readme_sample"; mkdir -p "$SAMPLE_BUNDLE/notes"
 printf -- '---\nokf_version: "0.2"\n---\n# Notes\n' > "$SAMPLE_BUNDLE/notes/index.md"; printf -- '# Log\n\n## 2026-01-01\n* created\n' > "$SAMPLE_BUNDLE/notes/log.md"
 printf -- '---\ntype: Lesson\ntitle: Payment limits\ndescription: Limits for payouts.\nstatus: draft\ntags: [payments]\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - by: human:finance-owner\n    at: "2026-02-01"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$SAMPLE_BUNDLE/notes/limits.md"
 ( cd "$SAMPLE_BUNDLE" && HOME="$TMP_W" "$PLUGIN/scripts/okf-check" notes ) > "$TMP_W/readme_sample_real.txt" 2>&1
-"$REALPY" - "$README" "$TMP_W/readme_sample_real.txt" <<'PY' 2>"$TMP_W/sample_err.txt"
+# The sample's L2 profile line is what a machine WITH okflint prints. Without okflint that one line reads "okflint not
+# installed", so it cannot be compared here: every other line still is, and the L2 line is a skip, never a pass.
+have_okflint=0; command -v okflint >/dev/null 2>&1 && have_okflint=1
+"$REALPY" - "$README" "$TMP_W/readme_sample_real.txt" "$have_okflint" <<'PY' 2>"$TMP_W/sample_err.txt"
 import sys
 readme, real = open(sys.argv[1]).read().split("\n"), set(open(sys.argv[2]).read().split("\n"))
 start = next((i for i, l in enumerate(readme) if l.strip() == "$ okf-check notes"), None)
-assert start is not None, "no '$ okf-check notes' sample block in the README"
+if start is None: sys.exit("no '$ okf-check notes' sample block in the README")
 lines = []
 for l in readme[start + 1:]:
     if l.startswith("```"): break
     lines.append(l)
 body = [l for l in lines if l.strip()]
-assert len(body) >= 5, "sample too short: %d lines" % len(body)
+if len(body) < 5: sys.exit("sample too short: %d lines" % len(body))
+l2 = [l for l in body if l.startswith("  L2 profile ")]
+if sys.argv[3] != "1": body = [l for l in body if l not in l2]
 missing = [l for l in body if l not in real]
-assert not missing, "README sample lines that real output does not contain: %r" % missing
+if missing: sys.exit("README sample lines that real output does not contain: %r" % missing)
+if sys.argv[3] != "1" and l2: sys.exit(3)
 PY
-[ $? -eq 0 ] && ok "LT-36b the README's sample output is REAL: every line appears in a fresh run on the documented fixture" || bad "LT-36b sample is real" "$(head -2 "$TMP_W/sample_err.txt" | tr '\n' ' ' | cut -c1-300)"
+case $? in
+  0) ok "LT-36b the README's sample output is REAL: every line appears in a fresh run on the documented fixture" ;;
+  3) ok "LT-36b the README's sample output is REAL: every line but the L2 profile line appears in a fresh run on the documented fixture"
+     skip "LT-36b' the sample's L2 profile line — okflint is not installed, so this run prints a different L2 line (UNVERIFIED until okflint is installed)" ;;
+  *) bad "LT-36b sample is real" "$(tail -1 "$TMP_W/sample_err.txt" | cut -c1-300)" ;;
+esac
 ! grep -Eq '^\| 0 \| *All gates pass' "$README" && ok "LT-36c the README does not say exit 0 means 'all gates pass' (it also covers skipped layers and warnings)" || bad "LT-36c exit 0 wording" "row 0 still says All gates pass"
 awk '/^## Use$/{u=1} u&&/^```bash/{b=1; next} b&&/^```/{exit} b' "$README" > "$TMP_W/readme_usecmds.txt"
 grep -q -- '--fail-on-change' "$TMP_W/readme_usecmds.txt" && ok "LT-36d the Use command block shows --fail-on-change (exit 6 needs it)" || bad "LT-36d --fail-on-change" "not in the command block (the exit table alone does not show how to ask for it)"
@@ -645,6 +658,15 @@ grep -q -- '--fail-on-change' "$TMP_W/readme_usecmds.txt" && ok "LT-36d the Use 
 li=$(grep -n '^## Install' "$README" | head -1 | cut -d: -f1); lu=$(grep -n '^## Use$' "$README" | head -1 | cut -d: -f1); lp=$(grep -n '^## Platforms' "$README" | head -1 | cut -d: -f1)
 { [ -n "$li" ] && [ -n "$lu" ] && [ -n "$lp" ] && [ "$li" -lt "$lu" ] && [ "$lu" -lt "$lp" ]; } && ok "LT-36f section order: Install, Use, then Platforms" || bad "LT-36f section order" "Install=$li Use=$lu Platforms=$lp"
 { ! grep -q 'remembered zero times' "$README" && ! grep -q 'loudest signal' "$README" && ! grep -q 'Issue forms' "$README"; } && ok "LT-36g no rhetoric and no wrong term (the claims are plain statements)" || bad "LT-36g wording" "rhetorical lines or 'Issue forms' remain"
+# The README keeps a short okf-verify summary; the full rules live in the skill's reference, which ships with the plugin.
+# The link must land on the heading, and no rule may be lost in the move (each phrase was in the old README paragraph).
+VREF="$PLUGIN/skills/okf/references/verify-and-install.md"; vlost=""
+grep -q '](plugin/skills/okf/references/verify-and-install.md#what-counts-as-a-claim-and-how-each-is-judged)' "$README" || vlost="$vlost [README link]"
+grep -q '^## What counts as a claim, and how each is judged$' "$VREF" || vlost="$vlost [heading]"
+for needle in 'searched once' 'path part failed' "file's line count" 'lines start at 1' 'larger number' 'more than 9 digits' 'intent cannot be told' 'paragraph break' '--host-paths' 'fetch-depth: 0'; do
+  grep -qF -- "$needle" "$VREF" 2>/dev/null || vlost="$vlost [$needle]"
+done
+[ -z "$vlost" ] && ok "LT-36j the README links the okf-verify reference, which holds every rule the README paragraph used to carry" || bad "LT-36j okf-verify rules" "missing:$vlost"
 grep -q 'Absolute file paths' "$README" && ok "LT-36h the README says what --repo and path checks really do (SHAs via --repo; absolute file paths on disk)" || bad "LT-36h okf-verify wording" "no 'Absolute file paths' sentence"
 if [ -f "$MKT_ROOT/docs/backlog-2026-10-14.md" ]; then
   grep -q 'Debian 12, 0.9.1' "$MKT_ROOT/docs/backlog-2026-10-14.md" && grep -q 'pre-commit 4.7.0' "$MKT_ROOT/docs/backlog-2026-10-14.md" \

@@ -182,6 +182,14 @@ printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t
 rc=$(run "$B6" --repo "$REPO")
 has "rewrite\|subject\|message" && ok "V-6 an orphaned SHA hints at the surviving commit subject" \
   || bad "V-6 orphaned SHA hints at commit subject" "$(head -5 "$TMP/out.txt" | tr '\n' ' ')"
+# V-6b (okf-knowledge-gate#6, comment 2): a matching subject does not prove a rewrite. In the reported cases the commit lived in a
+# repository that was not searched, and a short subject matches unrelated commits. The detail names BOTH explanations and the
+# searched repositories, never "likely a history rewrite" alone; the verdict stays UNRESOLVED.
+# The search matches the quoted text anywhere in a commit MESSAGE, so the detail says so, and names the third case: an unrelated
+# commit whose message happens to contain it (0.9.33 review, finding 1).
+{ has "rewritten" && has "not searched" && has "unrelated" && has "message contains" && has "searched: " && ! has "likely a history rewrite" && has "UNRESOLVED"; } \
+  && ok "V-6b a matching commit message names three explanations (rewrite, a repository not searched, an unrelated match) and the searched repositories" \
+  || bad "V-6b rewrite hint" "$(grep -i 'subject' "$TMP/out.txt" | head -2 | tr '\n' ' ' | cut -c1-300)"
 
 # A bundle path with a space — the bug that produced two retracted statistics.
 B7="$TMP/with space/b7"; mkb "$B7"
