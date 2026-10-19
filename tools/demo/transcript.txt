@@ -28,7 +28,7 @@ $ okf-check notes
   L2 index         PASS   1 declared count(s) match the files on disk
   L3 staleness     PASS   nothing expired
 
-  PASS — no blocking errors, but 1 advisory(ies) and 0 skipped layer(s) above
+  PASS — no blocking errors, but 3 advisory(ies) and 0 skipped layer(s) above
 [exit 0]
 #scene
 $ okf-check notes --strict-trust
@@ -55,5 +55,5 @@ $ okf-check notes --strict-trust
   L2 index         PASS   1 declared count(s) match the files on disk
   L3 staleness     PASS   nothing expired
 
-  ALL GATES PASS
+  PASS — no blocking errors, but 2 advisory(ies) and 0 skipped layer(s) above
 [exit 0]

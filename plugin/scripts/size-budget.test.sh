@@ -300,5 +300,94 @@ else
     || bad "S16-SB-E12 flag-everything size rule" "rc=$rc $(grep -n 'Size\|body over\|SELFTEST' "$TMP/st-all.txt" | head -3 | tr '\n' '|')"
 fi
 
+section "S20-IF size warnings in --json"
+# S20-IF-H2: a size warning is in --json warnings[] with the note, the size and the limit; exit stays 0 and l1_warnings
+# keeps counting the L1 warnings only.
+B="$TMP/if-h2"; mkb "$B" "$(size_cfg 100 50)"; mknote "$B/mid.md" 51
+rc=$(runjson "$B")
+got=$(jget '[w for w in d["warnings"] if "mid.md: body is 51 characters, above okf_check.size.warn_body_chars 50" in w]')
+{ [ "$rc" = 0 ] && [ "$got" != "[]" ] && [ "$(jget '[d["exit"], d["l1_warnings"], d["errors"]]')" = '[0, 0, []]' ]; } \
+  && ok "S20-IF-H2 --json: a note over warn_body_chars is in warnings with note, size and limit (exit 0, errors empty)" \
+  || bad "S20-IF-H2 size warning in json" "rc=$rc warnings=$(jget 'd["warnings"]')"
+
+# S20-IF-E2: an error and a warning together: the error is in errors[] only, the warning in warnings[] only.
+B="$TMP/if-e2"; mkb "$B" "$(size_cfg 100 50)"; mknote "$B/over.md" 101; mknote "$B/mid.md" 51; mknote "$B/ok.md" 50
+rc=$(runjson "$B")
+{ [ "$rc" = 1 ] && [ "$(jget '[len([e for e in d["errors"] if "over.md: body is 101" in e]), len([w for w in d["warnings"] if "mid.md: body is 51" in w]), len([w for w in d["warnings"] if "over.md" in w or "ok.md" in w])]')" = '[1, 1, 0]' ]; } \
+  && ok "S20-IF-E2 --json: over.md only in errors, mid.md only in warnings, ok.md in neither (exit 1)" \
+  || bad "S20-IF-E2 error and warning in json" "rc=$rc errors=$(jget 'd["errors"]') warnings=$(jget 'd["warnings"]')"
+
+# S20-IF-E3: an L1 warning and a size warning share warnings[]; l1_warnings counts the L1 one alone.
+B="$TMP/if-e3"; mkb "$B" "$(size_cfg 100 50)"; mknote "$B/mid.md" 51
+printf -- '---\ntype: Lesson\ntitle: W\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: nobody\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nb\n' > "$B/w.md"
+rc=$(runjson "$B")
+{ [ "$rc" = 0 ] && [ "$(jget '[d["l1_warnings"], len(d["warnings"]), [w.split(":")[0] for w in d["warnings"]]]')" = '[1, 2, ["w.md", "mid.md"]]' ]; } \
+  && ok "S20-IF-E3 --json: warnings holds the L1 warning then the size warning, l1_warnings stays 1" \
+  || bad "S20-IF-E3 L1 and size warnings together" "rc=$rc l1=$(jget 'd["l1_warnings"]') warnings=$(jget 'd["warnings"]')"
+
+# S20-IF-N2: golden compare. A size block that nothing exceeds leaves the --json report byte-identical to the same
+# bundle without the block.
+B="$TMP/if-n2"; mkb "$B"; mknote "$B/n.md" 10
+runjson "$B" >/dev/null; cp "$TMP/out.json" "$TMP/if-n2.before"
+printf '%s\n' "$(size_cfg 100 50)" >> "$B/okf-base.yaml"
+rc=$(runjson "$B")
+{ [ "$rc" = 0 ] && cmp -s "$TMP/if-n2.before" "$TMP/out.json"; } \
+  && ok "S20-IF-N2 a size block nothing exceeds leaves the --json report byte-identical" \
+  || bad "S20-IF-N2 golden compare" "rc=$rc $(diff "$TMP/if-n2.before" "$TMP/out.json" | head -3 | tr '\n' '|')"
+
+section "S20-IF misplaced okf_check keys"
+# S20-IF-H3: a size block at the top level of okf-base.yaml (outside okf_check:) is ignored by every tool. The text
+# report says so in a WARN line naming the key and where it belongs, the summary counts it, and the exit code stays 0.
+adv() { sed -n 's/.*but \([0-9][0-9]*\) advisory(ies) and.*/\1/p' "$TMP/out.txt"; }
+B0="$TMP/if-h3-base"; mkb "$B0"; mknote "$B0/big.md" 60; run "$B0" >/dev/null; base=$(adv)
+B="$TMP/if-h3"; mkb "$B" $'size:\n  max_body_chars: 5'; mknote "$B/big.md" 60
+rc=$(run "$B")
+{ [ "$rc" = 0 ] && grep -Fq 'Config           WARN   `size` is at the top level of okf-base.yaml, outside okf_check:; okf-check reads `size` only inside okf_check: move it to okf_check.size' "$TMP/out.txt" \
+  && ! grep -Fq 'every tool' "$TMP/out.txt" && [ "$(adv)" = "$((base + 1))" ]; } \
+  && ok "S20-IF-H3 a size block outside okf_check gives a WARN line naming the key and where it belongs (exit 0, one more advisory)" \
+  || bad "S20-IF-H3 misplaced size block" "rc=$rc base=$base $(grep -n 'Config\|Size\|PASS' "$TMP/out.txt" | head -4 | tr '\n' '|')"
+
+# S20-IF-H4: the same finding in --json: misplaced_keys names the key and where it belongs.
+rc=$(runjson "$B")
+{ [ "$rc" = 0 ] && [ "$(jget 'd["misplaced_keys"]')" = '[{"belongs": "okf_check.size", "key": "size"}]' ]; } \
+  && ok "S20-IF-H4 --json: misplaced_keys lists the key and okf_check.size as its place (exit 0)" \
+  || bad "S20-IF-H4 misplaced_keys in json" "rc=$rc keys=$(jget 'sorted(d)')"
+
+# S20-IF-E4: two misplaced keys give two WARN lines and two entries, in the order of the file; a key under okf_check
+# in the same file is not reported.
+B="$TMP/if-e4"; mkb "$B" $'require_owner: true\nsize:\n  max_body_chars: 5\nokf_check:\n  edit_hook: true'
+rc=$(runjson "$B"); got=$(jget '[m["key"] for m in d["misplaced_keys"]]')
+run "$B" >/dev/null
+{ [ "$rc" = 0 ] && [ "$got" = '["require_owner", "size"]' ] && [ "$(grep -c 'Config           WARN' "$TMP/out.txt")" = 2 ]; } \
+  && ok "S20-IF-E4 two misplaced keys: two WARN lines and two entries in file order; edit_hook under okf_check is not reported" \
+  || bad "S20-IF-E4 two misplaced keys" "rc=$rc keys=$got $(grep -c 'Config           WARN' "$TMP/out.txt")"
+
+# S20-IF-N3: golden compare. The same key under okf_check, and top-level keys nobody owns, leave --json byte-identical
+# to the bundle without them: no misplaced_keys key, no WARN line.
+B="$TMP/if-n3"; mkb "$B"; mknote "$B/n.md" 10
+runjson "$B" >/dev/null; cp "$TMP/out.json" "$TMP/if-n3.before"
+printf 'colour: red\nokf_check:\n  size:\n    max_body_chars: 100\n' >> "$B/okf-base.yaml"
+rc=$(runjson "$B"); run "$B" >/dev/null
+{ [ "$rc" = 0 ] && cmp -s "$TMP/if-n3.before" "$TMP/out.json" && ! grep -q 'Config  *WARN' "$TMP/out.txt"; } \
+  && ok "S20-IF-N3 size under okf_check and an unrelated top-level key are not misplaced (--json byte-identical, no WARN)" \
+  || bad "S20-IF-N3 correct placement" "rc=$rc $(diff "$TMP/if-n3.before" "$TMP/out.json" | head -3 | tr '\n' '|')"
+
+# S20-IF-E5: a broken okf_check block is still the Config line's exit 2; a misplaced key beside it does not change that.
+B="$TMP/if-e5"; mkb "$B" $'size:\n  max_body_chars: 5\nokf_check:\n  colour: red'
+rc=$(run "$B")
+{ [ "$rc" = 2 ] && grep -Fq 'Config           COULD NOT RUN' "$TMP/out.txt" && ! grep -Fq 'Config           WARN' "$TMP/out.txt"; } \
+  && ok "S20-IF-E5 a broken okf_check block beside a misplaced key is exit 2 (could not run) and prints no misplaced-key WARN" \
+  || bad "S20-IF-E5 precedence" "rc=$rc $(grep -n 'Config' "$TMP/out.txt" | head -3 | tr '\n' '|')"
+
+# S20-IF-E6: the key is at the top level AND inside okf_check. The option is on (the copy inside is read), so the
+# line says the top-level copy is a duplicate to delete, not a key to move; a key that is only misplaced still says move.
+B="$TMP/if-e6"; mkb "$B" $'size:\n  max_body_chars: 5\nrequire_owner: true\nokf_check:\n  size:\n    max_body_chars: 100'; mknote "$B/n.md" 10
+rc=$(run "$B"); rcj=$(runjson "$B"); got=$(jget '[m["key"] for m in d["misplaced_keys"]]')
+{ [ "$rc" = 0 ] && grep -Fq 'Config           WARN   `size` is at the top level of okf-base.yaml and also inside okf_check:; okf-check reads `size` only inside okf_check: delete the top-level copy' "$TMP/out.txt" \
+  && grep -Fq 'Config           WARN   `require_owner` is at the top level of okf-base.yaml, outside okf_check:; okf-check reads `require_owner` only inside okf_check: move it to okf_check.require_owner' "$TMP/out.txt" \
+  && [ "$got" = '["size", "require_owner"]' ]; } \
+  && ok "S20-IF-E6 a key present inside okf_check too is a duplicate to delete; a key only at the top level is still one to move" \
+  || bad "S20-IF-E6 duplicate key" "rc=$rc keys=$got $(grep -n 'Config' "$TMP/out.txt" | head -3 | tr '\n' '|')"
+
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

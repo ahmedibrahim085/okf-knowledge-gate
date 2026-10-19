@@ -9,6 +9,18 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.32] - 2026-10-19
+
+OKF Knowledge Gate 0.9.32 shows three findings that `okf-check` already had but the user could not see.
+
+### Fixed
+- **The summary counts the L2 warnings as advisories.** On a bundle with a broken link, L2 reported a warning and the summary line said `0 advisory(ies)`. The summary count now includes the L2 warnings, in line with `l2_warnings` in `--json` (on this repository's own bundle the count goes from 0 to 24). The README demo closes with `PASS ... 2 advisory(ies)` instead of `ALL GATES PASS`, because its last run has two L2 warnings; the transcript and the GIF were recorded again.
+- **`okf_check.size` warnings are listed in `--json`.** They were printed in the text output but missing from `warnings[]`, so a CI job could not see them. Each entry names the note, its size and the limit. `warnings[]` no longer has the same length as `l1_warnings` when a size warning exists.
+- **A `okf_check` option written at the top level of `okf-base.yaml` gets a WARN.** A `size:` block (or any of the nine known `okf_check` options) outside `okf_check:` was ignored without a word: `okflint` called the manifest valid, `okf-verify --check-config` returned 0, and `okf-check` printed nothing, so the gate was off and nothing said so. The text output now warns, naming the option and where it belongs; when the same option is also inside `okf_check:` the warning says to delete the top-level copy. `--json` lists them in `misplaced_keys`. Unknown keys stay silent and the exit code does not change.
+
+### Changed
+- Output for a bundle with no warnings and no misplaced option is byte-identical to 0.9.31 in text, `--json`, `--strict-trust` and `--fail-stale` (checked on three bundles); the only differences are the summary count when L2 warnings exist, the new `warnings[]` entries and `misplaced_keys`, all listed above.
+
 ## [0.9.31] - 2026-10-19
 
 OKF Knowledge Gate 0.9.31 makes the public export refuse to publish private ticket numbers and private commit ids, which earlier public releases had carried.
@@ -652,7 +664,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.31...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.32...HEAD
+[0.9.32]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.31...v0.9.32
 [0.9.31]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.30...v0.9.31
 [0.9.30]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.29...v0.9.30
 [0.9.29]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.28...v0.9.29

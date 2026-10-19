@@ -87,6 +87,34 @@ x"; mkb "$B" '[x](nope.md)'; mv "$B/a.md" "$B/a\"b.md"; printf '[a](a"b.md)\n' >
   want="1 ['L002 a\"b.md — broken markdown link: nope.md']"
   [ "$got" = "$want" ] && ok "S13-LF-E4 --json stays valid for a bundle path and a note name with a quote and a newline" \
     || bad "S13-LF-E4 awkward names" "got: $got; want: $want"
+
+  section "S20-IF advisory count"
+  # S20-IF-H1: the summary counts the L2 warnings it just listed. One broken link is one L2 advisory.
+  B="$TMP/if1"; mkb "$B" '[x](nope.md)'
+  "$CHECK" "$B" > "$TMP/if1.txt" 2>&1; rc=$?
+  { [ "$rc" = 0 ] && grep -Fq 'L2 profile       PASS   0 errors, 1 warning(s) (advisory)' "$TMP/if1.txt" \
+    && grep -Fq 'PASS — no blocking errors, but 1 advisory(ies) and' "$TMP/if1.txt"; } \
+    && ok "S20-IF-H1 one L2 warning gives '1 advisory(ies)' in the summary line (exit 0)" \
+    || bad "S20-IF-H1 advisory count" "rc=$rc $(grep -n 'L2 profile\|PASS' "$TMP/if1.txt" | tr '\n' '|')"
+
+  # S20-IF-E1: the three sources add up once each: two L2 warnings plus one Trust warning are 3 advisories, not 2 or 4.
+  B="$TMP/if2"; mkb "$B" '[x](nope.md)
+[y](gone.md)'
+  printf -- '---\ntype: Lesson\ntitle: V\ndescription: D\nstatus: draft\ntags: [t]\ngenerated:\n  by: process:x\n  at: "2026-01-01T00:00:00Z"\nverified:\n  by: human:bob\n  at: "2026-01-02T00:00:00Z"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$B/v.md"
+  printf '[v](v.md)\n' >> "$B/index.md"
+  "$CHECK" "$B" > "$TMP/if2.txt" 2>&1; rc=$?
+  { [ "$rc" = 0 ] && grep -Fq 'Trust (C4)       WARN   1 warning(s), 0 advisory(ies)' "$TMP/if2.txt" \
+    && grep -Fq 'L2 profile       PASS   0 errors, 2 warning(s) (advisory)' "$TMP/if2.txt" \
+    && grep -Fq 'PASS — no blocking errors, but 3 advisory(ies) and' "$TMP/if2.txt"; } \
+    && ok "S20-IF-E1 two L2 warnings and one Trust warning give '3 advisory(ies)' in the summary" \
+    || bad "S20-IF-E1 advisories add up" "rc=$rc $(grep -n 'Trust\|L2 profile\|PASS' "$TMP/if2.txt" | tr '\n' '|')"
+
+  # S20-IF-N1: nothing to report keeps the summary count at 0 (the L2 count is not added twice or from a stale value).
+  B="$TMP/if3"; mkb "$B"
+  "$CHECK" "$B" > "$TMP/if3.txt" 2>&1; rc=$?
+  { [ "$rc" = 0 ] && ! grep -Eq 'but [1-9][0-9]* advisory' "$TMP/if3.txt"; } \
+    && ok "S20-IF-N1 a bundle with no L2 or Trust warning does not report advisories" \
+    || bad "S20-IF-N1 clean summary" "rc=$rc $(grep -n 'PASS' "$TMP/if3.txt" | tr '\n' '|')"
 fi
 
 okf_test_summary

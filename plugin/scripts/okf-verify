@@ -567,19 +567,15 @@ def _guard():
     return okf_guard
 
 
-def load_block(bundle: Path, source: Path | None = None) -> dict:
-    """The validated okf_check block of <bundle>/okf-base.yaml ({} when there is none).
+def load_manifest(bundle: Path, source: Path | None = None) -> tuple[dict, dict]:
+    """The parsed okf-base.yaml and the okf_check schema: ({}, {}) when there is no manifest.
 
-    `source` names a folder holding a copy of the manifest to read instead (okf-check reads its frozen copy); paths the
-    block names, such as wikilink_root, are still resolved against `bundle`.
-
-    A file that cannot be read, a block of the wrong shape and a key nobody knows all raise BaseConfigError:
-    ignoring any of them reads as "nothing was declared". A typo such as `verify.repo` ran with "repos searched:
-    NONE" and exit 0. okf-check validates the same block by calling `okf-verify --check-config`.
+    `source` names a folder holding a copy of the manifest to read instead (okf-check reads its frozen copy).
+    A file that cannot be read, is not UTF-8 or YAML, or whose top level is not a mapping raises BaseConfigError.
     """
     base = (source or bundle) / "okf-base.yaml"
     if not base.is_file():
-        return {}
+        return {}, {}
     # PyYAML and the bounded loader ship beside the scripts in the plugin. The loader refuses a YAML alias bomb (a
     # small file whose aliases nest into billions of items) as an ordinary YAML error, as it does for L1 and the trust helper.
     vendor = Path(__file__).resolve().parent.parent / "vendor"
@@ -602,13 +598,35 @@ def load_block(bundle: Path, source: Path | None = None) -> dict:
         where = f"line {mark.line + 1}: " if mark else ""
         raise BaseConfigError(f"is not valid YAML ({where}{getattr(e, 'problem', None) or str(e).splitlines()[0]})")
     if data is None:
-        return {}
+        return {}, schema
     if not isinstance(data, dict):
         raise BaseConfigError("the top level must be a mapping")
+    return data, schema
+
+
+def load_block(bundle: Path, source: Path | None = None) -> dict:
+    """The validated okf_check block of <bundle>/okf-base.yaml ({} when there is none).
+
+    `source` names a folder holding a copy of the manifest to read instead (okf-check reads its frozen copy); paths the
+    block names, such as wikilink_root, are still resolved against `bundle`.
+
+    A file that cannot be read, a block of the wrong shape and a key nobody knows all raise BaseConfigError:
+    ignoring any of them reads as "nothing was declared". A typo such as `verify.repo` ran with "repos searched:
+    NONE" and exit 0. okf-check validates the same block by calling `okf-verify --check-config`.
+    """
+    data, schema = load_manifest(bundle, source)
     if "okf_check" not in data:
         return {}
     check_node(data["okf_check"], schema, "okf_check", bundle)
     return data["okf_check"]
+
+
+def misplaced_keys(data: dict, schema: dict) -> list[str]:
+    """The okf_check options written at the top level of okf-base.yaml instead of inside okf_check:, in file order.
+
+    Every tool ignores such a key, so the option it names is off and nothing else says so.
+    """
+    return [k for k in data if k in schema.get("keys", {})]
 
 
 def declared_repos(bundle: Path) -> tuple[list[Path], list[dict]]:
@@ -785,7 +803,7 @@ def main() -> int:
                     help="also look up cited absolute paths outside the bundle and the --repo folders")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--check-config", action="store_true",
-                    help="only check the okf_check block of okf-base.yaml (okf-check calls this): silent and exit 0 when fine, else one error line and exit 2")
+                    help="only check the okf_check block of okf-base.yaml (okf-check calls this): exit 0 when fine, else one error line and exit 2; one \"misplaced<TAB>key<TAB>[duplicate]\" line per okf_check option written outside the block (duplicate: the block holds it too)")
     ap.add_argument("--manifest-dir", type=Path, default=None,
                     help="with --check-config: read okf-base.yaml from this folder (okf-check's frozen copy); the paths it names are still resolved against the bundle")
     ap.add_argument("--strict", action="store_true", help="also fail on UNRESOLVED")
@@ -797,10 +815,15 @@ def main() -> int:
 
     if a.check_config:
         try:
-            load_block(a.bundle, a.manifest_dir)
+            data, schema = load_manifest(a.bundle, a.manifest_dir)
+            if "okf_check" in data:
+                check_node(data["okf_check"], schema, "okf_check", a.bundle)
         except BaseConfigError as e:
             print(f"error: {a.bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
             return 2
+        inside = data.get("okf_check") if isinstance(data.get("okf_check"), dict) else {}
+        for key in misplaced_keys(data, schema):
+            print(f"misplaced\t{key}\t{'duplicate' if key in inside else ''}")
         return 0
 
     # `rglob` skips a directory it cannot read, without a word. A concept whose
