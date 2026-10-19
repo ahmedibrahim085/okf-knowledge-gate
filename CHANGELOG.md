@@ -9,6 +9,18 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.30] - 2026-10-19
+
+OKF Knowledge Gate 0.9.30 stops `okf-export` from silently overwriting a note when the output disk ignores case, and from rewriting links inside indented code.
+
+### Fixed
+- **`okf-export` refuses two notes whose output names differ only in case when the output folder ignores case.** On macOS (APFS) and Windows, `Notes.md` and `notes.md` from one vault folder were written to the same file, and the second replaced the first with exit 0 and no message. When two output names would differ only in case, the exporter now checks whether the output folder folds case (with a temporary folder it creates and removes) and, if it does, stops with exit 2 naming both source files, before it writes anything. On a case-sensitive output both notes are exported as before. The check runs only when such a pair exists, so an ordinary export writes nothing extra. An output folder that cannot be written is reported with exit 2 and one line, not a traceback.
+- **Indented code blocks are left as written.** A line indented by four spaces or a tab after a blank line, a heading or the start of the file is code in CommonMark; `okf-export` rewrote `[[x]]` inside it as if it were prose. A four-space indent inside a list item still continues the item, and fenced blocks were already left alone.
+
+### Changed
+- In a vault log, an item line indented four spaces after a blank line outside a list (`    - 2026-05-22: x` under a `## 2026-05-22` heading) is now an indented code block, as it is in the vault itself, so the exporter keeps the raw line and does not turn it into a dated item. Inside a list it is still read as an item.
+- The output of the export for ordinary vaults is unchanged (checked on a synthetic vault, the repository's own `.okf` and `docs/`).
+
 ## [0.9.29] - 2026-10-19
 
 OKF Knowledge Gate 0.9.29 stops `okf-verify` from confirming a code citation against the wrong file when the cited path contains a space.
@@ -627,7 +639,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.29...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.30...HEAD
+[0.9.30]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.29...v0.9.30
 [0.9.29]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.28...v0.9.29
 [0.9.28]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.27...v0.9.28
 [0.9.27]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.26...v0.9.27

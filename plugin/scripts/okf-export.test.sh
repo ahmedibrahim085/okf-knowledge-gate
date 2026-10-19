@@ -666,6 +666,134 @@ else
     || bad "S10-CL-C4 different folders" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
 fi
 
+# --- S10-IC: an indented code block is code, as a fenced one is (#112) ------------------------------
+# CommonMark: 4 spaces (or a tab) in, where a paragraph cannot continue, open a code block; inside a list the same
+# indent continues the list item. A [[link]] in code is shown text, so it stays as written and is not checked.
+V="$TMP/ic/kb"; O="$TMP/ic/out"
+note "$V" b.md "# B"
+note "$V" a.md "$(printf 'Text.\n\n    code [[b]] indented\n    more [[nope]]\n\n\tcode [[b]] tabbed\n\nAfter [[b]].')"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 0 ] && grep -qxF '    code [[b]] indented' "$O/a.md" && grep -qxF '    more [[nope]]' "$O/a.md" \
+  && grep -qxF "$(printf '\tcode [[b]] tabbed')" "$O/a.md" && grep -qxF 'After [b](b.md).' "$O/a.md"; } 2>/dev/null \
+  && ok "S10-IC-1 [[links]] in an indented code block (4 spaces or a tab, after a blank line) stay as written and are not checked" \
+  || bad "S10-IC-1 indented code" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') a.md: $(tail -7 "$O/a.md" 2>/dev/null | tr '\n' '|')"
+
+rm -rf "$TMP/ic"; note "$V" b.md "# B"
+note "$V" a.md "$(printf -- '- item\n\n    more of the item [[b]]\n\n1. step\n\n    more of the step [[b]]\n\nAfter the list.\n\n    code again [[b]]')"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 0 ] && grep -qxF '    more of the item [b](b.md)' "$O/a.md" && grep -qxF '    more of the step [b](b.md)' "$O/a.md" \
+  && grep -qxF '    code again [[b]]' "$O/a.md"; } 2>/dev/null \
+  && ok "S10-IC-2 inside a list the same 4-space indent continues the item (a link), and code opens again after the list ends" \
+  || bad "S10-IC-2 list continuation" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') a.md: $(tail -11 "$O/a.md" 2>/dev/null | tr '\n' '|')"
+
+# S10-IC-3 (pin; passes as written): in a vault log.md an item indented 4 spaces after a blank line outside a list is an
+# indented code block, as in CommonMark, so it stays a raw line of its day, not a dated item; inside a list it is still one.
+rm -rf "$TMP/ic"; mkdir -p "$V"
+lognote "$V" log.md "$(printf '# Log\n\n## 2026-05-22\n\n    - 2026-05-21: raw\n\n## 2026-05-23\n- 2026-05-23: a\n\n    - 2026-05-20: dated')"
+rc=$(run "$V" "$O"); log=$(cat "$O/log.md" 2>/dev/null)
+want=$(printf '# Log\n\n## 2026-05-23\n* a\n\n## 2026-05-22\n    - 2026-05-21: raw\n\n## 2026-05-20\n* dated')
+{ [ "$rc" = 0 ] && [ "$log" = "$want" ]; } \
+  && ok "S10-IC-3 a log item indented 4 after a blank line outside a list stays a raw line of its day; inside a list it is a dated item" \
+  || bad "S10-IC-3 log indented item" "rc=$rc log: $(printf '%s' "$log" | tr '\n' '|') report: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
+
+# --- S10-CO: an output disk that does not tell upper from lower case (#112) --------------------------
+# A case-sensitive vault may hold Notes.md and notes.md; macOS and Windows disks write both to one file. okf-export
+# probes the output disk and, where it folds case, refuses names that differ only in case. The unit cases (CO-U*)
+# hand the rule an in-memory file list; CO-M* run main() with a fake probe result (a seam), because a case-folding
+# disk cannot be made in the Debian container and a case-sensitive one cannot be made on this Mac.
+# folds <root-name> <vault-relative file>...: the (first, second) pairs okf-export refuses on a case-folding output.
+folds() {
+  "$REALPY" - "$EXPORT" "$@" <<'PY' 2>&1
+import importlib.machinery, importlib.util, sys
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
+loader.exec_module(mod)
+for a, b in mod.case_clashes(sorted(Path(p) for p in sys.argv[3:]), sys.argv[2]):
+    print(f"{a.as_posix()}|{b.as_posix()}")
+PY
+}
+got=$(folds kb Notes.md notes.md a.md)
+[ "$got" = "Notes.md|notes.md" ] \
+  && ok "S10-CO-U1 Notes.md and notes.md are reported as a pair on a case-folding output" \
+  || bad "S10-CO-U1 pair" "got: $(printf '%s' "$got" | tail -1)"
+got=$(folds kb sub/deep/Notes.md sub/deep/notes.md sub/x.md)
+[ "$got" = "sub/deep/Notes.md|sub/deep/notes.md" ] \
+  && ok "S10-CO-U2 the same pair in nested folders is reported with its folders" \
+  || bad "S10-CO-U2 nested" "got: $(printf '%s' "$got" | tr '\n' ' ')"
+got=$(folds kb A/x.md a/x.md a/y.md)
+[ "$got" = "A|a" ] \
+  && ok "S10-CO-U3 folders A/ and a/ are one pair, reported once at the folders (not again for A/x.md and a/x.md)" \
+  || bad "S10-CO-U3 folders" "got: $(printf '%s' "$got" | tr '\n' ' ')"
+got=$(folds kb a.md b.md foo/index.md foo/bar.md Log.md)
+[ -z "$got" ] \
+  && ok "S10-CO-U4 a vault with no names that differ only in case reports no pair" \
+  || bad "S10-CO-U4 no clash" "got: $(printf '%s' "$got" | tr '\n' ' ')"
+
+# seam <fake|probe> <args>: with "true"/"false" (or "never": the probe must not run), main() runs on <vault> <out> with that probe result (exit code
+# printed, report in $TMP/out.txt); with "probe", the real probe's answer for one folder is printed.
+seam() {
+  "$REALPY" - "$EXPORT" "$@" >"$TMP/out.txt" 2>&1 <<'PY'
+import importlib.machinery, importlib.util, sys
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
+loader.exec_module(mod)
+if sys.argv[2] == "probe":
+    print(mod.case_insensitive(Path(sys.argv[3])))
+    sys.exit(0)
+mode = sys.argv[2]   # read now: sys.argv is replaced below
+def probe(folder):
+    if mode == "never":
+        raise SystemExit("probe ran")
+    return mode == "true"
+mod.case_insensitive = probe
+sys.argv = ["okf-export", *sys.argv[3:]]
+sys.exit(mod.main())
+PY
+  printf '%s' "$?"
+}
+V="$TMP/co/n"; O="$TMP/co/n-out"; note "$V" a.md "# A"; note "$V" sub/b.md "[[a]]"
+rc=$(seam never "$V" "$O")
+[ "$rc" = 0 ] && ok "S10-CO-P2 an export with no case-only pair never runs the probe, so nothing is made in or beside <out> for it" \
+  || bad "S10-CO-P2 probe only on a pair" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
+
+P="$TMP/co/probe"; mkdir -p "$P"; printf x > "$P/case-probe"
+[ -e "$P/CASE-PROBE" ] && want=True || want=False
+rm "$P/case-probe"
+seam probe "$P" >/dev/null; got1=$(cat "$TMP/out.txt"); left1=$(ls -A "$P")
+seam probe "$P/not/yet" >/dev/null; got2=$(cat "$TMP/out.txt"); left2=$(ls -A "$P")
+{ [ "$got1" = "$want" ] && [ "$got2" = "$want" ] && [ -z "$left1$left2" ]; } \
+  && ok "S10-CO-P1 the output probe agrees with the disk ($want), also for an output not yet made, and leaves nothing behind" \
+  || bad "S10-CO-P1 probe" "want $want got '$got1' '$got2' left: $left1 $left2"
+
+V="$TMP/co/kb"; O="$TMP/co/out"; note "$V" a.md "# A"; mkdir -p "$O"; chmod 555 "$O"
+if [ "$(id -u)" = 0 ]; then
+  printf '  SKIP  S10-CO-M3 an output folder that cannot be written: root writes it anyway\n'
+else
+  rc=$(run "$V" "$O")
+  { [ "$rc" = 2 ] && grep -q "^okf-export: cannot write to $O: " "$TMP/out.txt" && [ -z "$(ls -A "$O")" ]; } \
+    && ok "S10-CO-M3 an output folder that cannot be written stops the export (exit 2) with one line, no traceback" \
+    || bad "S10-CO-M3 unwritable" "rc=$rc report: $(head -3 "$TMP/out.txt" | tr '\n' '|')"
+fi
+chmod 755 "$O"
+
+rm -rf "$TMP/co/kb" "$O"; mkdir -p "$V"; printf x > "$V/case-probe"
+if [ -e "$V/CASE-PROBE" ]; then
+  printf '  SKIP  S10-CO-M1..M2 Notes.md and notes.md in one vault folder: this disk is case-insensitive (run on the Debian gate)\n'
+else
+  rm "$V/case-probe"; note "$V" sub/Notes.md "UPPER"; note "$V" sub/notes.md "lower"
+  rc=$(seam true "$V" "$O")
+  { [ "$rc" = 2 ] && grep -qxF "okf-export: sub/Notes.md and sub/notes.md would be written over each other: $O is on a disk that does not tell upper from lower case; rename one of them in the vault" "$TMP/out.txt" \
+    && [ ! -e "$O" ]; } \
+    && ok "S10-CO-M1 on a case-folding output, sub/Notes.md + sub/notes.md stop the export (exit 2), name both, write nothing" \
+    || bad "S10-CO-M1 folding output" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+  rm -rf "$O"; rc=$(run "$V" "$O")
+  { [ "$rc" = 0 ] && grep -qx 'UPPER' "$O/sub/Notes.md" && grep -qx 'lower' "$O/sub/notes.md"; } 2>/dev/null \
+    && ok "S10-CO-M2 on a case-sensitive output (the real probe) the same two notes both export (exit 0)" \
+    || bad "S10-CO-M2 sensitive output" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

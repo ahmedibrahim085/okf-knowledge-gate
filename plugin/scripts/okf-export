@@ -20,6 +20,7 @@ import os
 import re
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
@@ -39,6 +40,9 @@ WIKILINK = re.compile(r"(?<!!)\[\[([^\[\]]+)\]\]")
 # same character at least as long. An ATX heading is 1-6 '#' and a space; closing '#'s are not text.
 FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
 ATX = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+# An indented code block is 4 spaces or a tab in; it cannot interrupt a paragraph (#112).
+INDENTED = re.compile(r"^(?: {4}| {0,3}\t)")
+LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
 # A code span closes on a backtick run of exactly its opening length.
 # SHORTCUT: one line only; a span wrapped across lines is read as text. Track spans per paragraph if one shows up.
 CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`).+?(?<!`)\1(?!`)")
@@ -62,8 +66,15 @@ def frontmatter_len(lines: list[str]) -> int:
 
 
 def body_lines(lines: list[str]):
-    """Yield (index, line, in_code) for each body line; in_code is True inside a fence, fence lines included."""
+    """Yield (index, line, in_code) for each body line; in_code is True inside a fence, fence lines included, and on
+    the lines of an indented code block. A blank line is never code: it holds no link, and the log reader counts it."""
     fence = ""
+    indented = False   # inside an indented code block
+    can_open = True    # no paragraph line just above, so an indented line opens a code block
+    in_list = False    # inside a list, where an indented line continues the item instead
+    blank = False      # the line above was blank
+    # SHORTCUT: a list ends only at an unindented line after a blank line, and code inside a list item (8 spaces) is
+    # read as text. Track list item indents if such a note shows up.
     for i in range(frontmatter_len(lines), len(lines)):
         line = lines[i]
         m = FENCE.match(line)
@@ -71,10 +82,21 @@ def body_lines(lines: list[str]):
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
                 fence = ""
             yield i, line, True
+        elif not line.strip():
+            can_open = blank = True
+            yield i, line, False
+        elif INDENTED.match(line) and (indented or (can_open and not in_list)):
+            indented, blank = True, False
+            yield i, line, True
         elif m:
-            fence = m.group(1)
+            fence, indented, can_open, blank = m.group(1), False, True, False
             yield i, line, True
         else:
+            if LIST_ITEM.match(line):
+                in_list = True
+            elif (blank and not line[:1].isspace()) or ATX.match(line):
+                in_list = False
+            indented, can_open, blank = False, bool(ATX.match(line)), False
             yield i, line, False
 
 
@@ -138,6 +160,41 @@ def shared_outputs(files: list[Path], root_name: str) -> list[tuple[Path, Path, 
         if vault_out_rel(rel, root_name) != rel:
             groups.setdefault(vault_out_rel(rel, root_name), []).append(rel)
     return [(g[0], g[1], out) for out, g in groups.items() if len(g) > 1]
+
+
+def case_clashes(files: list[Path], root_name: str) -> list[tuple[Path, Path]]:
+    """(first, second) for each two output names in one folder that differ only in case, named by their vault paths
+    (#112): a disk that folds case (macOS, Windows) writes both to one file or folder. Two names in different folders
+    clash at the folders, so a pair is reported once, where it starts."""
+    names: dict[Path, Path] = {}   # output name -> vault path; a folder keeps its name
+    for rel in files:
+        out = vault_out_rel(rel, root_name)
+        names[out] = rel
+        for d in out.parents:
+            if d != Path("."):
+                names.setdefault(d, d)
+    first: dict[tuple[Path, str], Path] = {}
+    pairs = []
+    for out in sorted(names):
+        key = (out.parent, out.name.casefold())
+        if key in first:
+            pairs.append((names[first[key]], names[out]))
+        else:
+            first[key] = out
+    return pairs
+
+
+def case_insensitive(folder: Path) -> bool:
+    """Whether the disk that holds folder (or will: an output not made yet goes in its nearest existing parent) folds
+    case. A temp folder is made there and removed, so nothing is left behind. Raises OSError if it cannot be written."""
+    while not folder.exists():
+        folder = folder.parent
+    probe = Path(tempfile.mkdtemp(prefix=".okf-case-", dir=folder))
+    try:
+        (probe / "a").touch()
+        return (probe / "A").exists()
+    finally:
+        shutil.rmtree(probe)
 
 
 def build_log(rel: Path, lines: list[str], problems: list[str]) -> str | None:
@@ -315,6 +372,24 @@ def main() -> int:
     for first, second, new in shared:
         fail(f"{first.as_posix()} and {second.as_posix()} would both be written to {new.as_posix()}; rename one of them in the vault")
     if clashes or shared:
+        return 2
+    # A case-sensitive vault may hold Notes.md and notes.md, which a case-folding output disk (macOS, Windows) writes
+    # to one file (#112). Only there do names that differ only in case clash, so the disk is probed only for such a
+    # pair: an ordinary export makes nothing in or beside <out> for the probe.
+    base = out
+    while not base.exists():
+        base = base.parent
+    if not os.access(base, os.W_OK | os.X_OK):
+        return fail(f"cannot write to {args.out}: Permission denied")
+    try:
+        folded_pairs = case_clashes(files, vault.name)
+        folded_pairs = folded_pairs if folded_pairs and case_insensitive(out) else []
+    except OSError as err:
+        return fail(f"cannot write to {args.out}: {err.strerror}")
+    for first, second in folded_pairs:
+        fail(f"{first.as_posix()} and {second.as_posix()} would be written over each other: {args.out} is on a disk"
+             " that does not tell upper from lower case; rename one of them in the vault")
+    if folded_pairs:
         return 2
 
     problems: list[str] = [f"{rel.as_posix()} — {why}: skipped" for rel, why in refused]

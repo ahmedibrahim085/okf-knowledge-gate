@@ -130,16 +130,16 @@ when it cannot run.
 
 For a team that edits in an Obsidian-style vault: the vault stays the source, and the export is a bundle
 `okf-check` can gate. Body `[[note]]`, `[[note|alias]]`, `[[note#heading]]` and `[[#heading]]` become relative
-Markdown links; frontmatter and code are copied unchanged. A vault `index.md` note is renamed to the folder note
-(`dir/dir.md`) and spec index files are generated (root carries `okf_version`); a rename collision stops the export
-with exit 2. A vault `log.md` note becomes the spec log (dated lines grouped, newest first; every `## ` heading must
+Markdown links; frontmatter and code (fenced or indented) are copied unchanged. A vault `index.md` note is renamed to
+the folder note (`dir/dir.md`) and spec index files are generated (root carries `okf_version`); a rename collision
+stops the export with exit 2, and so do two names that differ only in case when `<out>` is on a case-insensitive disk. A vault `log.md` note becomes the spec log (dated lines grouped, newest first; every `## ` heading must
 be a date). Exit 1 lists every missing or ambiguous target, missing heading, malformed date, non-date `## ` heading,
 undated log line, log frontmatter and log with no dated entry as `file:line` (the bundle is still written); exit 2 means nothing was written (`<out>` not
-empty or inside the vault). It never writes into the vault.
+empty, inside the vault, or cannot be written). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.29`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.30`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

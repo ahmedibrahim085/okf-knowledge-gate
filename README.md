@@ -141,15 +141,17 @@ in backticks or quotes (and paths that start with `~`) are checked on disk, but 
 `okf-export` is for a team that edits in an Obsidian-style vault, whose backlinks and graph count only `[[wikilinks]]`.
 The vault stays the source; the export is a bundle `okf-check` can gate. Body `[[note]]`, `[[note|alias]]`,
 `[[note#heading]]` and `[[#heading]]` become relative Markdown links, and each target and heading is checked.
-Frontmatter and code are copied unchanged. A vault's `index.md` note becomes the folder note (`dir/index.md` to
+Frontmatter and code (fenced, or indented 4 spaces or a tab) are copied unchanged. A vault's `index.md` note becomes the folder note (`dir/index.md` to
 `dir/dir.md`, the root one to `<vault folder>.md`), and an `index.md` listing is generated in every folder that holds
-a note, with `okf_version` at the root; a rename onto an existing note stops the export. A vault `log.md` note becomes
+a note, with `okf_version` at the root; a rename onto an existing note stops the export. When `<out>` is on a disk
+that does not tell upper from lower case (the macOS default) and the vault is not, two names that differ only in case
+(`Notes.md`, `notes.md`) stop it too, as they would be written over each other. A vault `log.md` note becomes
 the folder's log: its dated lines (`## 2026-05-22` headings or `- 2026-05-22: text` items, with their indented
 continuation lines) are grouped by date, newest first, under the note's own `# title`. Every `## ` heading must be a
 date, as spec 9 requires. Exit 1 lists each missing or ambiguous target, missing heading, malformed date, `## ` heading
 that is not a date (with the lines left out under it), undated log line, log frontmatter and log with no dated entry as
-`file:line` (the bundle is still written); exit 2 means nothing was written (`<out>` is not empty or is inside the
-vault). A target is matched by its exact case (Obsidian ignores case). The vault is only read.
+`file:line` (the bundle is still written); exit 2 means nothing was written (`<out>` is not empty, is inside the
+vault or cannot be written, or two notes would be written to one name). A target is matched by its exact case (Obsidian ignores case). The vault is only read.
 
 A near-miss actor is a wrongly written actor such as `Human:dana`. OKF reads it as an agent, so a person's review is
 lost without any other symptom. `--strict-trust` fails on it.
@@ -309,7 +311,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.29
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.30
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -325,7 +327,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.29
+    rev: v0.9.30
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
