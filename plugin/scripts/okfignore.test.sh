@@ -160,6 +160,38 @@ else
   fi
 fi
 
+# --- F-6 (0.9.11 register, spec row IA-1): .okfignore reaches a file alias, and the symlinks line honours it -------------------------
+# S12-IG-F1: archive/ is ignored and alias.md -> archive/old.md (a note with no frontmatter, an L1 error) is an alias of
+# an ignored note: it is ignored too, by every walker, instead of being checked through the back door.
+B="$TMP/f1"; mkb "$B"; ln -s archive/old.md "$B/alias.md"
+"$CHECK" --json "$B" > "$TMP/f1.json" 2>/dev/null; rc=$?
+errs=$(python3 -c 'import json,sys; print(sum("alias.md" in e for e in json.load(open(sys.argv[1]))["errors"]))' "$TMP/f1.json" 2>/dev/null)
+listed=$(bash "$HERE/ignore-lib.sh" --list "$B" 2>/dev/null | tr '\0' '\n' | grep -c '^alias.md$')
+{ [ "$rc" = 0 ] && [ "$errs" = 0 ] && [ "$listed" = 0 ]; } \
+  && ok "S12-IG-F1 a file alias of an ignored note is ignored as well: no L1 error for alias.md, not in ignore-lib --list" \
+  || bad "S12-IG-F1 alias of an ignored note" "rc=$rc errors-naming-alias=$errs listed=$listed"
+# S12-IG-F1b: an alias of a note that is NOT ignored is still checked (the file-link rule).
+B="$TMP/f1b"; mkb "$B"; mkdir -p "$B/real"; printf 'no frontmatter\n' > "$B/real/n.md"; ln -s real/n.md "$B/alias.md"
+"$CHECK" --json "$B" > "$TMP/f1b.json" 2>/dev/null; rc=$?
+errs=$(python3 -c 'import json,sys; print(sum("alias.md" in e for e in json.load(open(sys.argv[1]))["errors"]))' "$TMP/f1b.json" 2>/dev/null)
+{ [ "$rc" = 1 ] && [ "$errs" -ge 1 ]; } && ok "S12-IG-F1b an alias of a kept note is still checked (L1 error, exit 1)" \
+  || bad "S12-IG-F1b alias of a kept note" "rc=$rc errors-naming-alias=$errs"
+# S12-IG-F2: a symlinked folder that .okfignore excludes is not named on the symlinks line; one that is not excluded is.
+B="$TMP/f2"; mkb "$B"; mkdir -p "$TMP/f2-out/x" "$TMP/f2-out/y"
+ln -s ../../f2-out/x "$B/archive/linked"; ln -s ../f2-out/y "$B/kept"
+"$CHECK" "$B" > "$TMP/f2.txt" 2>&1
+{ grep -q '1 symlinked folder(s) not entered' "$TMP/f2.txt" && grep -qxE ' +kept' "$TMP/f2.txt" && ! grep -q 'archive/linked' "$TMP/f2.txt"; } \
+  && ok "S12-IG-F2 the symlinks line leaves out a folder link under an ignored folder and names the other one" \
+  || bad "S12-IG-F2 symlinks line" "$(grep -n -A2 'symlink' "$TMP/f2.txt" | tr '\n' '|')"
+# S12-IG-F3: --json carries the list as symlinked_folders (present only when there is one).
+"$CHECK" --json "$B" > "$TMP/f2.json" 2>/dev/null
+got=$(python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])).get("symlinked_folders")))' "$TMP/f2.json" 2>/dev/null)
+"$CHECK" --json "$TMP/f1b" > "$TMP/f3.json" 2>/dev/null
+none=$(python3 -c 'import json,sys; print("symlinked_folders" in json.load(open(sys.argv[1])))' "$TMP/f3.json" 2>/dev/null)
+{ [ "$got" = '["kept"]' ] && [ "$none" = False ]; } \
+  && ok "S12-IG-F3 --json symlinked_folders lists [\"kept\"]; a bundle without folder links has no such key" \
+  || bad "S12-IG-F3 json list" "got=$got none=$none"
+
 echo
 echo "  $PASS passed, $FAIL failed, $SKIPPED skipped"
 [ "$FAIL" -eq 0 ] || exit 1

@@ -20,6 +20,7 @@ import datetime
 import json
 import re
 import sys
+import unicodedata
 from pathlib import Path
 
 import yaml
@@ -32,6 +33,37 @@ from okf_guard import read_note  # noqa: E402  (bounded read)
 
 # `<producer>/<version>` or an `agent:<id>` actor; `human:` and `process:` are never agents.
 AGENT_FORM = re.compile(r"^(?:agent:\S+|[^\s:/]+/\S+|[^\s:/]+)$")   # a bare token (`claudebot`) is an agent too; `team:<id>` is not
+
+
+# Letters that render like the ones in `human:` and `process:` (Unicode confusables for h u m a n p r o c e s and the
+# colon). NFKC already folds full-width forms and the mathematical alphabets; these survive it. B-4, narrow: a value that
+# only LOOKS like `human:` is named, so nobody reads `һυмап:dana` as a human claim. Nothing new is denied.
+LOOKALIKE = str.maketrans({
+    "\u04bb": "h", "\u04ba": "h", "\u029c": "h", "\u0570": "h", "\u13c2": "h", "\u041d": "h", "\u0397": "h",
+    "\u03c5": "u", "\u1d1c": "u", "\u057d": "u", "\u028b": "u",
+    "\u043c": "m", "\u1d0d": "m", "\u041c": "m", "\u039c": "m",
+    "\u0430": "a", "\u03b1": "a", "\u1d00": "a", "\u0410": "a", "\u0391": "a",
+    "\u043f": "n", "\u03b7": "n", "\u0578": "n", "\u0274": "n", "\u039d": "n",
+    "\u0440": "p", "\u03c1": "p", "\u0420": "p", "\u03a1": "p",
+    "\u0433": "r", "\u0280": "r",
+    "\u043e": "o", "\u03bf": "o", "\u041e": "o", "\u039f": "o", "\u0585": "o",
+    "\u0441": "c", "\u03f2": "c", "\u0421": "c", "\u1d04": "c", "\u03f9": "c",
+    "\u0435": "e", "\u0415": "e", "\u0395": "e",
+    "\u0455": "s", "\u0405": "s", "\ua731": "s",
+    "\u2236": ":", "\u02f8": ":", "\ua789": ":", "\u0589": ":", "\u05c3": ":", "\ufe55": ":",
+})
+
+
+def lookalike_prefix(actor):
+    """`human:` or `process:` when <actor> only looks like it: lookalike letters that the plain spelling check (the
+    validator's near-miss rule, ASCII only) does not see. None for the real prefix and for an ASCII near-miss."""
+    if actor.startswith(("human:", "process:")) or actor.isascii():
+        return None
+    folded = unicodedata.normalize("NFKC", actor).translate(LOOKALIKE).lower()
+    for p in ("human:", "process:"):
+        if folded.startswith(p):
+            return p
+    return None
 
 
 def as_text(value):
@@ -83,9 +115,14 @@ def findings_for(meta):
         if not isinstance(entry, dict):
             continue
         actor = as_text(entry.get("by"))
+        where = f"verified[{i}].by"
+        look = lookalike_prefix(actor)
+        if look:
+            yield ("warning", where, f"`{actor}` only looks like `{look}`: it spells it with lookalike characters, so no "
+                                     f"tool reads it as that actor; write `{look}` in plain ASCII")
+            continue
         if not actor.startswith("human:"):
             continue
-        where = f"verified[{i}].by"
         ver_at = as_instant(entry.get("at"))
         if status == "draft":
             yield ("warning", where, f"`{actor}` on a draft note: draft with human verification")

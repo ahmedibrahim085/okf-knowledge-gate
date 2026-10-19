@@ -192,7 +192,7 @@ ctl=$(LC_ALL=C tr -d '\n' < "$TMP/err.txt" | LC_ALL=C grep -c '[[:cntrl:]]'); le
 { [ "$rc" = 2 ] && [ "$ctl" = 0 ] && [ "$len" -le 700 ] && [ "$(wc -l < "$TMP/err.txt" | tr -d ' ')" = 1 ]; } \
   && ok "SH-8 a hostile verified.by (escape codes, 20000 characters) reaches Claude as one bounded line without control bytes (${len} bytes)" \
   || bad "SH-8 hostile value" "rc=$rc control-lines=$ctl bytes=$len"
-# SH-9: an unusable OKF_EDIT_HOOK_TIMEOUT is read BEFORE okf-check starts: fail-open and nothing left running.
+# SH-9: an unusable OKF_EDIT_HOOK_TIMEOUT falls back to the default box (SH-11), which still fires: nothing left running.
 CP2="$TMP/plugin-copy2"; cp -R "$HERE/.." "$CP2"; MARK2="okf-edit-hook-badbox-$$"
 printf '#!/usr/bin/env bash\nsh -c "sleep 30; : %s" &\nwait\n' "$MARK2" > "$CP2/scripts/okf-check"
 "$REALPY" -c 'import json,sys; print(json.dumps({"tool_name":"Edit","tool_input":{"file_path":sys.argv[1]}}))' "$B/sub/bad.md" \
@@ -200,7 +200,7 @@ printf '#!/usr/bin/env bash\nsh -c "sleep 30; : %s" &\nwait\n' "$MARK2" > "$CP2/
 sleep 1; left=$(procs "$MARK2")
 if [ "$left" = SKIP ]; then skip "SH-9 bad time box: no ps or /proc here to count a left-running check"
 else
-  { silent "$rc" && [ "$left" = 0 ]; } && ok "SH-9 OKF_EDIT_HOOK_TIMEOUT=abc: exit 0, no output, okf-check never started (nothing left running)" \
+  { silent "$rc" && [ "$left" = 0 ]; } && ok "SH-9 OKF_EDIT_HOOK_TIMEOUT=abc: the default box fires on a hung check: exit 0, no output, nothing left running" \
     || { bad "SH-9 bad time box" "rc=$rc left=$left"; pkill -f "$MARK2" 2>/dev/null; }
 fi
 # SH-10: an override above the platform timeout is capped (config max_seconds), so the hook's own box still fires first.
@@ -212,6 +212,71 @@ took=$("$REALPY" -c "import time; print('%.1f' % (time.time() - $start))")
   && ok "SH-10 OKF_EDIT_HOOK_TIMEOUT=60 is capped: the box fired after ${took} s, under the 5 s platform timeout" \
   || bad "SH-10 cap" "rc=$rc took=${took} s"
 pkill -f "$MARK2" 2>/dev/null
+
+# --- B-7: hook values that used to switch the hook off without a word (spec row HK-1) -----------------------------------------
+# SH-11: a time box that is not a positive number (nan, 0, -1, abc) falls back to config timeout_seconds, so the check
+# still runs and warns. min(nan, 4.5) was nan, and 0 or -1 fired the box at once: the hook was silently off.
+for v in nan 0 -1 abc ''; do
+  rc=$(fire "$B/sub/bad.md" "OKF_EDIT_HOOK_TIMEOUT=$v")
+  { [ "$rc" = 2 ] && grep -q 'L1 error' "$TMP/err.txt"; } \
+    && ok "SH-11 OKF_EDIT_HOOK_TIMEOUT='$v' uses the default box: the L1 error is still reported" \
+    || bad "SH-11 time box '$v'" "rc=$rc err: $(head -2 "$TMP/err.txt" | tr '\n' '|')"
+done
+# SH-12: an unquoted YAML 1.1 word (yes, on) is not `true`: the hook stays off AND okf-verify --check-config says why,
+# so the switch is never off without a word.
+for w in yes on; do
+  BY="$TMP/yes-$w"; bundle "$BY" "okf_check:
+  edit_hook: $w"
+  badnote "$BY/bad.md"
+  rc=$(fire "$BY/bad.md")
+  out=$("$REALPY" "$HERE/okf-verify" "$BY" --check-config 2>&1); crc=$?
+  { silent "$rc" && [ "$crc" = 2 ] && printf '%s' "$out" | grep -q "okf_check.edit_hook must be true or false.*write true or false, not $w"; } \
+    && ok "SH-12 edit_hook: $w (unquoted) leaves the hook off and --check-config exits 2 naming it" \
+    || bad "SH-12 edit_hook: $w" "rc=$rc crc=$crc out: $(printf '%s' "$out" | head -2 | tr '\n' '|')"
+done
+# SH-12c (review 0.9.35): only the okf_check block is read for those words: a comment or another block's `remote: no` is not refused.
+BC="$TMP/yes-elsewhere"; bundle "$BC" '# To switch the graph layer off, write  graph: off
+deploy:
+  remote: no
+okf_check:
+  edit_hook: true  # yes, on'
+"$REALPY" "$HERE/okf-verify" "$BC" --check-config >/dev/null 2>&1; crc=$?
+[ "$crc" = 0 ] && ok "SH-12c a comment and another block's 'remote: no' are not read as okf_check options (exit 0)" || bad "SH-12c scope" "crc=$crc"
+# SH-12d (review 0.9.35 round 3): a bracket inside a quoted value (a facts pattern) does not keep the block open.
+BQ="$TMP/quoted-bracket"; bundle "$BQ" "okf_check:
+  facts:
+    version: {value: \"1.2\", patterns: ['Version \\[?(\\d+\\.\\d+)']}
+deploy:
+  remote: no"
+"$REALPY" "$HERE/okf-verify" "$BQ" --check-config >/dev/null 2>&1; crc=$?
+[ "$crc" = 0 ] && ok "SH-12d a bracket in a quoted pattern does not stretch the okf_check block over 'deploy: remote: no'" || bad "SH-12d quoted bracket" "crc=$crc $("$REALPY" "$HERE/okf-verify" "$BQ" --check-config 2>&1 | head -1)"
+BT="$TMP/flow-true"; mkdir -p "$BT"; bundle "$BT" 'okf_check: {edit_hook: True}'
+badnote "$BT/bad.md"
+rc=$(fire "$BT/bad.md")
+{ [ "$rc" = 2 ] && "$REALPY" "$HERE/okf-verify" "$BT" --check-config >/dev/null 2>&1; } \
+  && ok "SH-12b edit_hook: True in flow style still switches the hook on" || bad "SH-12b True" "rc=$rc"
+# SH-13: the 300-character cut applies to the first finding alone, so the '(+N more: ...)' hint survives a long finding.
+LV="$TMP/on/long"; mkdir -p "$LV"
+"$REALPY" - "$LV/l.md" <<'PY'
+import sys
+by = "human:" + "B" * 2000   # two Trust warnings, the first one long
+open(sys.argv[1], "w", encoding="utf-8").write("---\ntype: Lesson\ntitle: T\ndescription: D\ntags: [t]\nstatus: draft\ngenerated:\n  by: human:t\n  at: \"2026-01-01\"\nverified:\n  - by: \"%s\"\n    at: \"2026-01-02\"\n  - by: \"human:c\"\n    at: \"2026-01-03\"\n---\nb\n" % by)
+PY
+rc=$(fire "$LV/l.md")
+len=$(tr -d '\n' < "$TMP/err.txt" | wc -c | tr -d ' ')
+{ [ "$rc" = 2 ] && grep -q '(+[0-9]* more: okf-check ' "$TMP/err.txt" && [ "$(wc -l < "$TMP/err.txt" | tr -d ' ')" = 1 ]; } \
+  && ok "SH-13 a long first finding is cut, the '(+N more: ...)' hint is kept (${len} bytes)" \
+  || bad "SH-13 hint kept" "rc=$rc err: $(cut -c1-160 "$TMP/err.txt" | tr '\n' '|')"
+
+# SH-13b (review 0.9.35): the whole line stays within max_line_chars when the bundle path is long: the hint keeps its count
+# and drops the command when the paths do not fit.
+LP="$TMP/on/$(printf 'long-folder-name-%s/' 1 2 3 4 5 6 7 8 9 10 11 12)"; mkdir -p "$LP"; cp "$LV/l.md" "$LP/l.md"
+rc=$(fire "$LP/l.md")
+max=$("$REALPY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["max_line_chars"])' "$HERE/../config/edit-hook.json")
+len=$(tr -d '\n' < "$TMP/err.txt" | "$REALPY" -c 'import sys; print(len(sys.stdin.read()))')
+{ [ "$rc" = 2 ] && [ "$len" -le "$max" ] && grep -q '(+1 more' "$TMP/err.txt"; } \
+  && ok "SH-13b with a long bundle path the line is ${len} characters (limit $max) and still says (+1 more" \
+  || bad "SH-13b bounded line" "rc=$rc len=$len max=$max $(cut -c1-120 "$TMP/err.txt")"
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

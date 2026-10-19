@@ -23,6 +23,7 @@ import importlib.util
 import json
 import os
 import re
+import shlex
 import signal
 import subprocess
 import sys
@@ -61,14 +62,21 @@ CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
 
 
 def time_box() -> float:
+    """OKF_EDIT_HOOK_TIMEOUT, capped at max_seconds; a value that is not a positive number uses timeout_seconds.
+
+    min(nan, 4.5) is nan and a box of 0 or -1 fires at once: either way the hook was silently off (B-7).
+    """
     cfg = json.loads(CONFIG.read_text(encoding="utf-8"))
-    env = os.environ.get("OKF_EDIT_HOOK_TIMEOUT")
-    return min(float(env) if env else float(cfg["timeout_seconds"]), float(cfg["max_seconds"]))
+    default, cap = float(cfg["timeout_seconds"]), float(cfg["max_seconds"])
+    try:
+        box = float(os.environ.get("OKF_EDIT_HOOK_TIMEOUT") or default)
+    except ValueError:
+        box = default
+    return min(box, cap) if box > 0 else default   # nan > 0 is False
 
 
-def clean_line(text: str) -> str:
+def clean_line(text: str, limit: int) -> str:
     """Control characters out, length bounded: Claude reads this line, and it quotes note values (review 0.9.13)."""
-    limit = int(json.loads(CONFIG.read_text(encoding="utf-8"))["max_line_chars"])
     text = CONTROL.sub("?", text)
     return text if len(text) <= limit else text[:limit - 1] + "…"
 
@@ -93,8 +101,15 @@ def main() -> int:
     hits = [line for line in out.splitlines() if any(w in line for w in WARN_ON)]
     if proc.returncode not in (0, 1) or not hits:
         return 0
-    more = f" (+{len(hits) - 1} more: okf-check {bundle} --file {fp})" if len(hits) > 1 else ""
-    print(clean_line(f"okf-check: {hits[0]}{more}"), file=sys.stderr)
+    # The cut applies to the first finding alone, so a long one cannot push the hint off the line; the hint gives the
+    # command (paths quoted, so it can be pasted) only when the whole line still fits max_line_chars (review 0.9.35).
+    limit = int(json.loads(CONFIG.read_text(encoding="utf-8"))["max_line_chars"])
+    more = ""
+    if len(hits) > 1:
+        more = CONTROL.sub("?", f" (+{len(hits) - 1} more: okf-check {shlex.quote(str(bundle))} --file {shlex.quote(fp)})")
+        if len(more) > limit // 2:
+            more = f" (+{len(hits) - 1} more)"
+    print(clean_line(f"okf-check: {hits[0]}", limit - len(more)) + more, file=sys.stderr)
     return 2
 
 

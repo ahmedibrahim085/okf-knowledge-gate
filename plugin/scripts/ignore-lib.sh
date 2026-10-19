@@ -59,8 +59,8 @@ _okfignore_read() {
 }
 
 # okfignore_match <relative file path>: exit 0 when a loaded pattern excludes it.
-okfignore_match() {
-  local rel="$1" pat g dironly anchored anywhere i n prefix
+okfignore_match() {   # <rel> [dir]: with "dir", <rel> is itself a folder, so a folder-only pattern (`x/`) can match its last part
+  local rel="$1" isdir="${2:-}" pat g dironly anchored anywhere i n prefix
   local -a comp
   [ "${#OKFIGNORE_PATTERNS[@]}" -gt 0 ] || return 1
   IFS=/ read -r -a comp <<< "$rel"
@@ -75,20 +75,40 @@ okfignore_match() {
     [ -n "$g" ] || continue
     if [ "$anchored" -eq 0 ]; then
       for ((i=0; i<n; i++)); do
-        [ "$dironly" -eq 1 ] && [ "$i" -eq $((n-1)) ] && continue
+        [ "$dironly" -eq 1 ] && [ "$i" -eq $((n-1)) ] && [ -z "$isdir" ] && continue
         case "${comp[$i]}" in $g) return 0;; esac
       done
     else
       prefix=""
       for ((i=0; i<n; i++)); do
         prefix=${prefix:+$prefix/}${comp[$i]}
-        [ "$dironly" -eq 1 ] && [ "$i" -eq $((n-1)) ] && continue
+        [ "$dironly" -eq 1 ] && [ "$i" -eq $((n-1)) ] && [ -z "$isdir" ] && continue
         case "$prefix" in $g) return 0;; esac
         [ "$anywhere" -eq 1 ] && case "$prefix" in */$g) return 0;; esac
       done
     fi
   done
   return 1
+}
+
+# okfignore_alias_ignored <bundle> <file>: true when <file> is a symlink whose target is a file inside <bundle> that
+# .okfignore excludes. An alias is the same note as its target, so ignoring the target ignores the alias (F-6); an alias
+# of a kept note, or of a file outside the bundle, is judged by its own path as before. The link chain is walked with
+# readlink (no readlink -f on macOS), at most 40 hops.
+okfignore_alias_ignored() {
+  [ -L "$2" ] && [ "${#OKFIGNORE_PATTERNS[@]}" -gt 0 ] || return 1
+  local p="$2" t n=0 d top
+  while [ -L "$p" ] && [ "$n" -lt 40 ]; do
+    t=$(readlink "$p") || return 1
+    case "$t" in /*) p=$t ;; *) p=${p%/*}/$t ;; esac
+    n=$((n+1))
+  done
+  [ -f "$p" ] || return 1
+  d=$(cd -P "${p%/*}" 2>/dev/null && pwd -P) || return 1
+  top=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1
+  case "$d/" in "$top"/*) ;; *) return 1 ;; esac
+  t="$d/${p##*/}"
+  okfignore_match "${t#"$top"/}"
 }
 
 # okfignore_list <bundle>: print (NUL-separated) the *.md files that are NOT ignored, as paths
@@ -104,6 +124,7 @@ okfignore_list() {
     [ -L "$f" ] && [ -n "$(okf_note_refusal "$f")" ] && continue
     rel=${f#"$bundle"/}
     okfignore_match "$rel" && continue
+    okfignore_alias_ignored "$bundle" "$f" && continue
     printf '%s\0' "$rel"
   done < <(find -H "$bundle" -name .git -prune -o \( \( -type f ! -size +"${cap}"c \) -o -type l \) -name '*.md' -print0 2>/dev/null)   # -H: okf_md_files' rule (l3-lib.sh)
 }
@@ -165,7 +186,7 @@ okfignore_mirror() {
     case "${rel##*/}" in *.md|*.yaml|*.yml|*.json) ;; *) iscfg=0; [ -d "$f" ] && continue;; esac   # a link to a folder is not entered
     isnote=0
     case "$rel" in *.md) case "${rel##*/}" in index.md|log.md) ;; *) isnote=1;; esac;; esac
-    if [ "${#OKFIGNORE_PATTERNS[@]}" -gt 0 ] && okfignore_match "$rel"; then   # no pattern: no call (a bash function costs a millisecond per note)
+    if [ "${#OKFIGNORE_PATTERNS[@]}" -gt 0 ] && { okfignore_match "$rel" || { [ "$iscfg" -eq 1 ] && okfignore_alias_ignored "$bundle" "$f"; }; }; then   # no pattern: no call (a bash function costs a millisecond per note)
       # The count keeps its meaning (okf-verify prints the same one): notes and config only, not the files linked below.
       if [ "$iscfg" -eq 1 ]; then
         exall=$((exall+1))

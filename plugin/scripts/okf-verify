@@ -991,7 +991,52 @@ def load_block(bundle: Path, source: Path | None = None) -> dict:
     if "okf_check" not in data:
         return {}
     check_node(data["okf_check"], schema, "okf_check", bundle)
+    yaml11_booleans((source or bundle) / "okf-base.yaml", schema)
     return data["okf_check"]
+
+
+YAML11_WORDS = re.compile(r"(?i)^(yes|no|on|off)$")
+
+
+def okf_check_text(text: str) -> str:
+    """The lines of the top-level okf_check block, comments removed: a comment or another block's `remote: no` is not an
+    okf_check option (review 0.9.35). The block runs from `okf_check:` to the next line that starts in column 0."""
+    out, inside, depth = [], False, 0   # depth: open { or [ of a flow mapping, which may wrap to column 0
+    for line in text.splitlines():
+        if re.match(r"^okf_check\s*:", line):
+            inside, depth = True, 0
+        elif inside and depth <= 0 and line[:1] not in ("", " ", "\t", "#"):
+            inside = False
+        if inside:
+            # Quoted text out first: a bracket in a value (a facts pattern) does not open anything (review 0.9.35 round 3).
+            bare = re.sub(r"(^|\s)#.*$", "", re.sub(r"'(?:[^']|'')*'|\"(?:[^\"\\]|\\.)*\"", "''", line))
+            depth += bare.count("{") + bare.count("[") - bare.count("}") - bare.count("]")
+        if inside:
+            out.append(re.sub(r"(^|\s)#.*$", "", line))   # a YAML comment starts at a # after whitespace
+    return "\n".join(out)
+
+
+def yaml11_booleans(base: Path, schema: dict) -> None:
+    """Refuse `edit_hook: yes` and its kin for the true/false options (B-7).
+
+    The loader is YAML 1.1, so an unquoted yes, no, on or off arrives as a boolean and passes the type check, while a
+    YAML 1.2 reader (and anyone reading the file) sees a word. Only `true` and `false` say the same thing everywhere.
+    """
+    names = {}
+    def walk(node, where):
+        for k, sub in (node.get("keys") or {}).items():
+            if sub.get("type") == "boolean":
+                names[k] = f"{where}.{k}"
+            walk(sub, f"{where}.{k}")
+    walk(schema, "okf_check")
+    if not names:
+        return
+    text = okf_check_text(_guard().read_note(base, "utf-8", "replace"))
+    key = "|".join(re.escape(k) for k in names)
+    for m in re.finditer(rf"(?m)(?:^|[{{,\s])({key})\s*:[ \t]*([A-Za-z]+)[ \t]*(?=$|[,}}#])", text):
+        if YAML11_WORDS.match(m.group(2)):
+            raise BaseConfigError(f"{names[m.group(1)]} must be true or false: write true or false, not {m.group(2)} "
+                                  "(this reader takes it as a boolean, other YAML readers as a word)")
 
 
 def misplaced_keys(data: dict, schema: dict) -> list[str]:
@@ -1233,6 +1278,11 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False, since: tup
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Verify that a bundle's claims still hold (L4).")
+    try:   # the plugin's version (.claude-plugin/plugin.json), the one place bump-version.sh moves for this tool
+        _v = json.loads((Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
+    except (OSError, ValueError, KeyError):
+        _v = "unknown"
+    ap.add_argument("--version", action="version", version=f"okf-verify {_v}")
     ap.add_argument("bundle", type=Path)
     ap.add_argument("--repo", type=Path, action="append", default=[],
                     help="repository to resolve cited SHAs in (repeatable)")
@@ -1260,6 +1310,7 @@ def main() -> int:
             data, schema = load_manifest(a.bundle, a.manifest_dir)
             if "okf_check" in data:
                 check_node(data["okf_check"], schema, "okf_check", a.bundle)
+                yaml11_booleans((a.manifest_dir or a.bundle) / "okf-base.yaml", schema)
         except BaseConfigError as e:
             print(f"error: {a.bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
             return 2

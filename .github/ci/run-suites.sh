@@ -36,7 +36,9 @@ suite_verdict() {
 }
 # --- end of copy ---
 
-SUITE_TIMEOUT=${OKF_GATE_SUITE_TIMEOUT:-1800}
+# OKF_LINUX_SUITES and OKF_GATE_SUITE_TIMEOUT in the environment win over the conf, as in tools/linux-gate.sh, which
+# passes its own values in (review 0.9.35).
+SUITE_TIMEOUT=1800
 SUITES=""
 if [ -f tools/linux-gate.conf ]; then
   SUITES=$(sed -n 's/^OKF_LINUX_SUITES=//p' tools/linux-gate.conf)
@@ -44,6 +46,10 @@ if [ -f tools/linux-gate.conf ]; then
 else
   SUITES=$(find . -name '*.test.sh' -not -path './.git/*' | sed 's#^\./##' | LC_ALL=C sort | tr '\n' ' ')
 fi
+SUITES=${OKF_LINUX_SUITES:-$SUITES}
+SUITE_TIMEOUT=${OKF_GATE_SUITE_TIMEOUT:-$SUITE_TIMEOUT}
+# Not passed on: a suite that runs this script on a fixture tree (tools/ci-workflow.test.sh) must read that tree's list.
+unset OKF_LINUX_SUITES OKF_GATE_SUITE_TIMEOUT
 [ -n "${SUITES// /}" ] || { echo "run-suites: no suite found"; exit 2; }
 
 echo "run-suites: $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-$(uname -s)}") $(uname -m); bash $BASH_VERSION; $(python3 --version 2>&1); okflint $(python3 -c 'import importlib.metadata as m; print(m.version("okflint"))' 2>/dev/null || echo absent); $(pre-commit --version 2>/dev/null || echo 'pre-commit absent'); $(awk -W version 2>&1 | head -1); user $(id -un)"
@@ -54,6 +60,7 @@ echo "run-suites: $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-$(uname 
 JOBS=${OKF_SUITE_JOBS:-$( (nproc || sysctl -n hw.ncpu) 2>/dev/null || echo 1)}
 case "$JOBS" in ''|*[!0-9]*|0) JOBS=1 ;; esac
 [ -n "${OKF_SUITE_JOBS:-}" ] || { [ "$JOBS" -le 4 ] || JOBS=4; }
+unset OKF_SUITE_JOBS
 SIDE=""
 [ -f tools/linux-gate.conf ] && SIDE=$(sed -n 's/^OKF_GATE_SIDE_BY_SIDE=//p' tools/linux-gate.conf)
 echo "run-suites: $JOBS suite(s) at a time"

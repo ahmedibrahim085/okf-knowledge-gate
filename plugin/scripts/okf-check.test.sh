@@ -2448,10 +2448,11 @@ par path-empty    err 'okf_check:\n  verify:\n    repos:\n      - path: ""\n'
 par typo-repo     err 'okf_check:\n  verify:\n    repo:\n      - path: .\n'
 par entry-extra   err 'okf_check:\n  verify:\n    repos:\n      - path: .\n        nmae: x\n'
 par top-unknown   err 'okf_check:\n  colour: red\n'
-# edit_hook is a boolean leaf: YAML 1.1 reads yes as true; a string or a number is refused by both tools
+# edit_hook is a boolean leaf: a string or a number is refused by both tools, and so is an unquoted yes (B-7: YAML
+# 1.1 reads it as true, other YAML readers as a word)
 par edit-hook-true   ok  'okf_check:\n  edit_hook: true\n'
 par edit-hook-false  ok  'okf_check:\n  edit_hook: false\n'
-par edit-hook-yes    ok  'okf_check:\n  edit_hook: yes\n'
+par edit-hook-yes    err 'okf_check:\n  edit_hook: yes\n'
 par edit-hook-string err 'okf_check:\n  edit_hook: "on"\n'
 par edit-hook-int    err 'okf_check:\n  edit_hook: 1\n'
 par bad-utf8      err 'okf_check:\n  verify:\n    repos:\n      - path: \377\n'
@@ -2856,7 +2857,8 @@ t0=$SECONDS; "$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?; el=$((SECONDS - 
 { [ "$rcl" -eq 0 ] && [ "$el" -lt 60 ] && ! grep -q 'CUT SHORT' "$D.txt"; } \
   && ok "LT-56h S7-E1 1,000 notes are compared in full within the 60 s default (${el} s here)" \
   || bad "LT-56h S7-E1 1,000 notes" "rc=$rcl ${el}s $(head -3 "$D.txt" | tr '\n' ' ')"
-OKF_DUP_TIME_LIMIT=0.000001 "$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
+# Cut in the pair pass (OKF_DUP_CUT_AT, 0.9.35): a bare tiny limit now stops while the notes are read (S25-DU-E1).
+OKF_DUP_CUT_AT=pairs "$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
 { [ "$rcl" -eq 0 ] && grep -Eq 'CUT SHORT .*[0-9]+ of 500500 pairs compared' "$D.txt"; } \
   && ok "LT-56i S7-E1 a run that reaches the time limit says CUT SHORT and how many pairs it compared, exit 0" \
   || bad "LT-56i S7-E1 cut short" "rc=$rcl $(head -3 "$D.txt" | tr '\n' ' ')"

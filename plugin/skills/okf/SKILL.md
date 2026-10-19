@@ -83,6 +83,10 @@ as an agent) into exit 1; it changes severity only, never what is found.
   with another value (exit 1). Fix the note to the declared value; if the value itself changed, the owner changes it in
   `okf-base.yaml`, and `okf-check <bundle> --facts NAME` lists every place that must follow.
 
+- An `L2 graph` line means the bundle opted into okf-memory (`okf_check.graph: true`): `WARN` lists orphan notes (no note
+  links to them) and concept links whose target is gone. Advisory: link an orphan from its parent or index note, or fix the
+  link; never delete a note to silence it. `SKIPPED` means okf-memory is not installed, so those are unchecked.
+
 - A `Refused notes` line means a `*.md` is a device, pipe or socket, or is above `okf_check.max_note_bytes` (default
   5242880 bytes): no layer opened it, and the run exits 1. Remove or replace it, or leave it out with `.okfignore`. Never
   point a symlink named like a note at a device. A folder named like a note gets a `Skipped folders  WARN` line and the
@@ -143,7 +147,8 @@ when it cannot run.
 
 For a team that edits in an Obsidian-style vault: the vault stays the source, and the export is a bundle
 `okf-check` can gate. Body `[[note]]`, `[[note|alias]]`, `[[note#heading]]` and `[[#heading]]` become relative
-Markdown links; frontmatter and code (fenced or indented) are copied unchanged. A vault `index.md` note is renamed to
+Markdown links; frontmatter and code (fenced or indented) are copied unchanged. Targets match as Obsidian matches them
+(exact first, then ignoring case), and a setext heading (underlined with `===` or `---`) is a heading a link can name. A vault `index.md` note is renamed to
 the folder note (`dir/dir.md`) and spec index files are generated (root carries `okf_version`); a rename collision
 stops the export with exit 2, and so do two names that differ only in case when `<out>` is on a case-insensitive disk. A vault `log.md` note becomes the spec log (dated lines grouped, newest first; every `## ` heading must
 be a date). Exit 1 lists every missing or ambiguous target, missing heading, malformed date, non-date `## ` heading,
@@ -152,7 +157,7 @@ empty, inside the vault, or cannot be written). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.34`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.35`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

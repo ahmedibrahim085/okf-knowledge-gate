@@ -40,9 +40,16 @@ except OSError:
 opt = ((cfg.get("okf_check") or {}).get("duplicates") or {}) if isinstance(cfg, dict) else {}
 threshold = opt.get("threshold", schema["threshold"]["default"])
 body_threshold = opt.get("body_threshold", schema["body_threshold"]["default"])
-# OKF_DUP_TIME_LIMIT exists for tests (like OKF_TODAY): it makes a cut-short run deterministic.
+# OKF_DUP_TIME_LIMIT exists for tests (like OKF_TODAY): it makes a cut-short run deterministic. OKF_DUP_CUT_AT (tests
+# only) names the pass the limit is reached in (read, pairs, body), so each pass's report can be pinned without a race.
 limit = float(os.environ.get("OKF_DUP_TIME_LIMIT") or opt.get("time_limit", schema["time_limit"]["default"]))
 deadline = time.monotonic() + limit
+CUT_AT = os.environ.get("OKF_DUP_CUT_AT", "")
+MIN_BODY_WORDS = 5   # one shingle: a shorter body ("TODO") is the same single shingle in every stub, so every stub scored 1.00
+
+
+def over(phase):
+    return CUT_AT == phase or time.monotonic() > deadline
 
 
 def norm(s):
@@ -78,8 +85,12 @@ for p in sorted(root.rglob("*.md")):
 for line in refused:
     print("okf-duplicates: " + line, file=sys.stderr)
 
-notes = []
-for p in sorted(by_real.values()):
+notes, cut_in, short_bodies = [], None, 0
+to_read = sorted(by_real.values())
+for p in to_read:
+    if over("read"):
+        cut_in = "read"   # the limit covers reading too: a bundle of huge notes stops here, and says so
+        break
     m = meta(p)
     gen = m.get("generated") if isinstance(m.get("generated"), dict) else {}
     sb = m.get("superseded_by") or []
@@ -96,16 +107,19 @@ for p in sorted(by_real.values()):
             t = ""   # a dangling symlink, an unreadable file or a folder named x.md: no body, not a crash (advisory report)
         e = t.find("\n---", 3) if t.startswith("---") else -1
         w = norm(t[e + 4:] if e >= 0 else t).split()
-        shingles = {" ".join(w[i:i + 5]) for i in range(max(1, len(w) - 4))} if w else set()
+        if 0 < len(w) < MIN_BODY_WORDS:
+            short_bodies += 1   # not compared on body; still compared on title, description and sources
+        shingles = {" ".join(w[i:i + 5]) for i in range(len(w) - 4)} if len(w) >= MIN_BODY_WORDS else set()
     notes.append({"rel": rel, "real": os.path.realpath(str(p)), "succ": succ, "res": res, "sh": shingles,
                   "title": norm(m.get("title") or ""), "words": set(norm(m.get("description") or "").split()),
                   "status": str(m.get("status") or "-"), "at": str(gen.get("at") or "-"),
                   "owner": owners.get(rel) or str(m.get("owner") or "-")})
 
-pairs, compared, total, cut = [], 0, len(notes) * (len(notes) - 1) // 2, False
+# Of all the notes, not only those read before a cut (review 0.9.35), so an incomplete run reads "0 of N pairs".
+pairs, compared, total, cut = [], 0, len(to_read) * (len(to_read) - 1) // 2, cut_in is not None
 for a, b in itertools.combinations(notes, 2):
-    if compared % 1000 == 0 and time.monotonic() > deadline:
-        cut = True   # S7-E1: stop, and say how far the comparison got
+    if cut or (compared % 1000 == 0 and over("pairs")):
+        cut, cut_in = True, cut_in or "pairs"   # S7-E1: stop, and say how far the comparison got
         break
     compared += 1
     if a["real"] == b["real"]:
@@ -133,11 +147,12 @@ if with_body and not cut:
     P61, rnd = (1 << 61) - 1, random.Random(70)
     perms = [(rnd.randrange(1, P61), rnd.randrange(0, P61)) for _ in range(64)]
     listed = {(x["a"]["rel"], x["b"]["rel"]) for x in pairs}
-    buckets = {}
+    buckets, signed, checked = {}, 0, 0
     for idx, n in enumerate(notes):
-        if time.monotonic() > deadline:
-            cut = True
+        if over("body"):
+            cut, cut_in = True, "body"
             break
+        signed = idx + 1
         if not n["sh"]:
             continue
         hs = [int.from_bytes(hashlib.blake2b(x.encode(), digest_size=8).digest(), "big") for x in n["sh"]]
@@ -149,6 +164,10 @@ if with_body and not cut:
         if cut:
             break
         for i, j in itertools.combinations(members, 2):
+            checked += 1
+            if checked % 1000 == 0 and time.monotonic() > deadline:
+                cut, cut_in = True, "body"   # inside the bucket: 1,500 notes in one bucket ran 2 s past the limit
+                break
             if (i, j) in seen:
                 continue
             seen.add((i, j))
@@ -158,18 +177,30 @@ if with_body and not cut:
             jb = len(a["sh"] & b["sh"]) / len(a["sh"] | b["sh"])
             if jb >= body_threshold:
                 pairs.append({"signal": "body", "score": round(jb, 2), "a": a, "b": b})
-        if time.monotonic() > deadline:
-            cut = True
+        if not cut and time.monotonic() > deadline:
+            cut, cut_in = True, "body"
 
 if as_json:
     side = lambda n: {k: n[k] for k in ("rel", "status", "at", "owner")}
-    print(json.dumps({"bundle": bundle, "exit": 0, "complete": not cut, "compared": compared, "pairs_total": total,
+    print(json.dumps({"bundle": bundle, "exit": 0, "complete": not cut, "cut_in": cut_in, "notes_read": len(notes),
+                      "notes_total": len(to_read), "body_short": short_bodies, "compared": compared, "pairs_total": total,
                       "duplicates": [{"signal": x["signal"], "score": x["score"], "a": side(x["a"]), "b": side(x["b"])}
                                      for x in pairs]}))
     sys.exit(0)
-if cut:
+if cut_in == "read":
+    print("  Duplicates       CUT SHORT after %g s (okf_check.duplicates.time_limit) while reading notes: %d of %d notes read,"
+          " no pair compared" % (limit, len(notes), len(to_read)))
+elif cut_in == "body":
+    how = ("bodies of %d of %d notes hashed" % (signed, len(notes)) if signed < len(notes)
+           else "%d body candidate pair(s) checked before the stop" % checked)
+    print("  Duplicates       CUT SHORT after %g s (okf_check.duplicates.time_limit) in the body comparison: all %d pairs"
+          " compared on title, description and sources, %s; the list below is partial" % (limit, total, how))
+elif cut:
     print("  Duplicates       CUT SHORT after %g s (okf_check.duplicates.time_limit): %d of %d pairs compared;"
           " the list below is partial" % (limit, compared, total))
+if short_bodies:
+    print("  Duplicates       %d note(s) with a body under %d words not compared on body (title, description and"
+          " sources still compared)" % (short_bodies, MIN_BODY_WORDS))
 if not pairs:
     print("  Duplicates       no candidate duplicates" + (" among the pairs compared" if cut else ""))
 else:

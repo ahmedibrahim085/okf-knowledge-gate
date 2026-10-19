@@ -22,7 +22,7 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 - **One verdict you can gate on.** `okf-check` runs every layer. Exit 1 means "not valid", exit 2 means "could not run",
   and a skipped layer is printed as SKIPPED and never shown as PASS (the exit code stays 0, and the verdict line reports
   a skipped layer). `--selftest` plants one defect in each of L0 (doctor), L1, L2 (profile), L2 (index), Trust,
-  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule, the Size rule, the Facts rule, `wikilink_root`, `--duplicates` and `--duplicates-body` and fails if a gate misses it. Without `okflint` the L2 profile probes are
+  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule, the Size rule, the Facts rule, the Config check, a lookalike `human:`, `wikilink_root`, `--duplicates`, `--duplicates-body` and (when okf-memory is installed) L2 graph, and fails if a gate misses it. Without `okflint` the L2 profile probes are
   SKIPPED, and the verdict line names them.
 - **The same check in three places.** Claude Code (hooks, plus a skill an agent reads), a GitHub Action, and a pre-commit
   hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)).
@@ -171,7 +171,7 @@ continuation lines) are grouped by date, newest first, under the note's own `# t
 date, as spec 9 requires. Exit 1 lists each missing or ambiguous target, missing heading, malformed date, `## ` heading
 that is not a date (with the lines left out under it), undated log line, log frontmatter and log with no dated entry as
 `file:line` (the bundle is still written); exit 2 means nothing was written (`<out>` is not empty, is inside the
-vault or cannot be written, or two notes would be written to one name). A target is matched by its exact case (Obsidian ignores case). The vault is only read.
+vault or cannot be written, or two notes would be written to one name). A target is matched as Obsidian matches it: an exact match first, then ignoring case (two files that differ only in case are reported as ambiguous). Setext headings (a line underlined with `===` or `---`) are headings a `[[note#heading]]` link can name. The vault is only read.
 
 A near-miss actor is a wrongly written actor such as `Human:dana`. OKF reads it as an agent, so a person's review is
 lost without any other symptom. `--strict-trust` fails on it.
@@ -190,16 +190,25 @@ Read the exit code, do not just test for zero:
 | 64 | Usage error: no bundle, an unknown flag, or a path that is not a folder |
 
 **Leave paths out:** put globs in `<bundle>/.okfignore` (`archive/`, `.trash/`; a leading `**/` matches at any depth,
-the root included). Every layer skips them and the run says how many files it excluded. The plugin never creates the
-file by itself.
+the root included). Every layer skips them and the run says how many files it excluded. A symlinked note whose target is
+ignored is ignored too, and a symlinked folder that `.okfignore` excludes is not named on the `symlinks` line (`--json`
+`symlinked_folders` lists the ones it names). The plugin never creates the file by itself.
 
 **okf-check's own options** live in one `okf_check:` block of `okf-base.yaml`. Every option is off until you set it.
 `okflint` ignores the block (measured: the L2 warning count is the same with and without it), and both `okf-check` and
 `okf-verify` check it against one schema, `plugin/config/okf-check-block.json`: a key it does not know, or a value of the
 wrong shape, exits 2 and names the key, so a typo cannot switch an option off without a word. Known keys: `verify`
 (read by `okf-verify`; `repos` is a list of `path:` entries), `deprecated_requires`, `require_owner`, `owners`,
-`size`, `facts`, `duplicates`, `wikilink_root` and `edit_hook` (`true` turns the edit hook on for this bundle; a boolean, so a string
-such as `"on"` is refused).
+`size`, `facts`, `duplicates`, `wikilink_root`, `graph` (`true` runs the optional okf-memory layer, below) and `edit_hook`
+(`true` turns the edit hook on for this bundle). A true/false option takes `true` or `false` only: a string such as `"on"` is
+refused, and so is an unquoted `yes`, `no`, `on` or `off`, which this reader takes as a boolean and other YAML readers as a word.
+
+**The optional okf-memory layer (L2 graph).** [okf-memory](https://github.com/okf-memory/okf-agent-memory) (MIT, a single Go
+binary called `okf`) finds what no layer here looks for: notes that no other note links to (orphans) and concept links whose
+target is gone. With `okf_check: {graph: true}` (or `OKF_MEMORY_BIN` set), `okf-check` runs its read-only `okf validate --json`
+on the frozen copy and prints the findings as advisories (`L2 graph  WARN  2 broken concept link(s), 5 orphan(s)`; `--json`
+`l2_graph`). The exit code does not change. When okf-memory is not installed the line says SKIPPED and what is unchecked; a
+different tool that is also called `okf` is not mistaken for it. The plugin never installs or downloads it.
 
 ```yaml
 okf_check:
@@ -336,10 +345,13 @@ title (case, punctuation and spacing ignored), the same `sources[].resource`, or
 above `okf_check.duplicates.threshold` (default `1.0`, identical word sets; on our labelled sample, lower values
 flagged templated series, not duplicates). Each pair shows the signal and score, both statuses, `generated.at` and
 owners. Pairs linked by `superseded_by` are skipped. It is a report, not a gate: exit 0. It stops at
-`okf_check.duplicates.time_limit` seconds (default 60) and says `CUT SHORT` if it did. `--json` gives `duplicates[]`.
+`okf_check.duplicates.time_limit` seconds (default 60), which covers reading the notes too, and says `CUT SHORT` and in
+which pass (reading, the pair comparison, the body comparison) if it did. `--json` gives `duplicates[]`, and `complete`,
+`cut_in`, `notes_read` and `notes_total`.
 `--duplicates-body` adds pairs whose bodies share 5-word shingles at or above `okf_check.duplicates.body_threshold`
 (default `0.6`; on our labelled live sample, 0.3 flagged as many unrelated notes as duplicates), found with MinHash
-and then checked exactly, within the same time limit.
+and then checked exactly, within the same time limit. A body under 5 words (a stub such as `TODO`) is not compared on its
+body, since every such stub is the same single shingle; the report counts those notes (`--json` `body_short`).
 
 **Environment variables** (all optional):
 
@@ -353,9 +365,11 @@ and then checked exactly, within the same time limit.
 | `OKF_SEARCH_BIN` | `okf` on PATH | The `okf` search binary the doc-reuse reminder uses to name the closest notes. |
 | `OKF_DOC_DIRS_FILE` | `~/.config/okf/doc-dirs` | File of extra shell globs for locations the doc-reuse guard watches. |
 | `OKF_EDIT_HOOK` | off | `1` turns the edit hook on for every bundle, without the `edit_hook` key. |
-| `OKF_EDIT_HOOK_TIMEOUT` | `plugin/config/edit-hook.json` | Seconds the edit hook waits for the check before it gives up silently. |
+| `OKF_EDIT_HOOK_TIMEOUT` | `plugin/config/edit-hook.json` | Seconds the edit hook waits for the check before it gives up silently, capped at `max_seconds`. A value that is not a positive number uses the default. |
+| `OKF_MEMORY_BIN` | `okf` on PATH | The okf-memory binary for the L2 graph layer; setting it also turns the layer on. |
+| `OKF_GRAPH_TIMEOUT` | 60 | Seconds okf-memory may run before the L2 graph line says COULD NOT RUN. |
 
-`OKF_TODAY`, `OKF_PINNED_VERSIONS`, `OKF_BUNDLE_DIR`, `OKF_DUP_TIME_LIMIT` and `OKF_FORGE_API_BASE` exist for tests and replays.
+`OKF_TODAY`, `OKF_PINNED_VERSIONS`, `OKF_BUNDLE_DIR`, `OKF_DUP_TIME_LIMIT`, `OKF_DUP_CUT_AT` and `OKF_FORGE_API_BASE` exist for tests and replays.
 `okf-verify --remote` reads `GITHUB_TOKEN` (or `GH_TOKEN`) for GitHub and `GITLAB_TOKEN` for GitLab, each sent only to its own
 forge (a self-hosted GitLab must be named in `OKF_GITLAB_HOSTS`); without one it asks anonymously (GitHub allows 60 lookups an
 hour). `OKF_FACTS_TIMEOUT` (default 60) is the seconds the `okf_check.facts` patterns may run before the Facts line says
@@ -374,7 +388,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.34
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.35
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -390,7 +404,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.34
+    rev: v0.9.35
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -511,7 +525,10 @@ fix. A change is reviewed on two axes (standards and spec) before it is released
    (tests LT-37f and LT-41a).
 2. Add a `## [x.y.z] - YYYY-MM-DD` section to [`CHANGELOG.md`](CHANGELOG.md).
 3. Run the suites and `--selftest`, on macOS and on Linux: `tools/linux-gate.sh` streams the committed tree
-   into a Debian container (settings in `tools/linux-gate.conf`; Docker context from `OKF_DOCKER_CONTEXT`), and
+   into a Debian container (settings in `tools/linux-gate.conf`; Docker context from `OKF_DOCKER_CONTEXT`; the suites run
+   four at a time, the provisioned image is reused across runs with `OKF_LINUX_CACHE=1`, and `OKF_LINUX_CA_FILE` names a CA
+   bundle to trust behind a proxy that re-signs TLS: it is bind-mounted, so with a remote Docker context the same path must
+   hold it on the Docker host), and
    `tools/macos-gate.sh <log>` runs the same suite list on this Mac's working tree, holding the heavy-suite lock (a lock
    left by a killed gate is taken over) and writing a machine sample every 5 s to `<log>.samples`. Both gates run each
    suite with stdin from `/dev/null` under a time limit (`OKF_GATE_SUITE_TIMEOUT`) and pass it only when it exits 0 and

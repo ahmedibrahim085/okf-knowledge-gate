@@ -49,6 +49,25 @@ CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`).+?(?<!`)\1(?!`)")
 # A problem line quotes link text and file names from the vault, and a person or Claude reads it: control characters
 # become "?" (the edit hook's set, 0.9.13 review).
 CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+# A setext heading: the paragraph above is the heading text, underlined with = (level 1) or - (level 2).
+SETEXT = re.compile(r"^ {0,3}(?:=+|-+)[ \t]*$")
+# A thematic break: three or more of one of - * _ (spaces between allowed). Under a paragraph a - line is a setext underline.
+THEMATIC = re.compile(r"^ {0,3}([-*_])(?:[ \t]*\1){2,}[ \t]*$")
+
+
+def split_lines(text: str) -> list[str]:
+    """The lines as an editor counts them, line ends kept: \n, \r\n or a lone \r ends a line (str.splitlines also splits
+    at \f, \x1c and \u2028, which moved every later line number of the report; 0.9.14 re-verify)."""
+    return re.findall(r"[^\r\n]*(?:\r\n|\n|\r)|[^\r\n]+$", text)
+
+
+def plugin_version() -> str:
+    """The plugin's version, from .claude-plugin/plugin.json (the one place bump-version.sh moves for this tool)."""
+    import json
+    try:
+        return json.loads((Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
+    except (OSError, ValueError, KeyError):
+        return "unknown"
 
 
 def slug(heading: str) -> str:
@@ -110,10 +129,33 @@ def read_text(path: Path) -> str:
 @functools.lru_cache(maxsize=None)   # one read per target, however many links point at it
 def heading_slugs(path: Path) -> set[str]:
     try:
-        lines = read_text(path).lstrip("\ufeff").splitlines()   # a BOM is not part of the first heading line
+        lines = [l.rstrip("\r\n") for l in split_lines(read_text(path).lstrip("\ufeff"))]   # a BOM is not part of the first heading line
     except UnicodeDecodeError:
         return set()   # the target is reported on its own as not valid UTF-8; a heading in it cannot be found
-    return {slug(m.group(1)) for _, line, code in body_lines(lines) if not code and (m := ATX.match(line))}
+    found, para = set(), []   # para: the paragraph lines above, the text of a setext heading
+    in_list, blank = False, False   # a list continues until a blank line and then an unindented line that is no item
+    for _, line, code in body_lines(lines):
+        m = None if code else ATX.match(line)
+        if not code and line.strip():
+            if LIST_ITEM.match(line):
+                in_list = True
+            elif in_list and blank and not line[:1].isspace():
+                in_list = False
+        if m:
+            found.add(slug(m.group(1)))
+            para, in_list = [], False
+        elif code or not line.strip() or in_list:
+            para = []   # a list item's text and its continuation lines are not a paragraph: `---` after them is a break
+        elif para and SETEXT.match(line):
+            found.add(slug(" ".join(x.strip() for x in para)))
+            para = []
+        elif THEMATIC.match(line):
+            para = []   # `***`, or `---` with no paragraph above: a break, never heading text (review 0.9.35)
+        else:
+            para.append(line)
+        if not code:
+            blank = not line.strip()
+    return found
 
 
 # Spec 9 log input, read from a vault log.md: a level-2 heading (`## 2026-05-22`) whose lines are that day's entries,
@@ -321,6 +363,7 @@ def fail(msg: str) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Export an Obsidian-style vault folder to an OKF bundle.")
+    ap.add_argument("--version", action="version", version=f"okf-export {plugin_version()}")
     ap.add_argument("vault", type=Path)
     ap.add_argument("out", type=Path)
     args = ap.parse_args()
@@ -330,7 +373,9 @@ def main() -> int:
         return fail(f"{args.vault} is not a folder")
     if out == vault or vault in out.parents:
         return fail(f"{args.out} is inside the vault {args.vault}; choose a folder outside it")
-    if out.exists() and (not out.is_dir() or any(out.iterdir())):
+    if out.exists() and not out.is_dir():
+        return fail(f"{args.out} exists and is not a folder")
+    if out.exists() and any(out.iterdir()):
         return fail(f"{args.out} exists and is not empty")
     # Dot files and folders hold note-tool settings (.obsidian), VCS data (.git) or OS clutter (.DS_Store), not knowledge.
     files = sorted(rel for rel in (p.relative_to(vault) for p in vault.rglob("*") if p.is_file())
@@ -343,15 +388,22 @@ def main() -> int:
     files = [rel for rel in files if rel not in skip]
     fileset = set(files)
     by_name: dict[str, list[Path]] = {}
+    by_name_ci: dict[str, list[Path]] = {}
+    by_path_ci: dict[str, list[Path]] = {}
     for p in files:
         by_name.setdefault(p.name, []).append(p)
+        by_name_ci.setdefault(p.name.lower(), []).append(p)   # lower(), as Obsidian: casefold() would match ß to ss
+        by_path_ci.setdefault(p.as_posix().lower(), []).append(p)
 
     def resolve(name: str) -> list[Path]:
         """Obsidian's rule: a target with '/' is a vault-root path, a bare name is a file name anywhere
-        in the vault. Either may leave out '.md'."""
+        in the vault. Either may leave out '.md'. An exact match wins; otherwise case is ignored, as Obsidian
+        ignores it, and two files that differ only in case are both returned (ambiguous)."""
         if "/" in name:
-            return [p for p in (Path(name), Path(name + ".md")) if p in fileset][:1]
-        return by_name.get(name) or by_name.get(name + ".md") or []
+            exact = [p for p in (Path(name), Path(name + ".md")) if p in fileset][:1]
+            return exact or by_path_ci.get(name.lower()) or by_path_ci.get((name + ".md").lower()) or []
+        return (by_name.get(name) or by_name.get(name + ".md")
+                or by_name_ci.get(name.lower()) or by_name_ci.get((name + ".md").lower()) or [])
 
     out_rel = functools.partial(vault_out_rel, root_name=vault.name)
 
@@ -400,7 +452,7 @@ def main() -> int:
             shutil.copy2(vault / rel, dest)
             continue
         try:
-            lines = read_text(vault / rel).splitlines(keepends=True)
+            lines = split_lines(read_text(vault / rel))
         except UnicodeDecodeError:
             problems.append(f"{rel.as_posix()}:1: not valid UTF-8, copied unchanged")
             shutil.copy2(vault / rel, dest)

@@ -56,7 +56,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.34"
+VERSION="0.9.35"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -204,7 +204,7 @@ PY
   _t="[]"; [ -s "$TMP/trust.json" ] && _t=$(cat "$TMP/trust.json"); [ "${TRUST_RAN:-1}" -eq 0 ] && _t=null
   if [ -n "$PY" ]; then
     _b=$(printf '%s' "$BUNDLE" | "$PY" -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))')
-    _f=$(OKF_SIZES_JSONL="$TMP/sizes.jsonl" OKF_FACTS_JSONL="$TMP/facts.jsonl" "$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
+    _f=$(OKF_SIZES_JSONL="$TMP/sizes.jsonl" OKF_FACTS_JSONL="$TMP/facts.jsonl" OKF_SYMLINKED_LST="$TMP/symlinked-folders.lst" OKF_GRAPH_JSON="$TMP/graph.json" "$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
 import json, os, sys
 # Layers that read a filtered copy (.okfignore, crash isolation) hand okflint the copy's path, and some of its messages
 # print it (R201: "reserved file missing in <root>"). The report names the bundle the user pointed at; the copy is
@@ -260,6 +260,18 @@ try:
     rows = open(os.environ.get("OKF_SIZES_JSONL", ""), encoding="utf-8").read().splitlines()
     out["sizes"] = [json.loads(r) for r in rows if r]
 except (OSError, ValueError):
+    pass
+# Present only when the optional okf-memory layer ran: its orphans and broken concept links.
+try:
+    out["l2_graph"] = json.load(open(os.environ.get("OKF_GRAPH_JSON", ""), encoding="utf-8"))
+except (OSError, ValueError):
+    pass
+# Present only when a symlinked folder was left out: the paths the text report names on its symlinks line (F-6).
+try:
+    rows = open(os.environ.get("OKF_SYMLINKED_LST", ""), encoding="utf-8", errors="replace").read().splitlines()
+    if rows:
+        out["symlinked_folders"] = rows
+except OSError:
     pass
 # Present only when okf_check.facts is set: every statement of a declared fact and whether it agrees (okf-knowledge-gate#15).
 try:
@@ -372,9 +384,14 @@ unreadable_dirs() {
 # report_folder_links <bundle>: name the symlinked folders no layer enters (okf_md_files in l3-lib.sh, S8-N1), so
 # notes behind them are left out on the record, never silently. Silent when there are none.
 report_folder_links() {
-  local links n
+  local links n l
   links=$(okf_folder_links "$1")
+  # A folder link that .okfignore excludes is out of the bundle on purpose: not named (F-6).
+  if [ -n "$links" ] && okfignore_present "$1" && { okfignore_load "$1" 2>/dev/null; [ $? -ne 2 ]; }; then
+    links=$(printf '%s\n' "$links" | while IFS= read -r l; do okfignore_match "$l" dir || printf '%s\n' "$l"; done)
+  fi
   [ -n "$links" ] || return 0
+  printf '%s\n' "$links" > "$TMP/symlinked-folders.lst"   # --json symlinked_folders
   n=$(printf '%s\n' "$links" | grep -c .)
   say "  symlinks         $n symlinked folder(s) not entered (an alias of a folder in the bundle, or outside it):"
   printf '%s\n' "$links" | say_capped 10 "                   "
@@ -787,6 +804,15 @@ doctor() {
   fi
 
   command -v jq >/dev/null 2>&1 && say "  jq                 present (optional)" || say "  jq                 absent (optional — not required)"
+  local omb
+  # Only on an explicit --doctor: every run calls doctor(), and a binary on PATH is never started for a run that did not opt in.
+  if [ "$MODE" != doctor ]; then :
+  elif omb=$(okf_memory_bin); then
+    "$PY" "$HERE/okf-limit.py" 10 512 "$TMP/okfmem-version.out" -- "$omb" version >/dev/null 2>&1
+    say "  okf-memory         $(head -1 "$TMP/okfmem-version.out" 2>/dev/null | sed 's/^okf version //')  (optional: L2 graph with okf_check.graph: true)"
+  else
+    say "  okf-memory         absent (optional — L2 graph, orphans and broken concept links; set OKF_MEMORY_BIN)"
+  fi
   say ""
   OKFLINT_STATE="$okflint_state"
   # EXIT_DEP, not a bare 1: `1` is EXIT_CONFORM, so returning it here made
@@ -964,10 +990,18 @@ run_config() {   # $1 the real bundle (paths in the block resolve against it), $
     done <<< "$(printf '%s\n' "$out" | awk -F'\t' '$1=="misplaced"{print $2 "\t" $3}')"
     return 0
   fi
-  # The shortest prefix: a value that itself names okf-base.yaml must stay in the message.
-  out=$(printf '%s' "$out" | tail -n 1); out=${out#error: }; out=${out#*okf-base.yaml }
-  say "  Config           COULD NOT RUN — okf-base.yaml: $out"
-  record error "okf-base.yaml: $out"
+  out=$(printf '%s' "$out" | tail -n 1)
+  if [ ! -f "$ROOT/scripts/okf-verify" ]; then
+    # The checker itself is gone: python's "can't open file" is not a fault of okf-base.yaml (0.9.4 register).
+    out="the config check cannot run: $ROOT/scripts/okf-verify is missing (reinstall the plugin)"
+  elif [ "$rc" -eq 2 ] && [ "${out#error: }" != "$out" ]; then
+    # The shortest prefix: a value that itself names okf-base.yaml must stay in the message.
+    out=${out#error: }; out="okf-base.yaml: ${out#*okf-base.yaml }"
+  else
+    out="the config check failed (okf-verify --check-config exit $rc${out:+: $out})"
+  fi
+  say "  Config           COULD NOT RUN — $out"
+  record error "$out"
   return $EXIT_DEP
 }
 
@@ -1265,6 +1299,76 @@ run_facts() {
     return $EXIT_CONFORM
   fi
   say "  Facts            PASS   $(printf '%s\n' "$out" | sed -n 's/^N|//p' | awk -F'|' '{print $1 " fact(s), " $2 " statement(s) agree"}')"
+  return 0
+}
+
+# ------------------------------------------------------- L2 graph (optional okf-memory layer, .scratch okf-ecosystem)
+# okf-memory (github.com/okf-memory/okf-agent-memory, MIT) finds what no layer here looks for: notes no other note links to
+# (orphans) and concept links whose target is gone. Opt-in: okf_check.graph: true in okf-base.yaml, or OKF_MEMORY_BIN set.
+# Only its read-only `validate` is run, on the frozen copy, under the watchdog; its findings are advisories (exit code
+# unchanged). Never installed or downloaded here.
+# okf_memory_bin: OKF_MEMORY_BIN, else `okf` on PATH when its help names "OKF Agent Memory": other tools are called okf too.
+okf_memory_bin() {
+  local b="${OKF_MEMORY_BIN:-}"
+  [ -n "$b" ] || b=okf
+  case "$b" in */*) ;; *) b=$(command -v "$b" 2>/dev/null) || return 1 ;; esac   # a bare name is looked up on PATH
+  [ -x "$b" ] && [ -n "$PY" ] || return 1
+  "$PY" "$HERE/okf-limit.py" 10 512 "$TMP/okfmem-help.out" -- "$b" --help >/dev/null 2>&1
+  grep -q 'OKF Agent Memory' "$TMP/okfmem-help.out" 2>/dev/null || return 1
+  printf '%s' "$b"
+}
+graph_wanted() {
+  [ -n "${OKF_MEMORY_BIN:-}" ] && return 0
+  [ -f "$1/okf-base.yaml" ] && grep -q 'graph' "$1/okf-base.yaml" 2>/dev/null || return 1   # no python unless the manifest names it
+  py_with_vendor - "$1/okf-base.yaml" "$ROOT/vendor" <<'PY' 2>/dev/null
+import sys
+sys.path.insert(0, sys.argv[2])
+from okf_validate import load_frontmatter
+d = load_frontmatter(open(sys.argv[1], encoding="utf-8").read()) or {}
+sys.exit(0 if isinstance(d, dict) and isinstance(d.get("okf_check"), dict) and d["okf_check"].get("graph") is True else 1)
+PY
+}
+run_graph() {
+  local bundle="$1" bin secs ec nb no
+  [ "${CONFIG_RC:-0}" -eq 0 ] && graph_wanted "$bundle" || return 0
+  if ! bin=$(okf_memory_bin); then
+    SKIPPED=$((${SKIPPED:-0} + 1)); record skipped "L2 graph: okf-memory not found"
+    say "  L2 graph         SKIPPED — okf-memory not found (set OKF_MEMORY_BIN, or put its \`okf\` on PATH): orphans and broken concept links are UNCHECKED"
+    return 0
+  fi
+  secs="${OKF_GRAPH_TIMEOUT:-60}"; case "$secs" in ''|*[!0-9]*|0) secs=60 ;; esac
+  run_limited "$secs" "$TMP/graph.out" "$bin" validate "$bundle" --json; ec=$?
+  # Exit 0 or 1 (okf-memory exits 1 on a non-conformant bundle, with its report) and both keys present, else no verdict:
+  # an error exit, or a changed output format, must not read as a clean graph (review 0.9.35).
+  if [ "$ec" -gt 1 ] || ! "$PY" - "$TMP/graph.out" "$TMP/graph.json" "$TMP/graph.txt" <<'PY' 2>/dev/null; then
+import json, sys
+d = json.load(open(sys.argv[1], encoding="utf-8", errors="replace"))
+# Both keys must be there; okf-memory v0.6.2 writes null for an empty list (review 0.9.35 round 2).
+if not (isinstance(d, dict) and all(k in d and (d[k] is None or isinstance(d[k], list)) for k in ("broken_links", "orphans"))):
+    sys.exit(1)
+broken = ["%s -> %s" % (b.get("source_concept"), b.get("target_href")) for b in d.get("broken_links") or []]
+orphans = [str(o) for o in d.get("orphans") or []]
+json.dump({"broken_links": broken, "orphans": orphans}, open(sys.argv[2], "w"))
+with open(sys.argv[3], "w") as f:
+    f.write("%d %d\n" % (len(broken), len(orphans)))
+    f.writelines("broken link: %s\n" % b for b in broken)
+    f.writelines("orphan: %s\n" % o for o in orphans)
+PY
+    ADVISORIES=$((ADVISORIES + 1))
+    if [ "$ec" -eq 143 ]; then say "  L2 graph         COULD NOT RUN — okf-memory timed out after $secs s (OKF_GRAPH_TIMEOUT); not a pass"
+    elif [ "$ec" -gt 1 ]; then say "  L2 graph         COULD NOT RUN — okf-memory exited $ec; not a pass"
+    else say "  L2 graph         COULD NOT RUN — okf-memory exited $ec without a readable report; not a pass"; fi
+    record skipped "L2 graph: okf-memory gave no readable report"
+    return 0
+  fi
+  read -r nb no < "$TMP/graph.txt"
+  if [ "$nb" -eq 0 ] && [ "$no" -eq 0 ]; then
+    say "  L2 graph         PASS   no orphan note, no broken concept link (okf-memory)"
+    return 0
+  fi
+  ADVISORIES=$((ADVISORIES + nb + no))
+  say "  L2 graph         WARN   $nb broken concept link(s), $no orphan(s) (okf-memory; advisory)"
+  tail -n +2 "$TMP/graph.txt" | say_capped 20 "                   "
   return 0
 }
 
@@ -2106,6 +2210,14 @@ selftest() {
     skipped="$skipped, L2 (house profile)"
   fi
 
+  if _omb=$(okf_memory_bin); then
+    say "  L2 graph (okf-memory):"
+    _graph_probe() { local OKF_MEMORY_BIN="$_omb"; run_graph "$1"; }
+    probe "broken concept link" "broken link: bad.md -> missing.md" _graph_probe "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\nSee [x](missing.md).\n'
+  else
+    say "  L2 graph (okf-memory): SKIPPED — okf-memory absent (optional, opt-in layer)"
+  fi
+
   say "  L2 (index):"
   # The baseline holds one concept; an index.md that declares five does not describe it.
   probe "index.md count wrong" "does not describe this bundle" run_index "index.md" '---\nokf_version: "0.2"\n---\n# Selftest\n\n**5 notes**\n'
@@ -2113,6 +2225,18 @@ selftest() {
   say "  Trust (C4):"
   # A trust layer that stops firing must fail the selftest too: a gate that cannot fail is worthless.
   probe "draft + human verifier -> C4" "draft with human verification" run_trust "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: draft\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - by: human:selftest\n    at: "2026-02-01"\nstale_after: "2099-01-01"\n---\nbody\n'
+
+  probe "lookalike human: -> named" "only looks like \`human:\`" run_trust "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - by: "\\u04bb\\u03c5\\u043c\\u0430\\u043f:selftest"\n    at: "2026-02-01"\nstale_after: "2099-01-01"\n---\nbody\n'
+
+  say "  Config (okf_check block):"
+  # A block the schema refuses must stop the run (exit 2), never be read as "nothing declared".
+  _cfg_probe() {
+    local had=0; [ -f "$1/okf-base.yaml" ] && had=1 && cp -p "$1/okf-base.yaml" "$TMP/selftest-cfg.keep"
+    printf 'okf_check:\n  no_such_option: true\n' >> "$1/okf-base.yaml"
+    run_config "$1"
+    if [ "$had" = 1 ]; then mv "$TMP/selftest-cfg.keep" "$1/okf-base.yaml"; else rm -f "$1/okf-base.yaml"; fi
+  }
+  probe "unknown okf_check option" "no_such_option is not a known key" _cfg_probe "" ""
 
   say "  L3 (staleness):"
   # Marker is "need attention", NOT "expired": the PASS line reads "nothing
@@ -2185,8 +2309,14 @@ selftest() {
 
   say "  Duplicates (--duplicates-body):"
   # A note whose body equals the baseline note's ("body") must be listed as a body pair.
-  _body_probe() { local DUP_BODY=1; run_duplicates "$1"; }
-  probe "same body" "body 1.00" _body_probe "bad.md" '---\ntype: Lesson\ntitle: Other\ndescription: Another text.\nstatus: stable\nstale_after: "2099-01-01"\n---\nbody\n'
+  # Two notes with one body of at least 5 words (a shorter body is a stub, never a body signal): the planted note and a
+  # copy under another title and description, so only the body can pair them.
+  _body_probe() {
+    local DUP_BODY=1
+    sed -e 's/^title: .*/title: Copy/' -e 's/^description: .*/description: Third text./' "$1/bad.md" > "$1/bad-copy.md"
+    run_duplicates "$1"; rm -f "$1/bad-copy.md"
+  }
+  probe "same body" "body 1.00" _body_probe "bad.md" '---\ntype: Lesson\ntitle: Other\ndescription: Another text.\nstatus: stable\nstale_after: "2099-01-01"\n---\nthe same body text in both notes\n'
 
   say "  Scoped (--file):"
   # The edit hook reads "nothing printed" as a clean note, so a helper that loses its findings must fail here.
@@ -2422,6 +2552,7 @@ fi
 L2_SRC="$BUNDLE"
 run_profile     "$LAYER_BUNDLE"; worse_other $?
 run_index       "$LAYER_BUNDLE"; worse_other $?
+run_graph       "$LAYER_BUNDLE"; worse_other $?
 run_successor   "$LAYER_BUNDLE"; worse_other $?
 run_owner       "$LAYER_BUNDLE"; worse_other $?
 run_size        "$LAYER_BUNDLE"; worse_other $?

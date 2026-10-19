@@ -9,6 +9,28 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.35] - 2026-10-19
+
+OKF Knowledge Gate 0.9.35 clears the backlog's "later" list: an optional okf-memory layer finds orphan notes and broken concept links, the duplicates report stops comparing stub bodies and says where it was cut short, `.okfignore` reaches symlinked notes, `okf-export` matches targets as Obsidian does, and settings that used to switch something off without a word are now refused or fall back to their default.
+
+### Added
+- **The optional okf-memory layer, L2 graph.** With `okf_check: {graph: true}` in `okf-base.yaml` (or `OKF_MEMORY_BIN` set), `okf-check` runs [okf-memory](https://github.com/okf-memory/okf-agent-memory)'s read-only `okf validate --json` on the frozen copy, under `OKF_GRAPH_TIMEOUT` (default 60 s), and lists orphan notes and broken concept links as advisories (`L2 graph  WARN`; `--json` `l2_graph`). The exit code does not change. Opted in without okf-memory, the line says SKIPPED and what is unchecked; a different tool also called `okf` is not mistaken for it; a hung or unreadable run is COULD NOT RUN, never a pass. `--doctor` names it and `--selftest` probes it when it is installed. The plugin never installs or downloads it.
+- **`--version` on `okf-export` and `okf-verify`**, from `plugin.json`, so the wrapper test compares real versions.
+- **`--selftest` probes the Config check and the lookalike rule** (below).
+- **`--json` `symlinked_folders`** lists the symlinked folders the run did not enter (present only when there is one).
+
+### Changed
+- **Stub bodies are not body duplicates.** `--duplicates-body` skips a body under 5 words (one shingle: every `TODO` stub scored 1.00 against every other) and counts those notes (`--json` `body_short`); title, description and sources still compare.
+- **`--duplicates` says where it was cut short.** The time limit now covers reading the notes and is checked inside one crowded LSH bucket (1,200 notes sharing one body: 17.7 s uncut, now 4 s with a 2 s limit). A cut names its pass: while reading (`N of M notes read`), the pair comparison, or the body comparison (`bodies of N of M notes hashed`); `--json` gains `cut_in`, `notes_read` and `notes_total`.
+- **`.okfignore` reaches a symlinked note**: an alias whose target is ignored is ignored by every walker (an alias of a kept note is still checked), and a symlinked folder that `.okfignore` excludes is no longer named on the `symlinks` line.
+- **`okf-export` matches targets as Obsidian does**: an exact match first, then ignoring case (`[[Alpha]]` finds `alpha.md`); two files that differ only in case are an ambiguous target. Setext headings (a line underlined with `===` or `---`) are headings a `[[note#heading]]` link can name. Only `\n` ends a line, so a form feed no longer shifts the line numbers of the report, and an `<out>` that is a file is named as one.
+- **The Debian release gate runs its suites four at a time** through the tested tree's `.github/ci/run-suites.sh`, can reuse a provisioned image (`OKF_LINUX_CACHE=1`, the conf default, tagged `okf-linux-gate:<hash of every input>`), and trusts a CA bundle given in `OKF_LINUX_CA_FILE`, for a network whose proxy re-signs TLS.
+
+### Fixed
+- **Edit hook values that switched the hook off without a word.** `OKF_EDIT_HOOK_TIMEOUT=nan` passed the cap (`min(nan, 4.5)` is nan) and `0` or `-1` fired the box at once; a value that is not a positive number now uses the default. An unquoted `edit_hook: yes` (YAML 1.1 reads it as true, other readers as a word) is refused for every true/false option, by both tools. A long first finding no longer pushes the `(+N more: ...)` hint off the one line Claude reads.
+- **A `verified.by` that only looks like `human:`** (Cyrillic or Greek lookalike letters, a lookalike colon) is a Trust warning that says so, and fails `--strict-trust`; nothing new is denied.
+- **The Config line names the real fault**: a missing `okf-verify` and a config check that exits without a message no longer read as a fault of `okf-base.yaml` or an empty reason.
+
 ## [0.9.34] - 2026-10-19
 
 OKF Knowledge Gate 0.9.34 closes the open public requests: `okf-verify` checks line citations into living documents (with content anchors and a MOVED verdict) and can confirm a commit that exists only on the forge; `okf-check` gains declared facts and a conservation check; and the CI runner runs suites in parallel.
@@ -703,7 +725,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.34...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.35...HEAD
+[0.9.35]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.34...v0.9.35
 [0.9.34]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.33...v0.9.34
 [0.9.33]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.32...v0.9.33
 [0.9.32]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.31...v0.9.32

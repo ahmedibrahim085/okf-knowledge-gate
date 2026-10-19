@@ -794,6 +794,96 @@ else
     || bad "S10-CO-M2 sensitive output" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
 fi
 
+# --- F-5 (0.9.14 and 0.9.15 registers, spec row PO-1): okf-export polish ------------------------------------------------------------
+# S10-PO-1: --version on okf-export and okf-verify prints the plugin version (plugin.json), so LT-31a compares versions.
+want=$("$REALPY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$HERE/../.claude-plugin/plugin.json")
+ev=$("$EXPORT" --version 2>&1); erc=$?; vv=$("$HERE/okf-verify" --version 2>&1); vrc=$?
+{ [ "$erc" = 0 ] && [ "$ev" = "okf-export $want" ] && [ "$vrc" = 0 ] && [ "$vv" = "okf-verify $want" ]; } \
+  && ok "S10-PO-1 okf-export --version and okf-verify --version print '<tool> $want' (exit 0)" \
+  || bad "S10-PO-1 --version" "export rc=$erc '$ev'; verify rc=$vrc '$(printf '%s' "$vv" | head -1)'"
+# S10-PO-2: an <out> that is a file is named as one, not as "exists and is not empty".
+V="$TMP/po2/vault"; note "$V" a.md "# A"; printf 'x\n' > "$TMP/po2/file"
+rc=$(run "$V" "$TMP/po2/file")
+{ [ "$rc" = 2 ] && grep -q 'po2/file exists and is not a folder' "$TMP/out.txt"; } \
+  && ok "S10-PO-2 <out> that is a file: 'exists and is not a folder', exit 2" || bad "S10-PO-2 out is a file" "rc=$rc $(head -2 "$TMP/out.txt")"
+# S10-PO-3: setext headings (a line underlined with === or ---) are headings a [[note#heading]] link can name.
+V="$TMP/po3/vault"; O="$TMP/po3/out"
+note "$V" a.md "Set up
+======
+
+text
+
+Run it
+------"
+note "$V" b.md "See [[a#Set up]] and [[a#Run it]]."
+rc=$(run "$V" "$O")
+{ [ "$rc" = 0 ] && grep -qF 'See [a > Set up](a.md#set-up) and [a > Run it](a.md#run-it).' "$O/b.md"; } \
+  && ok "S10-PO-3 setext headings (=== and ---) resolve as link anchors (exit 0)" \
+  || bad "S10-PO-3 setext headings" "rc=$rc $(head -3 "$TMP/out.txt") b.md: $(grep -n 'See' "$O/b.md" 2>&1 | head -1)"
+# S10-PO-3b: a --- after a blank line is a thematic break, not a heading of the paragraph above.
+note "$V" c.md "Para
+
+---"
+note "$V" d.md "[[c#Para]]"
+rc=$(run "$V" "$TMP/po3/out2")
+{ [ "$rc" = 1 ] && grep -q 'missing heading \[\[c#Para\]\]' "$TMP/out.txt"; } \
+  && ok "S10-PO-3b a --- after a blank line is a thematic break: [[c#Para]] stays a missing heading" || bad "S10-PO-3b thematic break" "rc=$rc $(head -3 "$TMP/out.txt")"
+# S10-PO-4: targets match case-insensitively, as Obsidian matches them: [[Alpha]] and [[Sub/Beta]] find alpha.md and
+# sub/beta.md. Two files that differ only in case are ambiguous for a link that matches neither exactly.
+V="$TMP/po4/vault"; O="$TMP/po4/out"
+note "$V" alpha.md "# Alpha"; note "$V" sub/beta.md "# Beta"
+note "$V" c.md "[[Alpha]] and [[Sub/Beta|beta]]"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 0 ] && grep -qF '[Alpha](alpha.md) and [beta](sub/beta.md)' "$O/c.md"; } \
+  && ok "S10-PO-4 [[Alpha]] and [[Sub/Beta]] resolve to alpha.md and sub/beta.md (case-insensitive, exit 0)" \
+  || bad "S10-PO-4 case-insensitive targets" "rc=$rc $(head -3 "$TMP/out.txt") c.md: $(tail -1 "$O/c.md" 2>&1)"
+V="$TMP/po4b/vault"; note "$V" x/note.md "# N"; note "$V" y/Note.md "# N"; note "$V" c.md "[[NOTE]]"
+rc=$(run "$V" "$TMP/po4b/out")
+{ [ "$rc" = 1 ] && grep -q 'ambiguous target \[\[NOTE\]\]: x/note.md, y/Note.md' "$TMP/out.txt"; } \
+  && ok "S10-PO-4b [[NOTE]] with x/note.md and y/Note.md is ambiguous, both named" || bad "S10-PO-4b ambiguous by case" "rc=$rc $(head -3 "$TMP/out.txt")"
+# S10-PO-5: duplicate headings: a link goes to the first, as in Obsidian and as GitHub's unsuffixed anchor does.
+V="$TMP/po5/vault"; O="$TMP/po5/out"
+note "$V" a.md "## Notes
+one
+## Notes
+two"
+note "$V" b.md "[[a#Notes]]"
+rc=$(run "$V" "$O")
+{ [ "$rc" = 0 ] && grep -qF '[a > Notes](a.md#notes)' "$O/b.md"; } \
+  && ok "S10-PO-5 with two '## Notes' headings [[a#Notes]] links the first (#notes)" || bad "S10-PO-5 duplicate headings" "rc=$rc $(cat "$O/b.md" 2>&1 | tail -1)"
+# S10-PO-6: a form feed inside a line does not shift the line numbers of the report (only \n ends a line).
+V="$TMP/po6/vault"; mkdir -p "$V"
+printf -- '---\ntitle: B\n---\nx\fy\n[[missing]]\n' > "$V/b.md"
+rc=$(run "$V" "$TMP/po6/out")
+{ [ "$rc" = 1 ] && grep -q '^b.md:5: missing target \[\[missing\]\]' "$TMP/out.txt"; } \
+  && ok "S10-PO-6 a form feed in line 4 leaves [[missing]] reported on line 5, as an editor counts" || bad "S10-PO-6 line numbers" "rc=$rc $(head -2 "$TMP/out.txt" | tr '\f' '^')"
+# S10-PO-7 (review 0.9.35): a list item's continuation line followed by --- is a list then a thematic break, not a heading.
+V="$TMP/po7/vault"; note "$V" t.md "- item one
+  continued text
+---"
+note "$V" u.md "[[t#continued text]]"
+rc=$(run "$V" "$TMP/po7/out")
+{ [ "$rc" = 1 ] && grep -q 'missing heading \[\[t#continued text\]\]' "$TMP/out.txt"; } \
+  && ok "S10-PO-7 a list continuation followed by --- is not a heading" || bad "S10-PO-7 list then ---" "rc=$rc $(head -2 "$TMP/out.txt")"
+# S10-PO-8: case is ignored the way Obsidian ignores it (lower case), not by Unicode case folding: [[STRASSE]] is not straße.md.
+V="$TMP/po8/vault"; note "$V" straße.md "# S"; note "$V" c.md "[[STRASSE]] [[STRAßE]]"
+rc=$(run "$V" "$TMP/po8/out")
+{ [ "$rc" = 1 ] && grep -q 'missing target \[\[STRASSE\]\]' "$TMP/out.txt" && ! grep -q 'STRAßE' "$TMP/out.txt"; } \
+  && ok "S10-PO-8 [[STRASSE]] is not matched to straße.md; [[STRAßE]] is" || bad "S10-PO-8 lower not casefold" "rc=$rc $(head -2 "$TMP/out.txt")"
+# S10-PO-9: a lone \r (old Mac line end) still ends a line, as editors count it.
+V="$TMP/po9/vault"; mkdir -p "$V"; printf -- '---\rtitle: B\r---\rOld\rMac\r[[gone]]\r' > "$V/b.md"
+rc=$(run "$V" "$TMP/po9/out")
+{ [ "$rc" = 1 ] && grep -q '^b.md:6: missing target \[\[gone\]\]' "$TMP/out.txt"; } \
+  && ok "S10-PO-9 with \\r line ends [[gone]] is reported on line 6" || bad "S10-PO-9 CR lines" "rc=$rc $(head -2 "$TMP/out.txt" | tr '\r' '^')"
+# S10-PO-10 (review 0.9.35 round 2): a thematic break (*** or a --- after a blank line) is not heading text.
+V="$TMP/po10/vault"; note "$V" t.md "***
+Bar
+==="
+note "$V" u.md "[[t#Bar]]"
+rc=$(run "$V" "$TMP/po10/out")
+{ [ "$rc" = 0 ] && grep -qF '[t > Bar](t.md#bar)' "$TMP/po10/out/u.md"; } \
+  && ok "S10-PO-10 *** then Bar underlined with === is a break and the heading Bar" || bad "S10-PO-10 thematic break" "rc=$rc $(head -2 "$TMP/out.txt")"
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
