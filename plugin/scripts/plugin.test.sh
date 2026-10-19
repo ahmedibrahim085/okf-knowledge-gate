@@ -765,7 +765,7 @@ chk "GitHub Actions" 'composite' "$MKT_ROOT/action.yml"
 [ -f "$PLUGIN/vendor/okf_validate.py" ] || { tools_ok=0; miss="$miss okf-skills"; }
 [ "$tools_ok" -eq 1 ] && ok "LT-40 every tool the README's Tools table names is used by the repo (okflint, uv, git, pre-commit, jq, the Action, the vendored PyYAML and validator)" || bad "LT-40 Tools table vs the repo" "not found in the repo:$miss"
 
-# --- LT-47 (0.9.2 F6, #43): the Action says when nothing, or less than everything, was checked ---------------------
+# --- LT-47 (0.9.2 F6): the Action says when nothing, or less than everything, was checked ---------------------
 # A job was green for an empty or mistyped bundle path and on a runner without okflint (exit 0, "0 concepts", L2 SKIPPED).
 AB5="$TMP_W/ab5_empty"; mkab "$AB5"
 runact "$AB5" false false; rc=$?

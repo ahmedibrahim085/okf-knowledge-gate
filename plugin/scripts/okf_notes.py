@@ -55,7 +55,7 @@ def resolve(ref, note, root):
     elif s.startswith("[") and s.endswith(")") and "](" in s:
         s = s[s.index("](") + 2:-1].strip()
         # CommonMark link destination: <dest> in angle brackets, or dest followed by an optional title in double or
-        # single quotes or parentheses (#67 review F-B: both forms used to give a false "successor not found").
+        # single quotes or parentheses (review F-B: both forms used to give a false "successor not found").
         if s.startswith("<") and ">" in s:
             s = s[1:s.index(">")]
         else:

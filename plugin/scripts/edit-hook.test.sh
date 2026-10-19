@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the opt-in PostToolUse edit hook (okf-edit-hook.py, #61, public issue #8). Cases S9-H1, S9-N1, S9-N2,
+# Tests for the opt-in PostToolUse edit hook (okf-edit-hook.py, okf-knowledge-gate#8). Cases S9-H1, S9-N1, S9-N2,
 # S9-E1 in docs/gherkin/s09-edit-hook.feature.
 #
 # The hook is driven the way Claude Code drives it (https://code.claude.com/docs/en/hooks): a PostToolUse JSON

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for okf-check's L3 staleness layer. Run: plugin/scripts/okf-check-l3.test.sh
 #
-# Split out of okf-check.test.sh (ticket #92): measured at 21 to 25 percent of that suite's run, the largest
+# Split out of okf-check.test.sh: measured at 21 to 25 percent of that suite's run, the largest
 # section, and independent of the rest (own TMP, own helpers), so the two files run side by side.
 # Every test keeps its ID and text. Shared helpers live in plugin/tests/okf-test-lib.sh.
 #
@@ -77,7 +77,7 @@ printf '#!/bin/sh\ncase "$*" in *okfval*) exit 2 ;; esac\nexec /usr/bin/awk "$@"
 expect_exit 2 "LT-05 a crashing L3 awk is a dependency failure, never a PASS" -- env PATH="$T05:$PATH" "$CHECK" "$STALE" --fail-stale
 # LT-09 (ticket 11): one note the validator crashes on must be NAMED, must not hide the verdict
 # on the other notes, and must never read as a pass. The vendored validator no longer crashes on
-# the known inputs (okf-skills #62-#66, fixed in the vendored copy), so a STUB crashes on purpose:
+# the known inputs (okf-skills#62-#66, fixed in the vendored copy), so a STUB crashes on purpose:
 # the isolation logic is proven independent of any upstream bug.
 T09P="$TMP/t09plug"; cp -R "$HERE/.." "$T09P"
 mv "$T09P/vendor/okf_validate.py" "$T09P/vendor/real_validator.py"

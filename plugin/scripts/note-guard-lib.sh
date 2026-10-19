@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # (shebang for editors and linters only: this file is sourced, never run.)
-# note-guard-lib.sh — the one rule for which note files a layer may OPEN (ticket #109).
+# note-guard-lib.sh — the one rule for which note files a layer may OPEN.
 # A symlink named x.md that points at /dev/zero is a "note" to find, to the shell's -e and to a directory walk,
 # and every reader that opened it read for ever: okflint grew to 112 GB and crashed the host (2026-10-18). So a
 # note is opened only when, after symlinks are resolved, it is a regular file of at most okf_check.max_note_bytes.

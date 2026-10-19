@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for okf-check's scoped mode, `okf-check <bundle> --file <note>`: L1 and Trust for one note, one line per
-# finding, exit codes unchanged. It is what an edit hook calls (public issue #8), so it must be quiet on a clean
+# finding, exit codes unchanged. It is what an edit hook calls (okf-knowledge-gate#8), so it must be quiet on a clean
 # note and fast. Supports case S9-H1 (docs/gherkin/s09-edit-hook.feature).
 set -uo pipefail
 
@@ -108,7 +108,7 @@ cmp -s "$CS/scripts/okf-scoped.py" "$CS/scripts/okf-scoped.py.orig" && echo "  (
   && ok "SC-9 --selftest has a Scoped probe that fires, and a copy whose helper drops every finding reports NOT FIRED and exits 5" \
   || bad "SC-9 Scoped selftest probe" "healthy rc=$rc fired=$fired; crippled rc=$rcs $(grep -n 'Scoped\|SELFTEST' "$TMP/st-silent.txt" | tr '\n' ' ')"
 
-# --- under 1 s on a 100-note bundle (#60 acceptance), measured ---------------------------------------
+# --- under 1 s on a 100-note bundle (acceptance), measured ---------------------------------------
 H="$TMP/h100"; mkdir -p "$H/sub"; printf -- '---\nokf_version: "0.2"\n---\n# H\n' > "$H/index.md"
 i=1; while [ "$i" -le 100 ]; do d="$H"; [ $((i % 2)) -eq 0 ] && d="$H/sub"; clean "$d/n$i.md"; i=$((i+1)); done
 # The bound is relative to a full run on the same bundle. An absolute "under 1 s" failed once in 16 runs on a loaded host

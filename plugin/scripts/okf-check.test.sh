@@ -62,8 +62,8 @@ expect_exit 64 "N-7 non-directory bundle rejected" -- "$CHECK" /etc/hosts
 section "doctor"
 expect_exit  0 "H-2 doctor passes with deps present" -- "$CHECK" --doctor
 expect_match "okf_validate.py" "doctor reports the vendored validator" "$CHECK" --doctor
-# LT-12 (ticket 12): the doctor probes okflint BEHAVIOUR on three notes (mattdav/okflint #8, #9,
-# #10 -> PR #11), because the patched build and stock 0.5.0 report the same version string.
+# LT-12 (ticket 12): the doctor probes okflint BEHAVIOUR on three notes (mattdav/okflint#8, okflint#9,
+# okflint#10 -> okflint#11), because the patched build and stock 0.5.0 report the same version string.
 # A STUB okflint decides per probe file from $STUB_BAD (comma list: bom,latin1,date).
 if command -v okflint >/dev/null 2>&1; then
   T12="$TMP/t12bin"; mkdir -p "$T12"
@@ -91,9 +91,9 @@ STUB
   export REALLINT; REALLINT=$(command -v okflint)
   expect_match "okflint behaviour .*PATCHED" "LT-12b doctor reports an okflint that passes all three probes" env PATH="$T12:$PATH" STUB_BAD= "$CHECK" --doctor
   expect_no_match "okflint behaviour .*UNPATCHED" "LT-12c a patched okflint raises no UNPATCHED line" env PATH="$T12:$PATH" STUB_BAD= "$CHECK" --doctor
-  expect_match "UNPATCHED.*BOM note" "LT-12a doctor flags an okflint that fails the BOM note (#8)" env PATH="$T12:$PATH" STUB_BAD=bom "$CHECK" --doctor
-  expect_match "UNPATCHED.*non-UTF-8" "LT-12e doctor flags an okflint that crashes on a non-UTF-8 note (#9)" env PATH="$T12:$PATH" STUB_BAD=latin1 "$CHECK" --doctor
-  expect_match "UNPATCHED.*impossible date" "LT-12f doctor flags an okflint that crashes on an impossible date (#10)" env PATH="$T12:$PATH" STUB_BAD=date "$CHECK" --doctor
+  expect_match "UNPATCHED.*BOM note" "LT-12a doctor flags an okflint that fails the BOM note (okflint#8)" env PATH="$T12:$PATH" STUB_BAD=bom "$CHECK" --doctor
+  expect_match "UNPATCHED.*non-UTF-8" "LT-12e doctor flags an okflint that crashes on a non-UTF-8 note (okflint#9)" env PATH="$T12:$PATH" STUB_BAD=latin1 "$CHECK" --doctor
+  expect_match "UNPATCHED.*impossible date" "LT-12f doctor flags an okflint that crashes on an impossible date (okflint#10)" env PATH="$T12:$PATH" STUB_BAD=date "$CHECK" --doctor
   expect_exit 0 "LT-12d an UNPATCHED okflint is advisory: doctor still exits 0" -- env PATH="$T12:$PATH" STUB_BAD=bom,latin1,date "$CHECK" --doctor
   # LT-12g: a build that gives no verdict on a CLEAN note proves nothing: UNKNOWN, not UNPATCHED.
   T12G="$TMP/t12gbin"; mkdir -p "$T12G"
@@ -1015,7 +1015,7 @@ fi
 # V-1..V-3: the G-9 shape guard checked that `errors` EXISTS, never that it is a
 # LIST. `len()` and `for..in` both work on a string, so a validator emitting
 # `{"errors": ""}` produced "PASS 7 concepts, 0 errors" and exit 0 — the precise
-# case 10c436b's message claims is now COULD NOT RUN. Present is not the same as
+# case an earlier commit message claims is now COULD NOT RUN. Present is not the same as
 # well-formed, which is the whole lesson of G-4 and G-9, missed a third time.
 V1P="$TMP/v1plugin"; mkdir -p "$V1P"; cp -R "$HERE/../"* "$V1P/" 2>/dev/null
 chmod +x "$V1P/scripts/okf-check"
@@ -1521,7 +1521,7 @@ grep -q "timed out after 2 s" "$TMP/h21t.txt" && ok "LT-21d an okflint that igno
 pkill -f '^sleep 8$' 2>/dev/null
 
 # LT-20p: an ignore file that excludes nothing changes nothing, even when every note is
-# behind a symlinked directory. Since #62 (S8-N1) a folder link that points outside the bundle is not
+# behind a symlinked directory. Since (S8-N1) a folder link that points outside the bundle is not
 # entered by any layer, so both runs see no note (exit 0) and both name the link; before, L3 alone saw it (exit 4).
 SL="$TMP/sl15"; mkdir -p "$SL/b" "$SL/out"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$SL/b/index.md"
 printf -- '---\ntype: Lesson\ntitle: S\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2000-01-01"\n---\nx\n' > "$SL/out/stale.md"
@@ -1684,7 +1684,7 @@ nwarn=$("$CHECK" --json "$WF" 2>/dev/null | tail -1 | "$REALPY" -c 'import json,
 section "0.9.0 T2"
 # OKF v0.2 records `verified: by: human:<id>` and cannot authenticate it: an agent can write that
 # line itself. 0.8.1 gave exit 0 and no finding for a DRAFT note an agent generated and a "human"
-# verified. Executed baseline (spec #21): generated.by agent/1 + verified human:finance-owner + draft.
+# verified. Executed baseline: generated.by agent/1 + verified human:finance-owner + draft.
 mktrust() { # <bundle> <file> <status> <generated.by> <generated.at> <verified-yaml-block>
   printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: %s\ntags: [t]\ngenerated:\n  by: %s\n  at: "%s"\n%s\nstale_after: "2099-01-01"\n---\n\nbody\n' "$3" "$4" "$5" "$6" > "$1/$2"
 }
@@ -1991,7 +1991,7 @@ section "0.9.0 release review (round 1)"
 # (a) A gate that cannot fail is the defect this tool exists to catch: --selftest had no probe for the trust layer,
 # so a disabled trust rule still printed SELFTEST PASS. Cripple a plugin copy's helper; selftest must now FAIL (exit 5).
 DEADT="$TMP/deadtrust"; mkdir -p "$DEADT"; cp -R "$HERE/.." "$DEADT/plugin" 2>/dev/null
-# Guarded like the real helper: okf-scoped.py (--file, #60) imports okf-trust.py, and an unguarded stub wrote "[]" into
+# Guarded like the real helper: okf-scoped.py (--file) imports okf-trust.py, and an unguarded stub wrote "[]" into
 # the caller's working directory under the scoped note's name.
 printf 'import sys, json\nif __name__ == "__main__":\n    json.dump([], open(sys.argv[2], "w"))\n' > "$DEADT/plugin/scripts/okf-trust.py"
 "$DEADT/plugin/scripts/okf-check" --selftest >"$TMP/deadtrust.txt" 2>&1; rc=$?
@@ -2168,8 +2168,8 @@ res=$(runbounded "$BS"); rc=${res%% *}
   && ok "LT-34i a single 150,000-character scalar is refused up front: exit 1" \
   || bad "LT-34i huge scalar" "result='$res' $(grep -n 'n.md' "$BS.out" 2>/dev/null | head -1 | cut -c1-120)"
 
-# --- LT-43 (0.9.2 F2, #39): the Trust layer reads look-alike actors and string-valued verified -------------------------
-section "LT-43 (0.9.2 F2, #39)"
+# --- LT-43 (0.9.2 F2): the Trust layer reads look-alike actors and string-valued verified -------------------------
+section "LT-43 (0.9.2 F2)"
 # Found by the 0.9.1 final review (each exited 0 under --strict-trust): a Cyrillic "а" in `humаn:`, `verified:` written
 # as a plain string, and a bare unknown generated.by token. c4run/vent/mktrust are defined with LT-26.
 CYR=$(printf 'hum\xd0\xb0n')     # "humаn": the third letter is CYRILLIC SMALL LETTER A
@@ -2199,8 +2199,8 @@ c4run tm stable team:ga4 2026-01-01 "verified:
 $(vent human:dana 2026-02-01)"
 c4quiet "LT-43f a team:<id> generator stays a non-agent (no advisory): the open prefix family is unchanged"
 
-# --- LT-44 (0.9.2 F3, #40): L1/L3 robustness found by the 0.9.1 final review --------------------------------------------
-section "LT-44 (0.9.2 F3, #40)"
+# --- LT-44 (0.9.2 F3): L1/L3 robustness found by the 0.9.1 final review --------------------------------------------
+section "LT-44 (0.9.2 F3)"
 # note44 <bundle> <extra-frontmatter-lines...>: one-note bundle whose note has a full, valid header plus the extra lines
 note44() {
   local d="$TMP/n44_$1"; mkbundle "$d"; rm -f "$d/c.md"; shift
@@ -2230,8 +2230,8 @@ note44 fut "title: T" "stale_after: \"2099-01-01\"" "generated:" "  by: human:t"
 "$CHECK" "$N44DIR" >"$N44OUT" 2>&1; src=$?
 grep -q 'n.md: .*generated.at.*in the future' "$N44OUT" && ok "LT-44e generated.at in the future is a warning" || bad "LT-44e future generated.at" "rc=$src $(grep -n 'n.md\|generated' "$N44OUT" | head -3 | cut -c1-140 | tr '\n' ' ')"
 
-# --- LT-45 (0.9.2 F4, #41): --json carries the findings, is valid for any path, and the verdict counts every skipped layer ---
-section "LT-45 (0.9.2 F4, #41)"
+# --- LT-45 (0.9.2 F4): --json carries the findings, is valid for any path, and the verdict counts every skipped layer ---
+section "LT-45 (0.9.2 F4)"
 # jq44 <json-file> <python-expr over d>: print the expression's value (d is the parsed document)
 jq44() { "$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(eval(sys.argv[2]))' "$1" "$2" 2>&1; }
 J44="$TMP/j44"; mkbundle "$J44"
@@ -2270,8 +2270,8 @@ else
   skip "LT-45h l2_findings — okflint not installed"
 fi
 
-# --- LT-46 (0.9.2 F9, #46, public issue #1): okflint reports L001 for a path-qualified wikilink whose target exists ------
-section "LT-46 (0.9.2 F9, #46, public issue #1)"
+# --- LT-46 (0.9.2 F9, okf-knowledge-gate#1): okflint reports L001 for a path-qualified wikilink whose target exists ------
+section "LT-46 (0.9.2 F9, okf-knowledge-gate#1)"
 # okflint 0.5.0 resolves [[x]] by file name only, so [[sub/b]] is "broken" even with sub/b.md present. okf-check drops an
 # L001 whose target exists in the bundle (bundle-root-relative or relative to the note), and says how many it dropped.
 if command -v okflint >/dev/null 2>&1; then
@@ -2314,7 +2314,7 @@ printf '%s' "$out" | grep -q 'old.md (stale_after' \
   || bad "LT-48a newline-named directory" "hook printed: $(printf '%s' "$out" | head -c 120)"
 # (b) With an active .okfignore, a note reachable only through a SYMLINKED DIRECTORY was checked by no layer: the ignore
 # mirror and keep-list walked with find without -L, so the run said "0 checked" about a bundle whose note it reports
-# without the ignore file (cross-vendor review, finding 3). Since #62 (S8-N1) a folder link that points outside the
+# without the ignore file (cross-vendor review, finding 3). Since (S8-N1) a folder link that points outside the
 # bundle is entered by NO layer, the ignore walker included: the note is not a bundle note in either run, both runs
 # name the link, and with archive/ ignored nothing is left, which the run says instead of passing.
 S48="$TMP/lt48b"; mkbundle "$S48"; rm -f "$S48/c.md"; mkdir -p "$S48/archive" "$TMP/lt48b_outside/sub"
@@ -2329,8 +2329,8 @@ printf 'archive/\n' > "$S48/.okfignore"
   && ok "LT-48b with or without an active .okfignore, a note behind an outside folder link is not a bundle note, the link is named, and 'nothing was checked' is said" \
   || bad "LT-48b ignore + symlinked directory" "$(grep -n 'ignore \|IGNORE\|old.md' "$S48.ign.txt" | head -3 | cut -c1-120 | tr '\n' ' ')"
 
-# --- LT-49 (0.9.2, public issues #2 and #3): --json carries the L2 counts; L3 keeps "unknown status" apart from "expired" --
-section "LT-49 (0.9.2, public issues #2 and #3)"
+# --- LT-49 (0.9.2, okf-knowledge-gate#2 and #3): --json carries the L2 counts; L3 keeps "unknown status" apart from "expired" --
+section "LT-49 (0.9.2, okf-knowledge-gate#2 and #3)"
 # (a) the text says "138 warning(s), by rule: S202 x136, L002 x2"; --json had only l2_profile "ran".
 if command -v okflint >/dev/null 2>&1; then
   wl9 cnt warn " and [[sub/nope]]"
@@ -2362,8 +2362,8 @@ printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_af
   && ok "LT-49d with one expired note beside three unknown-status notes the counts are separate (1 and 3) and --fail-stale exits 4" \
   || bad "LT-49d separate counts" "rc=$rcl $(grep -n 'L3' "$L49.txt" | head -3 | cut -c1-130 | tr '\n' ' ')"
 
-# --- LT-50 (0.9.2, public issue #7): the doc-reuse "closest notes" hint says when it is off ----------------------------
-section "LT-50 (0.9.2, public issue #7)"
+# --- LT-50 (0.9.2, okf-knowledge-gate#7): the doc-reuse "closest notes" hint says when it is off ----------------------------
+section "LT-50 (0.9.2, okf-knowledge-gate#7)"
 # The hint needs a search binary (`okf`) that okf-check never installs; without it the hint was off with no word anywhere.
 O50="$TMP/o50"; mkdir -p "$O50/empty"; printf '#!/bin/sh\nexit 0\n' > "$O50/okf"; chmod +x "$O50/okf"
 out=$(env OKF_SEARCH_BIN= PATH="/usr/bin:/bin" "$CHECK" --doctor 2>&1)
@@ -2371,8 +2371,8 @@ printf '%s' "$out" | grep -Eq 'okf search +absent' && ok "LT-50a --doctor report
 out=$(env OKF_SEARCH_BIN="$O50/okf" "$CHECK" --doctor 2>&1)
 printf '%s' "$out" | grep -Eq 'okf search +present' && ok "LT-50b --doctor names the search binary when it is configured" || bad "LT-50b doctor present" "$(printf '%s' "$out" | grep -n 'okf search' | head -1)"
 
-# --- LT-51 (0.9.4, #66, cases S4-*): okf-check's own options live in one okf_check: block of okf-base.yaml -----------
-section "LT-51 (0.9.4, #66, cases S4-*)"
+# --- LT-51 (0.9.4, cases S4-*): okf-check's own options live in one okf_check: block of okf-base.yaml -----------
+section "LT-51 (0.9.4, cases S4-*)"
 L51="$TMP/l51"; mkbundle "$L51"
 sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$L51/okf-base.yaml"
 printf 'okf_check:\n  verify:\n    repos:\n      - path: .\n  colour: red\n' >> "$L51/okf-base.yaml"
@@ -2448,7 +2448,7 @@ par path-empty    err 'okf_check:\n  verify:\n    repos:\n      - path: ""\n'
 par typo-repo     err 'okf_check:\n  verify:\n    repo:\n      - path: .\n'
 par entry-extra   err 'okf_check:\n  verify:\n    repos:\n      - path: .\n        nmae: x\n'
 par top-unknown   err 'okf_check:\n  colour: red\n'
-# edit_hook (#61) is a boolean leaf: YAML 1.1 reads yes as true; a string or a number is refused by both tools
+# edit_hook is a boolean leaf: YAML 1.1 reads yes as true; a string or a number is refused by both tools
 par edit-hook-true   ok  'okf_check:\n  edit_hook: true\n'
 par edit-hook-false  ok  'okf_check:\n  edit_hook: false\n'
 par edit-hook-yes    ok  'okf_check:\n  edit_hook: yes\n'
@@ -2456,12 +2456,12 @@ par edit-hook-string err 'okf_check:\n  edit_hook: "on"\n'
 par edit-hook-int    err 'okf_check:\n  edit_hook: 1\n'
 par bad-utf8      err 'okf_check:\n  verify:\n    repos:\n      - path: \377\n'
 par bad-yaml      err 'okf_check: [\n'
-# #67: deprecated_requires is an enum node (one allowed value today)
+# deprecated_requires is an enum node (one allowed value today)
 par dep-ok        ok  'okf_check:\n  deprecated_requires: superseded_by\n'
 par dep-typo      err 'okf_check:\n  deprecated_requires: superseded-by\n'
 par dep-list      err 'okf_check:\n  deprecated_requires: [superseded_by]\n'
 par dep-null      err 'okf_check:\n  deprecated_requires:\n'
-# #68: require_owner is a boolean node; owners is a {map: string} node (free glob keys) that requires require_owner: true
+# require_owner is a boolean node; owners is a {map: string} node (free glob keys) that requires require_owner: true
 par own-ok        ok  'okf_check:\n  require_owner: true\n  owners:\n    "**": team:a\n'
 par own-off       ok  'okf_check:\n  require_owner: false\n'
 par own-str       err 'okf_check:\n  require_owner: yes-please\n'
@@ -2471,7 +2471,7 @@ par own-empty     err 'okf_check:\n  require_owner: true\n  owners:\n    "decisi
 par own-norequire err 'okf_check:\n  owners:\n    "decisions/**": team:a\n'
 par own-reqfalse  err 'okf_check:\n  require_owner: false\n  owners:\n    "decisions/**": team:a\n'
 par own-negation  err 'okf_check:\n  require_owner: true\n  owners:\n    "!drafts/**": team:a\n'
-# #69: duplicates is a keys node of two {type: number} nodes
+# duplicates is a keys node of two {type: number} nodes
 par dup-ok        ok  'okf_check:\n  duplicates:\n    threshold: 0.6\n    time_limit: 30\n'
 par dup-high      err 'okf_check:\n  duplicates:\n    threshold: 1.5\n'
 par dup-str       err 'okf_check:\n  duplicates:\n    time_limit: soon\n'
@@ -2485,8 +2485,8 @@ BOMB52=$("$REALPY" -c 'print("x0: &a0 [x,x,x,x,x,x,x,x,x]"); [print("x%d: &a%d [
 par alias-bomb    err "okf_check: {}\n$BOMB52\n"
 grep -qi 'alias' "$P52/alias-bomb.ver" && ok "LT-52 parity: the alias bomb is named as one" || bad "LT-52 parity: alias bomb message" "$(head -2 "$P52/alias-bomb.ver" | cut -c1-200)"
 
-# --- LT-55 (0.9.6, #59, cases S3-*): --selftest has a probe for L0, L2 index and L3 derived staleness ----------------
-section "LT-55 (0.9.6, #59, cases S3-*)"
+# --- LT-55 (0.9.6, cases S3-*): --selftest has a probe for L0, L2 index and L3 derived staleness ----------------
+section "LT-55 (0.9.6, cases S3-*)"
 # A probe is proven by its layer going dead: each case cripples one layer in a plugin copy, and --selftest must exit 5.
 # lt55_dead <name> <sed expression> [script, default okf-check] — a plugin copy whose script carries the expression; fails the test if it did
 # not change the file (a cripple that misses its target would make the RED meaningless).
@@ -2533,8 +2533,8 @@ else
   skip "LT-55g S3-E1 the sandbox still finds okflint"
 fi
 
-# --- LT-53 (0.9.7, #67, cases S5-*): okf_check.deprecated_requires: superseded_by ----------------------------------------
-section "LT-53 (0.9.7, #67, cases S5-*)"
+# --- LT-53 (0.9.7, cases S5-*): okf_check.deprecated_requires: superseded_by ----------------------------------------
+section "LT-53 (0.9.7, cases S5-*)"
 # lt53 <name> <superseded_by line or empty> [option line] — a bundle with a stable new.md and a deprecated old.md; prints rc.
 lt53() {
   local d="$TMP/lt53-$1"; rm -rf "$d"; mkbundle "$d"
@@ -2609,8 +2609,8 @@ for c in "i1|superseded_by: index.md" "i2|superseded_by: \"[[log]]\""; do
     || bad "LT-53i reserved file as successor $id" "$r $(grep -n 'Successor' -A1 "$TMP/lt53-$id.txt" | head -2 | tr '\n' ' ')"
 done
 
-# --- LT-54 (0.9.8, #68, cases S6-*): okf_check.require_owner and okf_check.owners folder defaults ------------------------
-section "LT-54 (0.9.8, #68, cases S6-*)"
+# --- LT-54 (0.9.8, cases S6-*): okf_check.require_owner and okf_check.owners folder defaults ------------------------
+section "LT-54 (0.9.8, cases S6-*)"
 # mk54 <name> <okf_check body, printf %b> — a bundle (c.md, no owner) with the template manifest plus that block.
 mk54() {
   local d="$TMP/lt54-$1"; rm -rf "$d"; mkbundle "$d"
@@ -2736,8 +2736,8 @@ mk54 neg '  require_owner: true\n  owners:\n    "**": team:a\n    "!drafts/**": 
 { [ "$rcl" -eq 2 ] && grep -q 'okf_check.owners.!drafts/\*\*: a pattern that starts with ! (negation) is not supported' "$D.txt"; } \
   && ok "LT-54n S6-N4 an owners pattern that starts with ! exits 2 naming it (negation is not supported)" \
   || bad "LT-54n negated owners pattern" "rc=$rcl $(grep -n 'Config\|Owner' "$D.txt" | head -2 | tr '\n' ' ')"
-# --- LT-56 (0.9.9, #69, cases S7-*): okf-check --duplicates lists candidate duplicate pairs (advisory, always exit 0) ------
-section "LT-56 (0.9.9, #69, cases S7-*)"
+# --- LT-56 (0.9.9, cases S7-*): okf-check --duplicates lists candidate duplicate pairs (advisory, always exit 0) ------
+section "LT-56 (0.9.9, cases S7-*)"
 # mk56 <name> [okf_check body, printf %b] — a bundle (c.md from mkbundle) with the template manifest and that block.
 mk56() {
   local d="$TMP/lt56-$1"; rm -rf "$d"; mkbundle "$d"
@@ -2765,7 +2765,7 @@ L=$(grep 'title 1.00' "$D.txt")
   && ok "LT-56b S7-H1 two notes with the same normalized title are listed with the score, both statuses, generated.at and owner, exit 0" \
   || bad "LT-56b S7-H1 same title" "rc=$rcl line='$L' $(head -4 "$D.txt" | tr '\n' ' ')"
 # S7-H2: description word overlap (Jaccard of the word sets) at or above okf_check.duplicates.threshold. 6 shared words
-# of 7: 0.86. The default threshold is 1.0 (identical word sets only): on the #69 labelled sample no lower threshold
+# of 7: 0.86. The default threshold is 1.0 (identical word sets only): on the labelled sample no lower threshold
 # reached precision 0.8, so the same pair is NOT listed without the option.
 mk56 h2 '  duplicates:\n    threshold: 0.5\n'; D="$TMP/lt56-h2"
 note56 "$D" a.md "Staging first" "Use the staging cluster before release"; note56 "$D" b.md "Cluster order" "Use the staging cluster before every release"
@@ -2795,15 +2795,15 @@ note56 "$D" a.md "Retry policy" "Back off" $'sources:\n  - resource: docs/api.md
 { [ "$rcl" -eq 0 ] && grep -Eq 'resource 1\.00 +a\.md' "$D.txt"; } \
   && ok "LT-56f two notes citing the same sources[].resource (after path normalization) are listed" \
   || bad "LT-56f same resource" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
-# The owner is the effective one (#68): a folder default when the note has no owner key.
+# The owner is the effective one: a folder default when the note has no owner key.
 mk56 own '  require_owner: true\n  owners:\n    "**": team:a\n'; D="$TMP/lt56-own"; rm -f "$D/c.md"
 note56 "$D" a.md "Deploy rule" "One"; note56 "$D" b.md "Deploy rule" "Two" 'owner: team:b'
 "$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
 { [ "$rcl" -eq 0 ] && grep -Eq 'a\.md \[[^]]*owner team:a\] +~ +b\.md \[[^]]*owner team:b\]' "$D.txt"; } \
   && ok "LT-56g the owner shown is the effective one: the folder default for a note without an owner key" \
   || bad "LT-56g effective owner" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
-# --- LT-58 (0.9.11 review, #62 S8-E1): a dangling symlink named *.md is no note for the okf_check rules either -----------
-section "LT-58 (0.9.11 review, #62 S8-E1)"
+# --- LT-58 (0.9.11 review, S8-E1): a dangling symlink named *.md is no note for the okf_check rules either -----------
+section "LT-58 (0.9.11 review, S8-E1)"
 # The walkers of the layers skip it (okf_md_files); the Successor and Owner rules walked with rglob and counted it.
 mk56 dng '  require_owner: true\n  deprecated_requires: superseded_by\n'; D="$TMP/lt56-dng"; rm -f "$D/c.md"
 note56 "$D" a.md "Alpha" "One" 'owner: team:x'; ln -s nowhere.md "$D/dang.md"
@@ -2824,7 +2824,7 @@ mk56 lnk; D="$TMP/lt56-lnk"; note56 "$D" a.md "Alias" "One"; ln -s a.md "$D/alia
 { [ "$rcl" -eq 0 ] && grep -q 'no candidate duplicates' "$D.txt"; } \
   && ok "LT-56q a symlink alias of a note is not listed as a duplicate of its target" \
   || bad "LT-56q symlink alias" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
-# LT-56r (0.9.9 review register, #62): the alias and its target are ONE note, so a third note that duplicates it is one
+# LT-56r (0.9.9 review register): the alias and its target are ONE note, so a third note that duplicates it is one
 # pair, listed under the real note. The alias sorts first on purpose: the real path must win, not the walk order.
 mk56 lnk3; D="$TMP/lt56-lnk3"; note56 "$D" b.md "Alias" "One"; ln -s b.md "$D/a-link.md"; note56 "$D" c.md "Alias" "Two"
 "$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?
@@ -2897,8 +2897,8 @@ printf '\357\273\277---\ntype: Lesson\ntitle: Deploy rule\ndescription: Two\nsta
 { [ "$rcl" -eq 0 ] && grep -Eq 'title 1\.00 +a\.md .* ~ +bom\.md' "$D.txt"; } \
   && ok "LT-56o a BOM-prefixed note with the same title is listed" || bad "LT-56o BOM note" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
 
-# --- LT-57 (0.9.10, #70, case S7-E3): --duplicates-body adds pairs whose bodies are similar (MinHash, time-boxed) ---------
-section "LT-57 (0.9.10, #70, case S7-E3)"
+# --- LT-57 (0.9.10, case S7-E3): --duplicates-body adds pairs whose bodies are similar (MinHash, time-boxed) ---------
+section "LT-57 (0.9.10, case S7-E3)"
 # body57 <file> <title> <description> <body> — a stable Lesson with that body.
 body57() { printf -- '---\ntype: Lesson\ntitle: %s\ndescription: %s\nstatus: stable\nstale_after: "2099-01-01"\n---\n%s\n' "$2" "$3" "$4" > "$1"; }
 P57="Run the migration on a copy of the production database first, check the row counts against the source tables, keep the old schema for one release, and only then drop the columns the new code no longer reads."

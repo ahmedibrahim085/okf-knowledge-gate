@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for the refusal of notes that are not regular files, the byte cap and the process cleanup
-# (cases S17-NR-* in docs/0.9.x-cases.md and docs/gherkin/s17-non-regular.feature; GitHub #109).
+# (cases S17-NR-* in docs/0.9.x-cases.md and docs/gherkin/s17-non-regular.feature).
 #
 # Incident 2026-10-18: a note that was a symlink to /dev/zero made okflint grow to 112 GB and crashed the host.
 # SAFETY: this suite runs on the host. The only device it touches is /dev/null (it returns EOF at once). A real
@@ -63,7 +63,7 @@ run --json "$B"
   && ok "S17-NR-H1d --json lists the refusal under errors" || bad "S17-NR-H1d json" "$(head -c 300 "$TMP/o.txt")"
 
 # S17-NR-H2: a folder named x.md is not a note and cannot hang a reader, so it is skipped with a visible WARN line and the
-# exit code does not change (lead decision on #109). Only devices, pipes and sockets use the "not a regular file" wording.
+# exit code does not change (lead decision). Only devices, pipes and sockets use the "not a regular file" wording.
 B="$TMP/h2"; mkb "$B"; mkdir "$B/x.md"
 run "$B"
 { [ "$RC" -eq 0 ] && grep -q 'x.md — a folder, not a note: skipped' "$TMP/o.txt" && ! grep -q 'not a regular file' "$TMP/o.txt" && ! grep -q 'FAIL' "$TMP/o.txt"; } \
@@ -369,8 +369,9 @@ if ! command -v okflint >/dev/null 2>&1; then
   skip "S17-NR-ST needs okflint (install: uv tool install okflint)"
 else
   timeout 300 "$CHECK" --selftest > "$TMP/st.txt" 2>&1; RC=$?
-  { [ "$RC" -eq 0 ] && grep -q 'FIRED  *device and folder refused' "$TMP/st.txt"; } \
-    && ok "S17-NR-ST1 --selftest has the refusal probe, it fires, and the run passes (exit 0)" \
+  # The probe's heading is user-visible: it names the check, not a ticket of the private repository.
+  { [ "$RC" -eq 0 ] && grep -q 'FIRED  *device and folder refused' "$TMP/st.txt" && grep -qxF '  Refused notes:' "$TMP/st.txt"; } \
+    && ok "S17-NR-ST1 --selftest has the refusal probe under the heading 'Refused notes:', it fires, and the run passes (exit 0)" \
     || bad "S17-NR-ST1 selftest probe" "rc=$RC $(grep -n 'refus\|SELFTEST' "$TMP/st.txt" | head -3 | tr '\n' ' ')"
   D="$TMP/crip"; mkdir -p "$D"; cp -R "$HERE/.." "$D/plugin" 2>/dev/null
   sed -i.orig "s|\[ -f \"\$f\" \] \|\| { printf 'not a regular file (device/pipe/...)'; return 0; }|:|" "$D/plugin/scripts/note-guard-lib.sh"

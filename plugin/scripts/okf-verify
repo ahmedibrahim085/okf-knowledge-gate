@@ -81,12 +81,12 @@ SHA_CTX = re.compile(
 PATH_RE = re.compile(r"([`\"'])((?:~|/)[A-Za-z0-9._/ -]*[A-Za-z0-9._-]\.[A-Za-z0-9]{1,6})\1")
 # `path:line[-line] @sha` and `path:line[-line] at sha` -- one claim: this file, at this commit. The path is repo-relative
 # (an absolute path is a PATH_RE claim); the lookbehind keeps a match from starting mid-token, so a Windows path (`C:\x\y.py:3`)
-# or a URL is not cut into a citation of its last piece. (#56) A path cut at a SPACE cannot be told from prose here: check_citation
+# or a URL is not cut into a citation of its last piece. A path cut at a SPACE cannot be told from prose here: check_citation
 # answers UNRESOLVED when the cut is the end of a longer file name.
 CITE_RE = re.compile(r"(?<![\w./\\-])([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?`?(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:@|at(?:[ \t]+|[ \t]*\r?\n[ \t]*))`?([0-9a-f]{7,40})\b`?", re.I)
 # The gap between `path:line` and `@sha` may hold ONE line break (a wrapped line) but never a blank line: across a paragraph break the two
-# are separate statements and one was read as the other's citation. (#111, audit R058)
-# The same claim with a path that holds a space, QUOTED: the quotes say where the path starts, so nothing is cut and nothing is guessed. (#111)
+# are separate statements and one was read as the other's citation. (audit R058)
+# The same claim with a path that holds a space, QUOTED: the quotes say where the path starts, so nothing is cut and nothing is guessed.
 QCITE_RE = re.compile(r"(?<![\w./\\-])([`\"'])([A-Za-z0-9_][A-Za-z0-9_./-]*(?: [A-Za-z0-9_./-]+)+\.[A-Za-z0-9]{1,8})\1:(\d+)(?:-(\d+))?`?(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:@|at(?:[ \t]+|[ \t]*\r?\n[ \t]*))`?([0-9a-f]{7,40})\b`?", re.I)
 QUOTED = re.compile(r"[\"“]([^\"”\n]{12,120})[\"”]")
 RESERVED = {"index.md", "log.md"}
@@ -256,7 +256,7 @@ def check_sha(sha: str, repos: list[Path], subjects: list[str]):
 def blob_lines(repo: Path, sha: str, path: str):
     """Line count of `path` at `sha`: (count, "") or (None, why). Bytes, not text: a source file need not be UTF-8.
 
-    A NUL in the first 8000 bytes is git's own test for a binary file; its "lines" are not a thing to check. (#57)
+    A NUL in the first 8000 bytes is git's own test for a binary file; its "lines" are not a thing to check.
     """
     # A symlink's blob is the LINK TEXT: counting it reports "1 lines" for a link to a 20-line file. The tree entry's mode says which it is.
     rc, entry = git(repo, "ls-tree", sha, "--", path)
@@ -280,7 +280,7 @@ def blob_lines(repo: Path, sha: str, path: str):
 
 
 def spaced_names(path: str, prefix: str):
-    """The names the writer's own words could spell if the cut at a space was wrong: `my big w.py:3` -> `big w.py`, `my big w.py`. (#111)"""
+    """The names the writer's own words could spell if the cut at a space was wrong: `my big w.py:3` -> `big w.py`, `my big w.py`."""
     toks = prefix[-200:].split()[-3:]
     out = []
     for k in range(1, len(toks) + 1):
@@ -311,7 +311,7 @@ def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects:
 
     REFUTED only when the commit was found and its tree lacks the path: then we looked in the right place. A sha that
     resolves nowhere stays UNRESOLVED, as for a bare SHA claim. A line (or the end of a range) past the end of the
-    file at that commit is REFUTED too: same commit, same file, so the claim is known false. (#56, #57)
+    file at that commit is REFUTED too: same commit, same file, so the claim is known false.
     """
     v, d = check_sha(sha, repos, subjects)
     if v != CONFIRMED:
@@ -485,13 +485,13 @@ def check_node(value, node: dict, where: str, bundle: Path | None = None) -> Non
                 raise BaseConfigError(f"{where}.{k} is not a known key (known: {', '.join(known)})")
         for k, v in value.items():
             check_node(v, node["keys"][str(k)], f"{where}.{k}", bundle)
-            # {requires: {sibling: value}}: this key only makes sense when a sibling key has that value (#68).
+            # {requires: {sibling: value}}: this key only makes sense when a sibling key has that value.
             for sib, want in node["keys"][str(k)].get("requires", {}).items():
                 if value.get(sib) != want:
                     shown = "true" if want is True else "false" if want is False else want
                     raise BaseConfigError(f"{where}.{k} needs {where}.{sib}: {shown}")
         # {below: sibling}: when that sibling is set, this value is smaller than it. After every value is checked, so
-        # the comparison only ever sees numbers (#104: a warn limit at or above the maximum would never fire).
+        # the comparison only ever sees numbers (a warn limit at or above the maximum would never fire).
         for k, v in value.items():
             other = node["keys"][str(k)].get("below")
             if other in value and not v < value[other]:
@@ -513,7 +513,7 @@ def check_node(value, node: dict, where: str, bundle: Path | None = None) -> Non
         if isinstance(value, bool) or not isinstance(value, (int, float)) or not node["min"] <= value <= node["max"]:
             raise BaseConfigError(f"{where} must be a number from {node['min']} to {node['max']}")
     elif node.get("type") == "folder":
-        # {type: folder}: a path relative to the bundle that names an existing folder (wikilink_root, #103).
+        # {type: folder}: a path relative to the bundle that names an existing folder (wikilink_root).
         if not isinstance(value, str) or not value:
             raise BaseConfigError(f"{where} must be a non-empty string")
         if value != value.strip():
@@ -558,7 +558,7 @@ def check_node(value, node: dict, where: str, bundle: Path | None = None) -> Non
 
 
 def _guard():
-    """okf_guard, the bounded note reader shared with okf-check (#109). Imported late; the vendored PyYAML is put on the path for the manifest."""
+    """okf_guard, the bounded note reader shared with okf-check. Imported late; the vendored PyYAML is put on the path for the manifest."""
     here = Path(__file__).resolve().parent
     vendor = here.parent / "vendor"
     sys.dont_write_bytecode = True   # an import must not leave scripts/__pycache__ in the installed plugin (plugin.test.sh Z-2)
@@ -575,7 +575,7 @@ def load_block(bundle: Path, source: Path | None = None) -> dict:
 
     A file that cannot be read, a block of the wrong shape and a key nobody knows all raise BaseConfigError:
     ignoring any of them reads as "nothing was declared". A typo such as `verify.repo` ran with "repos searched:
-    NONE" and exit 0. okf-check validates the same block by calling `okf-verify --check-config`. (#53, #66)
+    NONE" and exit 0. okf-check validates the same block by calling `okf-verify --check-config`.
     """
     base = (source or bundle) / "okf-base.yaml"
     if not base.is_file():
@@ -616,7 +616,7 @@ def declared_repos(bundle: Path) -> tuple[list[Path], list[dict]]:
 
     A declared path that cannot be used is reported, never dropped: a silently
     dropped repository would turn every SHA cited from it into "no repository
-    searched" and hide the real cause. (#53)
+    searched" and hide the real cause.
     """
     node = load_block(bundle).get("verify", {}).get("repos", [])
     usable, problems = [], []
@@ -677,7 +677,7 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False):
         except ValueError:
             rel = f.name
         why = guard.refusal(f)
-        if why:   # a device, pipe, folder or oversize file is never opened (#109); nobody looked, so UNRESOLVED
+        if why:   # a device, pipe, folder or oversize file is never opened; nobody looked, so UNRESOLVED
             results.append({"concept": rel, "kind": "file", "claim": str(f), "verdict": UNRESOLVED,
                             "detail": f"refused: {why}"})
             continue

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for the L2 advisory list in `okf-check --json` (cases S13-LF-* in docs/0.9.x-cases.md and
-# docs/gherkin/s13-l2-findings.feature; GitHub #98, public okf-knowledge-gate #2, second half).
+# docs/gherkin/s13-l2-findings.feature; public okf-knowledge-gate #2, second half).
 #
 # `l2_warnings` and `l2_by_rule` counted the okflint advisories but no key named the files behind them.
 # These tests observe what a CI job or agent reads: the `--json` report of a real okf-check run.
@@ -35,7 +35,7 @@ if ! command -v okflint >/dev/null 2>&1; then
   skip "S13-LF-* L2 cases need okflint" "uv tool install okflint"
 else
   section "S13-LF happy"
-  # S13-LF-H1: the public #2 repro. A missing image and a missing note are two L002 advisories.
+  # S13-LF-H1: the okf-knowledge-gate#2 repro. A missing image and a missing note are two L002 advisories.
   B="$TMP/h1"; mkb "$B" '![pic](img/missing.png)
 [x](nope.md)'
   got=$(jq_py "$B" 'd["l2_warnings"], d["l2_advisories"]')

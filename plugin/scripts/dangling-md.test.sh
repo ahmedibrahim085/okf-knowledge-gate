@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for a dangling *.md symlink in a bundle (cases S14-DL-* in docs/0.9.x-cases.md and
-# docs/gherkin/s14-dangling-md.feature; GitHub #99).
+# docs/gherkin/s14-dangling-md.feature).
 #
 # okflint (third party) raises FileNotFoundError on a dangling *.md link, so the whole L2 layer used to be
 # COULD NOT RUN. L1 and L3 skip such a link by design. L2 now runs on a mirror without the link and REPORTS it as an
@@ -36,7 +36,7 @@ run() { local b="$1"; shift; : > "$TMP/spy.txt"; SPY="$TMP/spy.txt" PATH="$TMP/b
 runjson() { local b="$1"; shift; : > "$TMP/spy.txt"; SPY="$TMP/spy.txt" PATH="$TMP/bin:$PATH" "$CHECK" --json "$b" "$@" >"$TMP/out.json" 2>/dev/null; printf '%s' "$?"; }
 jget() { "$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps('"$1"', sort_keys=True))' "$TMP/out.json"; }
 # ran_on_bundle <bundle>: 0 when every okflint start was in the bundle folder itself (no mirror).
-# Every layer reads the frozen copy (#109 round 2), so okflint runs in <tmp>/okfmirror and never in the bundle; a dangling link
+# Every layer reads the frozen copy (round 2), so okflint runs in <tmp>/okfmirror and never in the bundle; a dangling link
 # is already absent from that copy, so there is no second mirror (okfmirror alone, never l2dangling).
 ran_on_frozen() { [ -s "$TMP/spy.txt" ] && [ "$(sort -u "$TMP/spy.txt" | sed 's#.*/##')" = okfmirror ]; }
 ran_on_bundle() { local want; want=$(cd -P "$1" && pwd); [ -s "$TMP/spy.txt" ] && [ "$(sort -u "$TMP/spy.txt")" = "$want" ]; }
@@ -45,7 +45,7 @@ if [ -z "$REALOKF" ]; then
   skip "S14-DL-* L2 cases need okflint" "install: uv tool install okflint"
 else
   section "S14-DL happy"
-  # S14-DL-H1: the #99 repro. L2 used to be COULD NOT RUN (exit 2).
+  # S14-DL-H1: the repro. L2 used to be COULD NOT RUN (exit 2).
   B="$TMP/h1"; mkb "$B"; ln -s nowhere.md "$B/dead.md"
   rc=$(runjson "$B")
   { [ "$rc" = 0 ] && [ "$(jget 'd["l2_profile"]')" = '"ran"' ] && [ "$(jget 'd["l2_warnings"]')" = 1 ] \
@@ -143,7 +143,7 @@ else
     && ok "S14-DL-E7 a house-rule error next to a dangling link still fails L2 (exit 3) and the link is listed" \
     || bad "S14-DL-E7 real finding" "rc=$rc $(grep -n 'L2\|dead' "$TMP/out.txt" | head -4 | tr '\n' '|')"
 
-  # S14-DL-E8: the mirror keeps what a note links to: an existing image gives no L002 (the #93 file set).
+  # S14-DL-E8: the mirror keeps what a note links to: an existing image gives no L002 (the file set).
   B="$TMP/e8"; mkb "$B"; ln -s nowhere.md "$B/dead.md"; mkdir "$B/img"; printf 'png' > "$B/img/pic.png"; printf '\n![p](img/pic.png)\n' >> "$B/a.md"
   rc=$(runjson "$B")
   { [ "$rc" = 0 ] && [ "$(jget 'd["l2_by_rule"]')" = '{"DANGLING_MD": 1}' ]; } \

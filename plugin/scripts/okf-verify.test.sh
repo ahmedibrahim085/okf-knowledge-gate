@@ -629,7 +629,7 @@ note5 "$TMP/f5c" "Fixed in commit $OLD_SHA."
 rc=$(run "$TMP/f5c" --repo "$SH")
 grep -qi 'shallow' "$TMP/out.txt" && ok "V-F5c a SHA absent from a shallow clone says the clone is shallow (git fetch --unshallow)" || bad "V-F5c shallow" "$(grep -n 'unresolved' "$TMP/out.txt" | head -1 | cut -c1-200)"
 
-# --- 0.9.4 #53: source repositories declared once in okf-base.yaml (okf_check.verify.repos) ---------------------------
+# --- 0.9.4 source repositories declared once in okf-base.yaml (okf_check.verify.repos) ---------------------------
 # Git here is isolated from the host: a temp HOME and no system config, and no credential helper (rules/no-host-secret-stores-in-tests.md).
 S1H="$TMP/s1home"; mkdir -p "$S1H"
 export GIT_CONFIG_NOSYSTEM=1
@@ -719,7 +719,7 @@ note5 "$TMP/s1n3-h" "Fixed in commit $REAL_SHA."; printf 'okf_version: "0.2"\nba
 rc=$(run "$TMP/s1n3-h" --repo "$REPO")
 [ "$rc" = "0" ] && vok "RV-7 (S1-N3) an okf-base.yaml with no okf_check key is not an error" || bad "RV-7 (S1-N3) okf-base.yaml without okf_check" "exit $rc"
 
-# --- 0.9.4 review round 1 (#66 + #53): ONE schema for the okf_check block, enforced by both tools ----------------------
+# --- 0.9.4 review round 1: ONE schema for the okf_check block, enforced by both tools ----------------------
 # An unknown key is an error: a typo such as `verify.repo` otherwise ran with "repos searched: NONE" and exit 0 -- a declared
 # repository list silently switched off. okf-check enforces the same rules (okf-check.test.sh LT-52 is the parity table).
 badbase g "a typo'd key under verify (repo for repos)" $'okf_check:\n  verify:\n    repo:\n      - path: .'
@@ -747,7 +747,7 @@ note5 "$TMP/cc2" "x"; rc=$(run "$TMP/cc2" --check-config)
 note5 "$TMP/cc3" "x"; printf 'okf_check:\n  verify:\n    repo: []\n' > "$TMP/cc3/okf-base.yaml"
 rc=$(run "$TMP/cc3" --check-config)
 { [ "$rc" = "2" ] && [ "$(wc -l < "$TMP/out.txt" | tr -d ' ')" = "1" ] && grep -q 'okf_check.verify.repo' "$TMP/out.txt"; } && ok "RV-17 --check-config on a bad block: one error line, exit 2" || bad "RV-17 --check-config invalid" "exit $rc: $(head -3 "$TMP/out.txt" | tr '\n' ' ')"
-# --- RV-24 (#67): an {enum: [...]} schema node (okf_check.deprecated_requires) takes only the listed values
+# --- RV-24: an {enum: [...]} schema node (okf_check.deprecated_requires) takes only the listed values
 note5 "$TMP/cc4" "x"; printf 'okf_check:\n  deprecated_requires: superseded_by\n' > "$TMP/cc4/okf-base.yaml"
 rc=$(run "$TMP/cc4" --check-config); [ "$rc" = "0" ] && ok "RV-24 an enum node accepts its listed value" || bad "RV-24 enum valid" "exit $rc: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
 note5 "$TMP/cc5" "x"; printf 'okf_check:\n  deprecated_requires: superseded-by\n' > "$TMP/cc5/okf-base.yaml"
@@ -763,7 +763,7 @@ for c in "cc6|true|true" "cc7||null" "cc8|\"x \"|\"x \""; do
     && ok "RV-24 the refused value '$val' is shown as JSON: $shown" || bad "RV-24 JSON value $id" "exit $rc: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
 done
 
-# --- 0.9.4 review round 2 (#53): a declared path that cannot be resolved is UNRESOLVED, never a crash ---------------------
+# --- 0.9.4 review round 2: a declared path that cannot be resolved is UNRESOLVED, never a crash ---------------------
 # `~nosuchuser/x` made expanduser() raise RuntimeError and an unreadable parent made exists() raise PermissionError: a traceback and exit 1,
 # and exit 1 means "a claim was REFUTED". The entry is reported with the reason "cannot resolve" and the run goes on (exit 0, no REFUTED).
 unres() { # <label> <bundle> — the run for <bundle> (already made) must report that declared repo as UNRESOLVED 'cannot resolve', in text and in --json
@@ -786,7 +786,7 @@ if [ "$(id -u)" != "0" ]; then
 else
   skip "RV-18 a declared path under an unreadable directory — running as root, chmod 000 does not stop the read (skip, not a pass)"
 fi
-# --- 0.9.5 #56: path:line @sha citations (sha + path; the line is #57) ------------------------------------------------
+# --- 0.9.5 path:line @sha citations (sha + path; the line) ------------------------------------------------
 # One claim per citation: `<path>:<line>[-<line>] @<sha>` or `... at <sha>`. The sha is resolved in the searched repos, then the path is
 # looked up in that commit's tree. Fixture: a repository whose FIRST commit lacks the cited file, so "exists at that commit" differs from "exists now".
 CREPO="$TMP/crepo"; mkdir -p "$CREPO"; git -C "$CREPO" init -q 2>/dev/null
@@ -849,7 +849,7 @@ rc=$(run "$TMP/c5" --repo "$CREPO")
 vunresolved "RV-11 a suffix path matching two files at that commit is UNRESOLVED (ambiguous), not guessed"
 grep -q 'ambiguous' "$TMP/out.txt" && ok "RV-11 ... and the detail says ambiguous" || bad "RV-11 detail" "$(grep -A1 unresolved "$TMP/out.txt" | tr '\n' ' ')"
 
-# --- 0.9.5 #57: the cited line (or the end of the range) must exist in the file AT THAT COMMIT --------------------------
+# --- 0.9.5 the cited line (or the end of the range) must exist in the file AT THAT COMMIT --------------------------
 # A third commit adds an empty file, a binary file and a file without a final newline, so the edge cases have a real object to hit.
 printf '' > "$CREPO/empty.txt"; printf 'a\0b\1\2\n' > "$CREPO/bin.dat"; printf 'one\ntwo' > "$CREPO/nonl.txt"
 git -C "$CREPO" add empty.txt bin.dat nonl.txt
@@ -894,7 +894,7 @@ vunresolved "RV-15 (S2-E1) a line in a binary file is UNRESOLVED (lines cannot b
 grep -q 'binary' "$TMP/out.txt" && ok "RV-15 (S2-E1) ... and the detail says binary" || bad "RV-15 binary detail" "$(grep -A1 unresolved "$TMP/out.txt" | tr '\n' ' ')"
 [ "$rc" = "0" ] && ok "RV-15 (S2-E1) UNRESOLVED alone does not fail the run" || bad "RV-15 exit" "exit $rc"
 
-# --- 0.9.5 review fixes (#57) ------------------------------------------------------------------------------------------------
+# --- 0.9.5 review fixes ------------------------------------------------------------------------------------------------
 # F1: a symlink at the cited commit holds the LINK TEXT as its blob. Counting it gave `link.py:5` -> REFUTED "has 1 lines" and `link.py:1` -> a false CONFIRMED.
 ln -s src/a.py "$CREPO/link.py"; git -C "$CREPO" add link.py
 git -C "$CREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: a symlink to the source file"
@@ -948,7 +948,7 @@ cite "$TMP/rv1" "\`src/a.py:20-10 @$C2\`"; rc=$(run "$TMP/rv1" --repo "$CREPO")
 vok "RV-23 (S2-E4) a reversed range '20-10' is read as up to line 20 (the larger number): CONFIRMED for a 20-line file"
 cite "$TMP/rv2" "\`src/a.py:25-10 @$C2\`"; rc=$(run "$TMP/rv2" --repo "$CREPO")
 vrefuted "RV-23 (S2-E4) ... and REFUTED when the larger number is past the end"
-# --- RV-27 (#111, audit R056/R058): a citation whose text before `:line` holds a space. The parser cuts the path at the space, so `my w.py:3` was
+# --- RV-27 (audit R056/R058): a citation whose text before `:line` holds a space. The parser cuts the path at the space, so `my w.py:3` was
 # checked against `w.py` and CONFIRMED. Fixtures are tiny repos: spcommit makes one commit holding the named files with the given line counts.
 spcommit() { # <repo> <name:lines>... — a fresh repo with one commit; prints the short sha
   local r="$1"; shift; mkdir -p "$r"; git -C "$r" init -q 2>/dev/null; git -C "$r" config user.email t@t; git -C "$r" config user.name t
@@ -1029,7 +1029,7 @@ mkb "$TMP/sp-p1"; cp "$TMP/sp-p1.md" "$TMP/sp-p1/n.md"; : > "$TMP/gitspy.log"
 PATH="$TMP/gitspy:$PATH" "$VERIFY" "$TMP/sp-p1" --repo "$TMP/sp-plain" >"$TMP/out.txt" 2>&1
 n=$(grep -c 'ls-tree -r' "$TMP/gitspy.log")
 { grep -q 'CONFIRMED 5 ' "$TMP/out.txt" && [ "$n" -le 1 ]; } && ok "RV-27 (S2-SP-P1) 5 citations of one commit run 'git ls-tree -r' at most once (ran $n)" || bad "RV-27 S2-SP-P1 spawns" "ls-tree -r ran $n times: $(grep -E 'CONFIRMED' "$TMP/out.txt")"
-# --- RV-25 (#68): a {type: boolean} node, a {map: node} node (free keys) and a node that {requires} a sibling value
+# --- RV-25: a {type: boolean} node, a {map: node} node (free keys) and a node that {requires} a sibling value
 RVID=RV-25
 cc() { # <name> <okf_check body, printf %b> <want rc> [message the error must contain]
   note5 "$TMP/$1" "x"; printf 'okf_check:\n%b' "$2" > "$TMP/$1/okf-base.yaml"; rc=$(run "$TMP/$1" --check-config)
@@ -1042,7 +1042,7 @@ cc map-list  '  require_owner: true\n  owners: [team:a]\n' 2 'okf_check.owners m
 cc map-value '  require_owner: true\n  owners:\n    "decisions/**": 3\n' 2 'okf_check.owners.decisions/** must be a non-empty string'
 cc requires  '  owners:\n    "decisions/**": team:a\n' 2 'okf_check.owners needs okf_check.require_owner: true'
 cc negation  '  require_owner: true\n  owners:\n    "!x/**": team:a\n' 2 'okf_check.owners.!x/**: a pattern that starts with ! (negation) is not supported'
-# --- RV-26 (#69): a {type: number, min, max} node (okf_check.duplicates.threshold / time_limit)
+# --- RV-26: a {type: number, min, max} node (okf_check.duplicates.threshold / time_limit)
 RVID=RV-26
 cc num-ok    '  duplicates:\n    threshold: 0.5\n    time_limit: 30\n' 0
 cc num-int   '  duplicates:\n    threshold: 1\n' 0

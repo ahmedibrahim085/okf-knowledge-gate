@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for the .okfignore L2 mirror (cases S12-IG-* in docs/0.9.x-cases.md and
-# docs/gherkin/s12-ignore-mirror.feature; GitHub #93, public okf-knowledge-gate #12).
+# docs/gherkin/s12-ignore-mirror.feature; public okf-knowledge-gate #12).
 #
 # Under a .okfignore that excludes something, L2 runs on a filtered mirror of the bundle. The mirror
 # used to hold only notes and config, so a link to an existing image/SVG/PDF read as broken (L002).
@@ -41,7 +41,7 @@ l2() { "$CHECK" --json "$1" 2>/dev/null | python3 -c 'import json,sys; print(jso
 if ! command -v okflint >/dev/null 2>&1; then
   skip "S12-IG-* L2 cases need okflint (install: uv tool install okflint)"
 else
-  # S12-IG-H1: the public #12 repro. The control run (no .okfignore) proves the bundle itself is clean.
+  # S12-IG-H1: the okf-knowledge-gate#12 repro. The control run (no .okfignore) proves the bundle itself is clean.
   B="$TMP/h1"; mkb "$B"; mkdir -p "$B/img"; printf 'png' > "$B/img/pic.png"
   got=$(l2 "$B"); mv "$B/.okfignore" "$B/.okfignore.off"; ctl=$(l2 "$B")
   { [ "$got" = "{}" ] && [ "$ctl" = "{}" ]; } && ok "S12-IG-H1 a link to an existing image gives no L002 when .okfignore excludes a folder" \
@@ -73,7 +73,7 @@ else
   got=$(l2 "$B")
   [ "$got" = "{}" ] && ok "S12-IG-E1e a symlink to a file inside the bundle gives no L002" || bad "S12-IG-E1e symlink to file" "l2_by_rule=$got (want {})"
 
-  # S12-IG-E2: .okfignore that excludes no note or config file builds no mirror (#15), so a non-markdown ignore changes nothing.
+  # S12-IG-E2: .okfignore that excludes no note or config file builds no mirror, so a non-markdown ignore changes nothing.
   B="$TMP/e2"; mkb "$B"; mkdir -p "$B/img/raw"; printf 'png' > "$B/img/pic.png"; printf 'psd' > "$B/img/raw/big.psd"
   printf 'img/raw/\n' > "$B/.okfignore"; rm -rf "$B/archive"
   printf -- '---\ntype: Lesson\ntitle: U\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01T00:00:00Z"\nstale_after: "2099-01-01"\n---\n\n![pic](img/pic.png) [raw](img/raw/big.psd)\n' > "$B/a.md"

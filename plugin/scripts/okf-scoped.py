@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """okf-scoped.py <bundle> <rel> [--strict-trust] — L1 and Trust for ONE note, for `okf-check <bundle> --file <note>`.
 
-An edit hook (public issue #8) needs the edited note checked in well under a second, so this parses one note's
+An edit hook (okf-knowledge-gate#8) needs the edited note checked in well under a second, so this parses one note's
 YAML instead of the whole bundle's. It copies no rule: L1 calls the vendored validator's own per-file checks, in
 the order its validate() calls them, then its check_links over the bundle's note list (links are read, no YAML is
 parsed) and keeps only this note's findings; Trust calls okf-trust.py's findings_for. scoped.test.sh compares the
@@ -22,7 +22,7 @@ sys.dont_write_bytecode = True   # a direct run must not leave scripts/__pycache
 sys.path.insert(0, str(HERE.parent / "vendor"))
 sys.path.insert(0, str(HERE))
 import okf_validate as v  # noqa: E402
-from okf_guard import read_note, refusal  # noqa: E402  (stat-based refusal and a bounded read, #109)
+from okf_guard import read_note, refusal  # noqa: E402  (stat-based refusal and a bounded read)
 
 _spec = importlib.util.spec_from_file_location("okf_trust", HERE / "okf-trust.py")
 trust = importlib.util.module_from_spec(_spec)
@@ -51,7 +51,7 @@ def main(argv: list) -> int:
     keep = None
     if os.environ.get("OKF_KEEP_LIST"):
         keep = {x for x in open(os.environ["OKF_KEEP_LIST"], encoding="utf-8", errors="replace").read().split("\0") if x}
-    # refusal(): a sibling that is a device or over the cap is never read for its links (#109)
+    # refusal(): a sibling that is a device or over the cap is never read for its links
     v.check_links(bundle, sorted(p for p in bundle.rglob("*.md") if p.is_file() and refusal(p) is None
                                  and (keep is None or str(p.relative_to(bundle)) in keep)), report)
     mine = len(rel) + 2

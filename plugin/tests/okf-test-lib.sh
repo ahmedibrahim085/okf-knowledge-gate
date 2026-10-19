@@ -1,7 +1,7 @@
 # okf-test-lib.sh — helpers the okf-check suites share. Sourced, never run: `. "$HERE/../tests/okf-test-lib.sh"`.
 #
 # It lives outside plugin/scripts on purpose: plugin.test.sh Z-2 fails on any script there that nothing but a
-# test references. One copy of the helpers means the suites split out of okf-check.test.sh (ticket #92) cannot
+# test references. One copy of the helpers means the suites split out of okf-check.test.sh cannot
 # drift apart. Each sourcing suite gets its OWN `mktemp -d` TMP and counters, so suites run in parallel.
 #
 # OKF_TEST_TIMING=1 prints one `TIMING <secs>s <n> asserts <name>` line per `section "<name>"` call.

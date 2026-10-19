@@ -311,7 +311,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.30
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.31
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -327,7 +327,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.30
+    rev: v0.9.31
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -368,12 +368,12 @@ Two upstream tools are pinned by commit. A drift from a pin is reported as UNVER
 - **L1 validator, from scaccogatto/okf-skills.** Vendored in `plugin/vendor/okf_validate.py` at commit
   `7ed3084267d050f198eea6cd9f67d5357e9ed047`: okf-skills 0.10.3 plus five fixes (MIT), and a patch of ours that bounds
   the size of a YAML document (alias expansion and one very long scalar). The five fixes are an open pull request,
-  [scaccogatto/okf-skills#68](https://github.com/scaccogatto/okf-skills/pull/68). If #68 is never merged, this vendored
-  copy stays as it is and keeps working. `plugin/vendor/VENDOR.md` lists what differs from upstream. When #68 merges, we
+  [scaccogatto/okf-skills#68](https://github.com/scaccogatto/okf-skills/pull/68). If okf-skills#68 is never merged, this vendored
+  copy stays as it is and keeps working. `plugin/vendor/VENDOR.md` lists what differs from upstream. When okf-skills#68 merges, we
   replace the copy with upstream at the merge commit and re-apply our patch (or offer it upstream).
 - **L2 house rules, from mattdav/okflint.** Version 0.5.0 plus a commit on the maintainer's fork (ahmedibrahim085/okflint) with the BOM, non-UTF-8 and impossible-date
   fixes, `c505b8405b9ef07396a81734c2bdfaa33c57aa25`, installed only when you ask (`okf-check --install-deps --yes`). The
-  fixes are an open pull request, [mattdav/okflint#11](https://github.com/mattdav/okflint/pull/11). If #11 is never
+  fixes are an open pull request, [mattdav/okflint#11](https://github.com/mattdav/okflint/pull/11). If okflint#11 is never
   merged, the install keeps using that fork commit. `--latest` installs the newest PyPI okflint and prints a note that it
   "may lack the okflint#11 fixes". `--doctor` reports UNPATCHED if the fixes are missing.
 

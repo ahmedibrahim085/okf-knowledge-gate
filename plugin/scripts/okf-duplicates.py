@@ -1,10 +1,10 @@
-"""okf-check --duplicates (#69): candidate duplicate pairs in an OKF bundle. Advisory: the caller always exits 0.
+"""okf-check --duplicates: candidate duplicate pairs in an OKF bundle. Advisory: the caller always exits 0.
 
 Usage: okf-duplicates.py <bundle> <schema json> <json 0|1> [body 0|1]
 
 A pair is a candidate when the two notes have the same normalized title, or descriptions whose word sets overlap
 (Jaccard) at or above okf_check.duplicates.threshold, or cite the same sources[].resource. The strongest signal
-is the one shown. A pair already linked by superseded_by (either way) is skipped. With body 1 (--duplicates-body, #70),
+is the one shown. A pair already linked by superseded_by (either way) is skipped. With body 1 (--duplicates-body),
 pairs whose bodies share 5-word shingles (Jaccard) at or above okf_check.duplicates.body_threshold are added: MinHash
 signatures with LSH banding pick the candidates, and the exact Jaccard of the shingle sets decides. Each pair is shown with the signal and its
 score, both statuses, both generated.at values and both owners.
@@ -46,11 +46,11 @@ deadline = time.monotonic() + limit
 
 
 def norm(s):
-    """NFKC, lower case, punctuation to spaces, runs of spaces folded (decided on #69)."""
+    """NFKC, lower case, punctuation to spaces, runs of spaces folded (decided)."""
     return re.sub(r"\s+", " ", re.sub(r"[^\w\s]", " ", unicodedata.normalize("NFKC", str(s)).lower())).strip()
 
 
-# The effective owners okf-check computed (#68: the note's key, else the folder default); absent when the option is off.
+# The effective owners okf-check computed (the note's key, else the folder default); absent when the option is off.
 owners = {}
 if os.environ.get("OKF_OWNERS_TSV") and os.path.isfile(os.environ["OKF_OWNERS_TSV"]):
     owners = dict(l.rstrip("\n").split("\t", 1) for l in open(os.environ["OKF_OWNERS_TSV"], encoding="utf-8") if "\t" in l)
@@ -60,14 +60,14 @@ keep = None
 if os.environ.get("OKF_KEEP_LIST"):
     keep = {x for x in open(os.environ["OKF_KEEP_LIST"], encoding="utf-8", errors="replace").read().split("\0") if x}
 
-# One entry per real path (#62): a symlink alias is the same note as its target, so a third note that duplicates it is
+# One entry per real path: a symlink alias is the same note as its target, so a third note that duplicates it is
 # one pair. The real file wins over an alias whatever the walk order (LT-56r).
 by_real = {}
 refused = []
 for p in sorted(root.rglob("*.md")):
     if p.name in ("index.md", "log.md") or (keep is not None and str(p.relative_to(root)) not in keep):
         continue
-    why = refusal(p)   # a device, pipe, folder or oversize file is never opened (#109); stderr, because stdout may be --json
+    why = refusal(p)   # a device, pipe, folder or oversize file is never opened; stderr, because stdout may be --json
     if why:
         refused.append("%s — %s: skipped" % (p.relative_to(root), why))
         continue

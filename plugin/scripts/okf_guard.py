@@ -1,4 +1,4 @@
-"""Which files a layer may open as a note, and a bounded read of one (ticket #109). Standard library only.
+"""Which files a layer may open as a note, and a bounded read of one. Standard library only.
 
 A note is opened only when, after symlinks are resolved, it is a regular file of at most okf_check.max_note_bytes. Kept apart
 from okf_notes.py (which imports the validator) because okf-check asks for the cap before any layer runs: this file must not import the vendored validator
@@ -160,7 +160,7 @@ def freeze_main(src_root, dst_root, cap):
 
 
 def read_main(p, cap):
-    """Print the text of `p` (ignore-lib.sh reads .okfignore through this, #109 round 3). Exit 3 with the reason on stderr
+    """Print the text of `p` (ignore-lib.sh reads .okfignore through this). Exit 3 with the reason on stderr
     when it is refused and 4 when it cannot be read, with the reason on stdout in place of the text; 1 when it is gone."""
     try:
         t = read_note(p, "utf-8-sig", "replace", cap=cap)

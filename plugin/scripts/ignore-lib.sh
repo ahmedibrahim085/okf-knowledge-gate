@@ -9,13 +9,13 @@
 # Negation (`!pat`) is not supported and is skipped with a notice on stderr.
 # The file is only ever READ by the plugin. `okf-check --init-ignore` is the only writer.
 
-. "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/note-guard-lib.sh"   # okf_note_cap, okf_note_refusal (ticket #109)
+. "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/note-guard-lib.sh"   # okf_note_cap, okf_note_refusal
 
 OKFIGNORE_PATTERNS=()
 _OKFIGNORE_FOR=""; _OKFIGNORE_RC=1; _OKFIGNORE_MSG=""; _OKFIGNORE_CACHE=()
 
 # okfignore_present <bundle>: exit 0 when the bundle has a .okfignore of any kind. A folder, FIFO or device counts: it is
-# then refused by okfignore_load, never read as "no .okfignore" (#109 round 3).
+# then refused by okfignore_load, never read as "no .okfignore" (round 3).
 okfignore_present() { [ -e "$1/.okfignore" ] || [ -L "$1/.okfignore" ]; }
 
 # okfignore_load <bundle>: fill OKFIGNORE_PATTERNS. Return 1 when there is no .okfignore, 2 when it is refused.
@@ -100,7 +100,7 @@ okfignore_list() {
   okfignore_load "$bundle"; [ $? -eq 2 ] && return 2
   while IFS= read -r -d '' f; do
     [ -e "$f" ] || continue          # dangling symlink: L1 skips it too
-    [ -f "$f" ] || continue          # a device, pipe or folder is not a note: okf_refused_notes names it (#109)
+    [ -f "$f" ] || continue          # a device, pipe or folder is not a note: okf_refused_notes names it
     [ -L "$f" ] && [ -n "$(okf_note_refusal "$f")" ] && continue
     rel=${f#"$bundle"/}
     okfignore_match "$rel" && continue
@@ -125,14 +125,14 @@ okf_refused_notes() {
   done < <(find -H "$bundle" -name .git -prune -o \( -name '*.md' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) \( \( ! -type f ! -type l \) -o -type l -o \( -type f -size +"${cap}"c \) \) -print0 2>/dev/null)
 }
 
-# okfignore_mirror <bundle> <dest>: the FROZEN COPY every layer reads (#109). Copy the non-ignored notes and config (*.md,
+# okfignore_mirror <bundle> <dest>: the FROZEN COPY every layer reads. Copy the non-ignored notes and config (*.md,
 # *.yaml, *.yml, *.json) into <dest> and link every other non-ignored file to its original (a link to an image,
-# SVG or PDF must still resolve inside the mirror, #93). The copy is made by okf_guard.py freeze: a bounded read judged
+# SVG or PDF must still resolve inside the mirror). The copy is made by okf_guard.py freeze: a bounded read judged
 # on the opened descriptor, so a path that turned into a device after the pre-scan is refused, never read for ever. What it
 # refuses is written to <dest>.refused (okf_refused_notes' record format) and is not in <dest>. Prints "<kept> <excluded-notes> <excluded-files>" (the first two count concept notes: *.md other than
 # index.md and log.md; the third counts ignored notes and config, not the linked files). Same file set L1 sees without .okfignore: symlinked directories are NOT
-# entered (find -H, as okf_md_files and the validator, #62), so a note is neither lost nor listed by one layer only. Exit 1 (naming the file on stderr) when a copy or link fails, so a note is never dropped
-# silently. Nothing is deleted outside <dest>. A third argument 1 asks for the #15 rule: when .okfignore excludes no note or
+# entered (find -H, as okf_md_files and the validator), so a note is neither lost nor listed by one layer only. Exit 1 (naming the file on stderr) when a copy or link fails, so a note is never dropped
+# silently. Nothing is deleted outside <dest>. A third argument 1 asks for the rule: when .okfignore excludes no note or
 # config file, the non-markdown files it names stay linked, so an ignore of only images changes nothing.
 okfignore_mirror() {
   local bundle="${1%/}" dest="$2" f rel kept=0 excl=0 exall=0 isnote iscfg rc abs dir mdir="" ldir="" l kind late
@@ -143,7 +143,7 @@ okfignore_mirror() {
   abs=$(cd -P "$bundle" && pwd) || return 2
   rm -rf "$dest" "$lst" "$refused" "$ignother"; mkdir -p "$dest"; : > "$lst"; : > "$refused"; : > "$ignother"
   # Links are made one `ln` per run of files in the same folder, not one per file: a bundle with thousands of images
-  # would otherwise double its process spawns (#93). A failed batch is retried file by file to name the culprit.
+  # would otherwise double its process spawns. A failed batch is retried file by file to name the culprit.
   _okfignore_flush() {
     [ "${#pend[@]}" -gt 0 ] || return 0
     # A loop, not a prefix substitution: bash 5.2 reads an & in the replacement as the matched text, so a bundle under
@@ -162,7 +162,7 @@ okfignore_mirror() {
     rel=${f#"$bundle"/}
     [ "$rel" = .okfignore ] && continue   # written below from the one read, not linked to the live file
     iscfg=1
-    case "${rel##*/}" in *.md|*.yaml|*.yml|*.json) ;; *) iscfg=0; [ -d "$f" ] && continue;; esac   # a link to a folder is not entered (#62)
+    case "${rel##*/}" in *.md|*.yaml|*.yml|*.json) ;; *) iscfg=0; [ -d "$f" ] && continue;; esac   # a link to a folder is not entered
     isnote=0
     case "$rel" in *.md) case "${rel##*/}" in index.md|log.md) ;; *) isnote=1;; esac;; esac
     if [ "${#OKFIGNORE_PATTERNS[@]}" -gt 0 ] && okfignore_match "$rel"; then   # no pattern: no call (a bash function costs a millisecond per note)

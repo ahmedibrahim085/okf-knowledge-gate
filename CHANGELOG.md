@@ -9,6 +9,19 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.31] - 2026-10-19
+
+OKF Knowledge Gate 0.9.31 makes the public export refuse to publish private ticket numbers and private commit ids, which earlier public releases had carried.
+
+### Fixed
+- **The public export no longer publishes private issue and pull-request numbers or private commit ids.** The export removed references only in a fixed number range, so 51 private `(#NN)` references and one private commit id reached the public repository, and a number that looked like a public issue could point to a different one. The scan now runs on every text file and fails the export (exit 1, nothing written, no marker, and the publish step refuses an unmarked tree) in these cases: a private number or commit id in a code string, a docstring, a fenced block or a YAML value (fix the source by hand); a link into the private repository; a text file that is not UTF-8, unless the allow file lists it; a crash of the scan itself (it fails closed; before, an unexpected exit code counted as "findings found"). In prose and in comments the number is removed.
+- **A number is public only after the name of a public repository** (the okf-knowledge-gate, okflint and okf-skills issues keep their numbers). A number after any other word, after the word "ticket" or "public", or after the private repository's own name is private and is removed or refused.
+- **Commit ids are found in any case, from 7 to 64 characters, glued to other text, or split over two lines**, and the allow file cannot hide text: a `binary` entry must name a binary extension, and a short or whole-file entry is refused.
+- **The doctor output of `okf-check` now names the repository** (the okflint issues 8, 9 and 10); it printed a bare number, which on the public repository is a different issue. The heading `Refused notes` lost its private number.
+
+### Corrected
+- The 0.9.2 entry said the public export drops private issue numbers and commit ids from every file. It did not: the export of 0.9.30 still held 72 private issue numbers in parentheses and three private commit ids, and so did the earlier public releases. Fixed here; the claim was wrong, not the release.
+
 ## [0.9.30] - 2026-10-19
 
 OKF Knowledge Gate 0.9.30 stops `okf-export` from silently overwriting a note when the output disk ignores case, and from rewriting links inside indented code.
@@ -639,7 +652,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.30...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.31...HEAD
+[0.9.31]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.30...v0.9.31
 [0.9.30]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.29...v0.9.30
 [0.9.29]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.28...v0.9.29
 [0.9.28]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.27...v0.9.28

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Tests for okf_check.wikilink_root (cases S15-WR-* in docs/0.9.x-cases.md and
-# docs/gherkin/s15-wikilink-root.feature; GitHub #103, public okf-knowledge-gate #13).
+# docs/gherkin/s15-wikilink-root.feature; public okf-knowledge-gate #13).
 #
 # A bundle inside a larger note vault (Obsidian, Foam) links notes by their path from the VAULT root,
-# `[[projects/p/README]]`. okflint resolves a wikilink by file name only, and okf-check's post-filter (public #1) looks
+# `[[projects/p/README]]`. okflint resolves a wikilink by file name only, and okf-check's post-filter (okf-knowledge-gate#1) looks
 # at the bundle root and the note's own folder, so the link reads as L001 "broken". With
 # `okf_check: wikilink_root: <folder>` in okf-base.yaml that folder is looked at too.
 # These tests observe what a user sees: `okf-check --json` (l2_by_rule), the text, the exit code, and okf-verify's
@@ -20,7 +20,7 @@ export HOME="$TMP/home"; mkdir -p "$HOME"   # nothing here reads or writes the r
 
 REALOKF=$(command -v okflint 2>/dev/null || true)
 
-# mkvault <vault>: the public #13 repro. The bundle is <vault>/projects/p/bundle, its note a.md links
+# mkvault <vault>: the okf-knowledge-gate#13 repro. The bundle is <vault>/projects/p/bundle, its note a.md links
 # [[projects/p/README]] and the target is <vault>/projects/p/README.md, outside the bundle.
 mkvault() {
   local b="$1/projects/p/bundle"
@@ -46,12 +46,12 @@ if [ -z "$REALOKF" ]; then
   skip "S15-WR-* L2 cases need okflint" "install: uv tool install okflint"
 else
   section "S15-WR happy"
-  # S15-WR-H1: the public #13 repro. The vault root is three folders up: vault/projects/p/bundle -> vault.
+  # S15-WR-H1: the okf-knowledge-gate#13 repro. The vault root is three folders up: vault/projects/p/bundle -> vault.
   B="$TMP/h1/projects/p/bundle"; mkvault "$TMP/h1"; setroot "$B" ../../..
   rc=$(runjson "$B")
   { [ "$rc" = 0 ] && [ "$(jget 'd["l2_by_rule"]')" = '{}' ]; } \
-    && ok "S15-WR-H1 the #13 repro with wikilink_root gives no L001 (exit 0)" \
-    || bad "S15-WR-H1 #13 repro" "rc=$rc by_rule=$(jget 'd["l2_by_rule"]') (want exit 0 and {})"
+    && ok "S15-WR-H1 the okf-knowledge-gate#13 repro with wikilink_root gives no L001 (exit 0)" \
+    || bad "S15-WR-H1 okf-knowledge-gate#13 repro" "rc=$rc by_rule=$(jget 'd["l2_by_rule"]') (want exit 0 and {})"
 
   section "S15-WR negative"
   # S15-WR-N1: a target missing under the root still gives L001 (the filter must not drop everything).
@@ -61,7 +61,7 @@ else
     && ok "S15-WR-N1 a wikilink whose target is missing under the root still gives L001 (exit 0, advisory)" \
     || bad "S15-WR-N1 missing target" "rc=$rc by_rule=$(jget 'd["l2_by_rule"]') (want exit 0 and {\"L001\": 1})"
 
-  # S15-WR-N2: without the key the #13 repro is unchanged: one L001.
+  # S15-WR-N2: without the key the repro is unchanged: one L001.
   B="$TMP/n2/projects/p/bundle"; mkvault "$TMP/n2"
   rc=$(runjson "$B")
   { [ "$rc" = 0 ] && [ "$(jget 'd["l2_by_rule"]')" = '{"L001": 1}' ]; } \
@@ -121,7 +121,7 @@ PYEOF
 
   section "S15-WR edge"
   # edge <id> <label> <link text> [setup run with the vault in $V and the bundle in $B] [l2_by_rule wanted, default {}]:
-  # the link is in a.md of the #13 repro, wikilink_root is ../../.., and the verdict is no L001.
+  # the link is in a.md of the repro, wikilink_root is ../../.., and the verdict is no L001.
   edge() {
     local id="$1" label="$2" link="$3" want="${5:-}" rc
     [ -n "$want" ] || want='{}'
@@ -157,7 +157,7 @@ PYEOF
   { [ "$rc" = 0 ] && [ "$(jget 'd["l2_by_rule"]')" = '{}' ] && grep -q ' 1 path wikilink(s) resolved by okf-check' "$TMP/out.txt"; } \
     && ok "S15-WR-E7 a target under the bundle and under the root gives no L001 and is counted once" \
     || bad "S15-WR-E7 both places" "rc=$rc by_rule=$(jget 'd["l2_by_rule"]') $(grep 'resolved by' "$TMP/out.txt")"
-  # E8 and E9 (rule #62): a symlinked folder is not entered, and a symlink that leaves the root does not resolve.
+  # E8 and E9: a symlinked folder is not entered, and a symlink that leaves the root does not resolve.
   notl E8 "a target behind a symlinked folder of the vault" '[[linked/n]]' 'mkdir -p "$V/real"; printf "# n\n" > "$V/real/n.md"; ln -s real "$V/linked"'
   notl E9 "a symlinked note whose target is outside the vault" '[[projects/p/out]]' 'printf "# o\n" > "$TMP/E9-outside.md"; ln -s "$TMP/E9-outside.md" "$V/projects/p/out.md"'
   # E10: L2 runs on a copy of the bundle under .okfignore (and under a dangling link); a root written relative to the bundle

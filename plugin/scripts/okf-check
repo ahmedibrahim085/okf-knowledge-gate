@@ -53,7 +53,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.30"
+VERSION="0.9.31"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -73,7 +73,7 @@ done
 HERE=$(cd -P "$(dirname "$_self")" && pwd)
 # A gate that cannot load its helper must not reach a verdict: with the lib absent the awk
 # program failed, stderr went to /dev/null, and the empty report read as "PASS nothing expired".
-# l3-lib.sh and ignore-lib.sh source note-guard-lib.sh, the one rule for which note files may be opened (#109).
+# l3-lib.sh and ignore-lib.sh source note-guard-lib.sh, the one rule for which note files may be opened.
 [ -r "$HERE/note-guard-lib.sh" ] || { echo "okf-check: $HERE/note-guard-lib.sh is missing - cannot tell which notes are safe to open; reinstall the plugin" >&2; exit $EXIT_DEP; }
 [ -r "$HERE/l3-lib.sh" ] || { echo "okf-check: $HERE/l3-lib.sh is missing - cannot run L3; reinstall the plugin" >&2; exit $EXIT_DEP; }
 . "$HERE/l3-lib.sh"
@@ -196,7 +196,7 @@ def unmirror(t):
     return t
 out = {"errors": [], "stale": [], "l2_findings": [], "skipped": [], "lifecycle": [], "l2_warnings": None, "l2_by_rule": {}, "l2_advisories": []}
 key = {"error": "errors", "stale": "stale", "l2": "l2_findings", "skipped": "skipped", "lifecycle": "lifecycle"}
-# The L2 advisory totals the text prints ("138 warning(s), by rule: S202 x136, L002 x2"); null when L2 did not run (public issue #2).
+# The L2 advisory totals the text prints ("138 warning(s), by rule: S202 x136, L002 x2"); null when L2 did not run (okf-knowledge-gate#2).
 if sys.argv[3] == "ran":
     try:
         rows = open(sys.argv[2], encoding="utf-8", errors="replace").read().splitlines()
@@ -357,7 +357,7 @@ print(okf_guard.note_cap(sys.argv[1], env=False))' "$1" 2>/dev/null)
 # report_refused <list>: the one place a refused note is reported (okf_refused_notes writes the list). They are findings of
 # their own, not L1 errors of a layer, because no layer opened them: each is named once, exit 1 like any bundle defect.
 # A FOLDER named like a note is not a defect (it cannot hang a reader and is not a note): it is a WARN line and an advisory,
-# and the exit code does not change (lead decision on #109).
+# and the exit code does not change (lead decision).
 report_refused() {
   local rec why rel nfail=0 nwarn=0
   [ -s "$1" ] || return 0
@@ -383,7 +383,7 @@ report_refused() {
   fi
 }
 
-# run_scoped <bundle> <note>: `--file` mode (#60; the edit hook of #61 calls it). L1 and Trust for one note through
+# run_scoped <bundle> <note>: `--file` mode (the edit hook calls it). L1 and Trust for one note through
 # okf-scoped.py: one line per finding, nothing for a clean note, no other layer. Exit codes keep their meaning:
 # 1 an L1 error (or, with --strict-trust, a Trust warning or near-miss actor), 0 otherwise, 2 could not run,
 # 64 the note is missing, not .md, or outside the bundle.
@@ -596,7 +596,7 @@ install_deps() {  # install_deps [yes]  — "yes" is the caller's consent (the O
 # traceback look like a verdict.) macOS has no `timeout`. Returns CMD's status, 143 when it was stopped for time and 137 when
 # it was stopped for memory; OUTFILE.limit then says `timeout` or `rss <held> <limit>`.
 # okf-limit.py does the work: it puts CMD in its own process group and stops the WHOLE group (okflint starts through a uv
-# shim, so the python that holds the memory can be a grandchild: killing the direct child left it running, #109), and it
+# shim, so the python that holds the memory can be a grandchild: killing the direct child left it running), and it
 # stops the group when okf-check goes away. RL_PID lets the exit trap stop it when okf-check itself is told to stop.
 RL_PID=""
 run_limited() {
@@ -649,7 +649,7 @@ doctor() {
   fi
 
   # The doc-reuse reminder can name the closest existing notes when a search binary (`okf`) is on PATH or in
-  # OKF_SEARCH_BIN. okf-check never installs it, so say whether the hint is on (public issue #7).
+  # OKF_SEARCH_BIN. okf-check never installs it, so say whether the hint is on (okf-knowledge-gate#7).
   local _sb="${OKF_SEARCH_BIN:-}"; [ -n "$_sb" ] || _sb=$(command -v okf 2>/dev/null)
   if [ -n "$_sb" ] && [ -x "$_sb" ]; then
     say "  okf search         present ($_sb): doc-reuse reminders name the closest notes"
@@ -704,11 +704,11 @@ doctor() {
         fi
         if [ "$ctl_ok" -eq 1 ]; then
           _okflint_probe bom '\357\273\277---\ntype: Lesson\ntitle: Probe\n---\nbody\n'
-          if [ -z "$pout" ] || printf '%s' "$pout" | grep -q '"F001"'; then bad="$bad a BOM note (#8),"; fi
+          if [ -z "$pout" ] || printf '%s' "$pout" | grep -q '"F001"'; then bad="$bad a BOM note (okflint#8),"; fi
           _okflint_probe latin1 '---\ntype: Lesson\ntitle: caf\351\n---\nbody\n'
-          if [ -z "$pout" ] || [ "$prc" -gt 1 ]; then bad="$bad a non-UTF-8 note (#9),"; fi
+          if [ -z "$pout" ] || [ "$prc" -gt 1 ]; then bad="$bad a non-UTF-8 note (okflint#9),"; fi
           _okflint_probe baddate '---\ntype: Lesson\ntitle: Probe\ndecided: 2026-02-30\n---\nbody\n'
-          if [ -z "$pout" ] || [ "$prc" -gt 1 ]; then bad="$bad an impossible date (#10),"; fi
+          if [ -z "$pout" ] || [ "$prc" -gt 1 ]; then bad="$bad an impossible date (okflint#10),"; fi
           if [ -z "$bad" ]; then
             say "  okflint behaviour  PATCHED   (BOM, non-UTF-8 and impossible-date probes all reach a verdict)"
           else
@@ -766,7 +766,7 @@ l1_list_warnings() {
 # Delegates to the vendored checker and reads its --json report through python3
 # rather than jq, so a machine without jq still gets a real verdict.
 # One note the vendored validator crashes on (a `status` list, an impossible date: upstream
-# okf-skills #62/#63) used to blank the whole L1 verdict and name nothing (ticket 11).
+# okf-skills#62/#63) used to blank the whole L1 verdict and name nothing (ticket 11).
 # Isolation: run the validator on each note alone, name the ones that die, validate the rest.
 run_conformance() {
   local bundle="$1" out probe="$TMP/l1probe" mirror="$TMP/l1mirror" f rel why ncrash=0 rc k
@@ -898,7 +898,7 @@ run_trust() {
   return 0
 }
 
-# ------------------------------------------------------- okf_check: options block (#66)
+# ------------------------------------------------------- okf_check: options block
 # okf-check's own options live in ONE `okf_check:` block of okf-base.yaml. okflint ignores keys it does not know
 # (okflint 0.5.0 manifest.py reads named keys only; the L2 count with and without the block is equal, LT-51b), so the
 # block is not stripped. A block of the wrong shape or a key nobody knows is a typo that would switch an option off in
@@ -916,7 +916,7 @@ run_config() {   # $1 the real bundle (paths in the block resolve against it), $
   return $EXIT_DEP
 }
 
-# ------------------------------------------------------- deprecation names a successor (#67, public #9)
+# ------------------------------------------------------- deprecation names a successor (okf-knowledge-gate#9)
 # With okf_check.deprecated_requires: superseded_by, every `status: deprecated` note names its successor in
 # superseded_by. A violation is a house-rule error (exit 1). Option off: nothing is printed.
 run_successor() {
@@ -966,7 +966,7 @@ for p in sorted(bundle.rglob("*.md")):
         elif q == os.path.realpath(str(p)):
             print("E|%s: superseded_by %s: a note cannot supersede itself" % (rel, ref))
         elif meta(q).get("status") == "deprecated":
-            # One hop, no chains (decided on #67): name the note that replaced the successor.
+            # One hop, no chains (decided): name the note that replaced the successor.
             print("E|%s: superseded_by %s is deprecated too: point at the final successor, not a deprecated one" % (rel, ref))
 print("N|%d" % n)
 PYEOF
@@ -984,7 +984,7 @@ PYEOF
   return 0
 }
 
-# ------------------------------------------------------- ownership (#68, public #11)
+# ------------------------------------------------------- ownership (okf-knowledge-gate#11)
 # With okf_check.require_owner: true every note has an owner: its own `owner` key, else the folder default from
 # okf_check.owners. A note with neither is a house-rule error (exit 1). Option off: nothing is printed.
 run_owner() {
@@ -1081,7 +1081,7 @@ PYEOF
   return 0
 }
 
-# ------------------------------------------------------- body-size budget (#104, public #17)
+# ------------------------------------------------------- body-size budget (okf-knowledge-gate#17)
 # With okf_check.size: {max_body_chars: N} a note whose BODY (the text after the frontmatter) is longer than N characters
 # is a house-rule error (exit 1, like require_owner: the bundle breaks a rule it declared; exit 2 stays "could not run"
 # or "the config is wrong"). index.md and log.md are measured like any note: an agent reads them whole too, and a
@@ -1146,7 +1146,7 @@ PYEOF
   return 0
 }
 
-# ------------------------------------------------------- --duplicates (#69, public #10)
+# ------------------------------------------------------- --duplicates (okf-knowledge-gate#10)
 # Candidate duplicate pairs: the same normalized title, the same sources[].resource, or descriptions whose word overlap
 # reaches okf_check.duplicates.threshold. Advisory: exit 0. A block that fails the schema is exit 2, as in a check.
 run_duplicates() {
@@ -1233,7 +1233,7 @@ l2_isolate() {
   # stay, so okflint sees the same tree), then one run on it.
   rm -rf "$mirror"; mkdir -p "$mirror"
   while IFS= read -r -d '' f; do
-    [ -f "$f" ] || continue   # cp would read a device or pipe behind a link for ever: a file, or nothing (#109)
+    [ -f "$f" ] || continue   # cp would read a device or pipe behind a link for ever: a file, or nothing
     rel=${f#"$bundle"/}; skip=0
     for c in "${crashed[@]}"; do [ "$c" = "$rel" ] && { skip=1; break; }; done
     [ "$skip" -eq 1 ] && continue
@@ -1330,7 +1330,7 @@ __l2_core() {
   # Time-bounded: a hung okflint used to stall the run for as long as it hung.
   local l2limit="${OKF_L2_TIMEOUT:-120}"
   case "$l2limit" in ''|*[!0-9]*|0) l2limit=120;; esac
-  # okflint raises FileNotFoundError on a dangling *.md link and reaches no verdict (#99). Run it on a mirror without the
+  # okflint raises FileNotFoundError on a dangling *.md link and reaches no verdict. Run it on a mirror without the
   # link (the .okfignore mirror skips dangling links) and report each link below. No dangling link: no mirror, same run.
   local dlst="$TMP/l2dangling.lst" _src="${L2_SRC:-$bundle}"
   l2_dangling "$_src" > "$dlst"
@@ -1407,7 +1407,7 @@ def sev(x):
     return str(x.get("severity", "")).lower() if isinstance(x, dict) else ""
 
 # okflint 0.5.0 resolves a wikilink by FILE NAME only, so [[sub/b]] is reported as L001 "broken" although sub/b.md
-# exists (public issue #1: 2,368 of 2,477 L001 findings on one real bundle). OKF section 6.1 defines markdown links only,
+# exists (okf-knowledge-gate#1: 2,368 of 2,477 L001 findings on one real bundle). OKF section 6.1 defines markdown links only,
 # so how a wikilink resolves is a house convention, and this one matches Obsidian: a path from the bundle root, or from
 # the note's own folder, with or without .md. An L001 whose target is such a file is dropped and COUNTED, never hidden.
 _root = os.path.realpath(sys.argv[2])
@@ -1428,7 +1428,7 @@ def _resolves(x):
     if _wl_root:
         for cand in (target, target + ".md"):
             lex = os.path.normpath(os.path.join(_wl_root, cand))
-            # A folder link is not entered (#62, as find -H elsewhere): no step of the path below the root may be a symlink
+            # A folder link is not entered (as find -H elsewhere): no step of the path below the root may be a symlink
             # to a folder, and a note that is itself a link must stay inside the root.
             steps = os.path.relpath(os.path.dirname(lex), _wl_root).split(os.sep)
             walk = _wl_root
@@ -1450,7 +1450,7 @@ doc = [x for x in doc if not _resolves(x)]
 errors  = [x for x in doc if sev(x) == "error"]
 unknown = [x for x in doc if isinstance(x, dict) and "severity" not in x]
 others  = [x for x in doc if sev(x) not in ("error",) and x not in unknown]
-# One advisory per dangling *.md link okf-check set aside before okflint ran (#99).
+# One advisory per dangling *.md link okf-check set aside before okflint ran.
 try:
     dangling = [d for d in open(sys.argv[3], encoding="utf-8", errors="replace").read().split("\0") if d]
 except OSError:
@@ -1464,7 +1464,7 @@ for x in errors + unknown:
 from collections import Counter
 for code, n in sorted(Counter(str(x.get("code", "?")) for x in others).items(), key=lambda kv: (-kv[1], kv[0])):
     print("C|%s|%d" % (code.replace("|", "/"), n))
-# The advisories themselves, same text format as the E rows, for `l2_advisories` in --json (public #2). One row per
+# The advisories themselves, same text format as the E rows, for `l2_advisories` in --json (okf-knowledge-gate#2). One row per
 # finding, so the text is flattened: a newline in a file name or message must not forge a C| or E| row.
 for x in others:
     print("W|" + re.sub(r"[\r\n\t]", " ", "%s %s \u2014 %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", ""))))
@@ -1803,7 +1803,7 @@ run_staleness() {
   # okf_md_files (l3-lib.sh), not a bare `find -type f`: a SYMLINK to a .md never matches `-type f`, so L3
   # silently skipped symlinked concepts that L1 counted (python is_file() follows links), and an expired
   # symlinked concept read as "nothing expired". It also drops broken links (they cannot be read) and does
-  # not enter symlinked FOLDERS, as the validator does (#62). Same class as lessons/readdir-symlink-dirent-trap.md.
+  # not enter symlinked FOLDERS, as the validator does. Same class as lessons/readdir-symlink-dirent-trap.md.
   # Caught by E-6b.
   # `find -print0` piped straight to xargs -0. The previous `find | tr '\n' '\0'`
   # split on newlines, so a bundle path CONTAINING a newline was cut into
@@ -1839,7 +1839,7 @@ run_staleness() {
   # A crashed awk printed nothing and nothing read as "PASS nothing expired" (ticket 07).
   if [ "$scan_rc" -ne 0 ]; then say "  L3 staleness     COULD NOT RUN (the awk/xargs scan exited $scan_rc)"; return $EXIT_DEP; fi
   if [ -z "$report" ]; then say "  L3 staleness     PASS   nothing expired"; return 0; fi
-  # Ownership (#68): each finding ends with its note's owner, so the text and --json stale[]/lifecycle[] both carry it.
+  # Ownership: each finding ends with its note's owner, so the text and --json stale[]/lifecycle[] both carry it.
   # The path is everything between the kind word and the LAST " (", so a path with spaces or brackets survives.
   if [ -s "$TMP/owners.tsv" ]; then
     report=$(printf '%s\n' "$report" | awk -F'\t' 'NR==FNR { o[$1]=$2; next }
@@ -1851,7 +1851,7 @@ run_staleness() {
   fi
   # "expired" and "malformed stale_after" are STALENESS. A status outside draft/stable/deprecated (OKF 5.4) is a lifecycle
   # finding that L1 also warns about: counting it as "need attention" beside the expired notes made 4 overdue notes read as
-  # 84, and made --fail-stale exit 4 on a bundle in which nothing had expired (public issue #3).
+  # 84, and made --fail-stale exit 4 on a bundle in which nothing had expired (okf-knowledge-gate#3).
   local n_stale n_status
   n_stale=$(printf '%s\n' "$report" | grep -Ec '^ +(expired|malformed) '); n_status=$(printf '%s\n' "$report" | grep -Ec '^ +status ')
   ADVISORIES=$((ADVISORIES + n_stale + n_status))
@@ -1925,7 +1925,7 @@ selftest() {
     say "  L2 (house profile):"
     probe "missing stale_after -> F102"  "F102" run_profile "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\n---\nbody\n'
     probe "status outside vocab -> F105" "F105" run_profile "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: current\nstale_after: "2099-01-01"\n---\nbody\n'
-    # #93: L2 runs on the .okfignore mirror, which must still hold the non-markdown files a note links to. The control
+    # L2 runs on the .okfignore mirror, which must still hold the non-markdown files a note links to. The control
     # (a link to a missing file must give L002) keeps the probe from passing because the L002 check went dead.
     _mirror_probe() {
       local src="$TMP/selftest-ign" mir="$TMP/selftest-ign-mirror" img l2n ctl
@@ -1941,7 +1941,7 @@ selftest() {
       [ "${l2n:-1}" -eq 0 ] && [ "${ctl:-0}" -gt 0 ] && echo "linked file kept in the mirror"
     }
     probe "ignored folder and a linked image" "linked file kept in the mirror" _mirror_probe "" ""
-    # #103: a bundle inside a larger vault with okf_check.wikilink_root must resolve a vault-root link to an existing note
+    # a bundle inside a larger vault with okf_check.wikilink_root must resolve a vault-root link to an existing note
     # and still report one to a missing note (the control: a probe that only drops every L001 would pass the first half).
     _wikilink_root_probe() {
       local vault="$TMP/selftest-wr" bun="$TMP/selftest-wr/p/bundle" tgt hit miss
@@ -1981,7 +1981,7 @@ selftest() {
   probe "recorded source changed" "records it as of" run_derived_stale "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\nsources:\n  - resource: good.md\n    last_modified: "2000-01-01"\n---\nbody\n'
 
   say "  Successor (deprecated_requires):"
-  # The option is switched on for this probe only: the manifest is put back before the next probe (#67, review F-A).
+  # The option is switched on for this probe only: the manifest is put back before the next probe (review F-A).
   _succ_probe() {
     local BUNDLE="$1" rc
     [ -f "$1/okf-base.yaml" ] && cp -p "$1/okf-base.yaml" "$TMP/selftest.base"
@@ -1993,7 +1993,7 @@ selftest() {
   probe "deprecated, no superseded_by" "no superseded_by names its successor" _succ_probe "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: deprecated\nstale_after: "2099-01-01"\n---\nbody\n'
 
   say "  Owner (require_owner):"
-  # require_owner is switched on for this probe only, like the Successor probe (#68; the 0.9.7 review rule).
+  # require_owner is switched on for this probe only, like the Successor probe (the 0.9.7 review rule).
   _owner_probe() {
     local BUNDLE="$1" CONFIG_RC=0 rc
     [ -f "$1/okf-base.yaml" ] && cp -p "$1/okf-base.yaml" "$TMP/selftest.base"
@@ -2005,7 +2005,7 @@ selftest() {
   probe "note without an owner" "bad.md: no owner" _owner_probe "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\nbody\n'
 
   say "  Size (okf_check.size):"
-  # The limit is set for this probe only (50 characters; the baseline notes are shorter), like the Owner probe (#104).
+  # The limit is set for this probe only (50 characters; the baseline notes are shorter), like the Owner probe.
   _size_probe() {
     local BUNDLE="$1" CONFIG_RC=0 rc
     [ -f "$1/okf-base.yaml" ] && cp -p "$1/okf-base.yaml" "$TMP/selftest.base"
@@ -2023,21 +2023,21 @@ selftest() {
   probe "body over the limit" "size probe: bad.md listed, the notes under the limit are not" _size_probe "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\n123456789012345678901234567890123456789012345678901234567890'
 
   say "  Duplicates (--duplicates):"
-  # A note titled like the baseline note (good.md, "Baseline") must be listed as a same-title pair (#69).
+  # A note titled like the baseline note (good.md, "Baseline") must be listed as a same-title pair.
   _dup_probe() { local DUP_BODY=0; run_duplicates "$1"; }
   probe "same title" "title 1.00" _dup_probe "bad.md" '---\ntype: Lesson\ntitle: baseline!\ndescription: Another text.\nstatus: stable\nstale_after: "2099-01-01"\n---\nother body\n'
 
   say "  Duplicates (--duplicates-body):"
-  # A note whose body equals the baseline note's ("body") must be listed as a body pair (#70).
+  # A note whose body equals the baseline note's ("body") must be listed as a body pair.
   _body_probe() { local DUP_BODY=1; run_duplicates "$1"; }
   probe "same body" "body 1.00" _body_probe "bad.md" '---\ntype: Lesson\ntitle: Other\ndescription: Another text.\nstatus: stable\nstale_after: "2099-01-01"\n---\nbody\n'
 
   say "  Scoped (--file):"
-  # The edit hook (#61) reads "nothing printed" as a clean note, so a helper that loses its findings must fail here (#60).
+  # The edit hook reads "nothing printed" as a clean note, so a helper that loses its findings must fail here.
   _scoped_probe() { run_scoped "$1" "$1/bad.md"; }
   probe "note without frontmatter" "bad.md: L1 error: " _scoped_probe "bad.md" 'no frontmatter here\n'
 
-  say "  Refused notes (#109):"
+  say "  Refused notes:"
   # A note that is a device, a pipe or a folder is named and never listed for a layer. The probe plants /dev/null behind a
   # link (it returns EOF at once) and a folder named x.md, and reads NEITHER: it asks only for the lists. The control leg:
   # the regular notes stay listed, so a rule that refuses everything does not pass.
@@ -2066,7 +2066,7 @@ selftest() {
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t okfcheck)
 # Before anything writes "$TMP/...": with an empty TMP each of those paths is at the filesystem root (/refused.lst).
 [ -n "$TMP" ] && [ -d "$TMP" ] || { echo "okf-check: cannot make a temporary folder (TMPDIR=${TMPDIR:-unset}) - no verdict is possible" >&2; exit $EXIT_DEP; }
-# On every way out, including an outside TERM or Ctrl-C, the limited command's tree is stopped first (#109).
+# On every way out, including an outside TERM or Ctrl-C, the limited command's tree is stopped first.
 trap 'stop_limited; rm -rf "$TMP"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
@@ -2163,8 +2163,8 @@ if [ -n "$_unreadable" ]; then
 fi
 
 if ! doctor >/dev/null 2>&1; then doctor; echo "L1 cannot run — fix the above." >&2; exit $EXIT_DEP; fi
-resolve_note_cap "$BUNDLE" || exit $EXIT_DEP   # every layer and helper below judges a note by this one cap (#109)
-# --duplicates (#69) is a report of its own, not a gate: it runs instead of the layers and always exits 0 once it ran.
+resolve_note_cap "$BUNDLE" || exit $EXIT_DEP   # every layer and helper below judges a note by this one cap
+# --duplicates is a report of its own, not a gate: it runs instead of the layers and always exits 0 once it ran.
 # Its readers are all bounded (okf_notes.read_note), and the manifest is judged first: a device or pipe named okf-base.yaml
 # is refused up front, never opened (the plain open().read() of review round 1 ran a real /dev/zero out of memory).
 if [ "$MODE" = duplicates ]; then
@@ -2189,15 +2189,15 @@ FP_DEGRADED=0
 if [ -z "$FP_BEFORE" ] && [ -n "$(okf_md_files "$BUNDLE" | tr -d '\0' | head -c 1)" ]; then
   FP_DEGRADED=1
 fi
-# Paths no layer may open (#109): found by stat alone, before any layer reads the bundle.
+# Paths no layer may open: found by stat alone, before any layer reads the bundle.
 okf_refused_notes "$BUNDLE" > "$TMP/refused.lst" 2>/dev/null
-# THE FROZEN COPY (#109 round 2). Every layer reads a copy of the notes and config that okf_guard.py made with a bounded
+# THE FROZEN COPY (round 2). Every layer reads a copy of the notes and config that okf_guard.py made with a bounded
 # read judged on the opened descriptor, never the bundle itself: the pre-scan above judges a path by stat, and a note that
 # turned into a link to /dev/zero a moment later was read for ever by L1 (container case C9). The copy also leaves out what
 # .okfignore excludes and every refused path, so L1 and okflint (which walk the folder themselves) never meet them. The
 # bundle itself is never touched. It costs one python start and one copy of the notes (measured in the commit message).
 LAYER_BUNDLE="$BUNDLE"; IGNORED=""; REAL_BUNDLE="$BUNDLE"
-_keep_other=0; [ -s "$TMP/refused.lst" ] || _keep_other=1   # #15: no refused path and no note excluded: an ignored image stays linked
+_keep_other=0; [ -s "$TMP/refused.lst" ] || _keep_other=1   # no refused path and no note excluded: an ignored image stays linked
 _ml=$(okfignore_mirror "$BUNDLE" "$TMP/okfmirror" "$_keep_other"); _mrc=$?
 if [ "$_mrc" -ne 0 ]; then
   if okfignore_present "$BUNDLE"; then say "  IGNORE           could not apply .okfignore (see the message above) - no verdict is possible"
@@ -2216,7 +2216,7 @@ if okfignore_present "$BUNDLE"; then
     say "  ignore           .okfignore: 0 file(s) excluded"
   fi
 fi
-if [ "${_exall:-0}" -gt 0 ] || [ -s "$TMP/refused.lst" ]; then   # an ignore file that excludes nothing changes nothing (#15)
+if [ "${_exall:-0}" -gt 0 ] || [ -s "$TMP/refused.lst" ]; then   # an ignore file that excludes nothing changes nothing
   okfignore_list "$BUNDLE" > "$TMP/keep.lst" 2>/dev/null
   export OKF_KEEP_LIST="$TMP/keep.lst"
 fi

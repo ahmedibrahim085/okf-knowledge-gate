@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for plugin/tests/okf-test-lib.sh, the helpers the okf-check suites share (ticket #92, cases S11-TS-*).
+# Tests for plugin/tests/okf-test-lib.sh, the helpers the okf-check suites share (cases S11-TS-*).
 #
 # The timing mode is the part with behaviour: OKF_TEST_TIMING=1 prints one line per section
 # (seconds and assert count) so a split of the big suite is decided by measurement, not by line counts.

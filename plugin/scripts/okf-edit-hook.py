@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""okf-edit-hook.py — opt-in PostToolUse hook: check the edited note when it sits in a bundle (#61, public issue #8).
+"""okf-edit-hook.py — opt-in PostToolUse hook: check the edited note when it sits in a bundle (okf-knowledge-gate#8).
 
 In a multi-agent setup a whole batch of edits can land before anyone runs okf-check. This hook runs the scoped
-check (`okf-check <bundle> --file <note>`, #60) on each Write/Edit of a note and tells Claude about a finding at once.
+check (`okf-check <bundle> --file <note>`) on each Write/Edit of a note and tells Claude about a finding at once.
 
 Platform contract (https://code.claude.com/docs/en/hooks, read 2026-10-18):
   - stdin is the PostToolUse JSON; for Write and Edit "`tool_input.file_path` is always absolute".

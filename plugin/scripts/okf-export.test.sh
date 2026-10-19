@@ -227,7 +227,7 @@ rc=$(PYTHONPATH="$TMP/decoy" run "$V" "$O")
   || bad "S10-H2d vendored yaml" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
 
 # --- S10-H3: dated history lines produce a log ---------------------------------------------------
-# Spec 3.1 reserves log.md, so the vault's own log.md note is the history (lead decision on #65).
+# Spec 3.1 reserves log.md, so the vault's own log.md note is the history (lead decision).
 # Both dated forms, written out of order; spec 9 wants date groups, newest first, no frontmatter. The vault log's own
 # title is kept (0.9.16 review item 5).
 V="$TMP/h3/kb"; O="$TMP/h3/out"
@@ -330,7 +330,7 @@ rc=$(run "$V" "$O")
   && grep -qF 'd?/index.md' "$TMP/out.txt"; } \
   && ok "X-10 control characters in the file names of an exit-2 message (rename collision) are replaced by ?" \
   || bad "X-10 control characters, exit 2" "rc=$rc report: $(head -2 "$TMP/out.txt" | od -c | head -4 | tr '\n' ' ')"
-# X-11 (#64 on 0.9.14): the generated index reads each note's title as the validator does. A BOM note is listed under
+# X-11 (on 0.9.14): the generated index reads each note's title as the validator does. A BOM note is listed under
 # its title; a note that is not valid UTF-8 (copied unchanged, X-6) is listed under its file name, not a crash.
 V="$TMP/x11/vault"; O="$TMP/x11/out"
 mkdir -p "$V"; printf '\357\273\277---\ntype: Note\ntitle: Bom Title\ndescription: With a BOM.\n---\nbody\n' > "$V/bom.md"
@@ -383,7 +383,7 @@ rc=$(run "$V" "$O")
 { [ "$rc" = 0 ] && grep -qF 'See [h > Top](h.md#top).' "$O/l.md"; } 2>/dev/null \
   && ok "X-9 a heading in a BOM note without frontmatter is found" \
   || bad "X-9 BOM heading" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
-# And for the log problems (#65): an undated line is quoted in full.
+# And for the log problems: an undated line is quoted in full.
 V="$TMP/ctl3/kb"; O="$TMP/ctl3/out"
 lognote "$V" log.md "$(printf '# History\nstray\033[2Jtext\n- 2026-05-01: kept')"
 rc=$(run "$V" "$O")
@@ -391,7 +391,7 @@ rc=$(run "$V" "$O")
   && ! LC_ALL=C grep -q "$(printf '[\001-\010\016-\037\177]')" "$TMP/out.txt"; } \
   && ok "X-16 control characters in a quoted log line are replaced by ? in the problem line (exit 1)" \
   || bad "X-16 control characters, log" "rc=$rc report: $(head -2 "$TMP/out.txt" | od -c | head -4 | tr '\n' ' ')"
-# X-17 (#65 on 0.9.14): a log note is read as written (0.9.14 keeps a BOM and CRLF), so its BOM must not make its title
+# X-17 (on 0.9.14): a log note is read as written (0.9.14 keeps a BOM and CRLF), so its BOM must not make its title
 # line an undated line, and a CRLF entry is still an entry.
 V="$TMP/x17/kb"; O="$TMP/x17/out"
 mkdir -p "$V"; printf '\357\273\277# History\r\n- 2026-05-01: kept\r\n' > "$V/log.md"
@@ -436,7 +436,7 @@ rc=$(run "$V" "$O")
   && ok "X-15 a folder named index is refused with a message that says to rename the folder" \
   || bad "X-15 folder named index" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
 
-# --- #65 on 0.9.15: the log file follows the same name and text rules ---------------------------------------
+# --- on 0.9.15: the log file follows the same name and text rules ---------------------------------------
 # X-18: log.md is reserved whatever its case (a case-insensitive disk reads Log.md as log.md). Log.md becomes the spec 9
 # log written as log.md, and the index does not list it as a concept.
 V="$TMP/x18/kb"; O="$TMP/x18/out"
@@ -596,7 +596,7 @@ done
 [ -z "$r29" ] && ok "X-29 an empty log, a title only and headings only are reported as no dated entry (exit 1), no log written" \
   || bad "X-29 no dated entry" "$r29"
 
-# --- S10-CL: two inputs that map to one output name (#96) ----------------------------------------
+# --- S10-CL: two inputs that map to one output name ----------------------------------------
 # Index.md and index.md can share a folder only on a case-sensitive disk; both become <folder>.md, so the second
 # write used to replace the first in silence. The unit cases (CL-U*) hand the command's own path rule an in-memory
 # file list, so they run on every disk; the CL-C* cases build the real vault and SKIP where the disk cannot hold it.
@@ -666,7 +666,7 @@ else
     || bad "S10-CL-C4 different folders" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
 fi
 
-# --- S10-IC: an indented code block is code, as a fenced one is (#112) ------------------------------
+# --- S10-IC: an indented code block is code, as a fenced one is ------------------------------
 # CommonMark: 4 spaces (or a tab) in, where a paragraph cannot continue, open a code block; inside a list the same
 # indent continues the list item. A [[link]] in code is shown text, so it stays as written and is not checked.
 V="$TMP/ic/kb"; O="$TMP/ic/out"
@@ -696,7 +696,7 @@ want=$(printf '# Log\n\n## 2026-05-23\n* a\n\n## 2026-05-22\n    - 2026-05-21: r
   && ok "S10-IC-3 a log item indented 4 after a blank line outside a list stays a raw line of its day; inside a list it is a dated item" \
   || bad "S10-IC-3 log indented item" "rc=$rc log: $(printf '%s' "$log" | tr '\n' '|') report: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
 
-# --- S10-CO: an output disk that does not tell upper from lower case (#112) --------------------------
+# --- S10-CO: an output disk that does not tell upper from lower case --------------------------
 # A case-sensitive vault may hold Notes.md and notes.md; macOS and Windows disks write both to one file. okf-export
 # probes the output disk and, where it folds case, refuses names that differ only in case. The unit cases (CO-U*)
 # hand the rule an in-memory file list; CO-M* run main() with a fake probe result (a seam), because a case-folding

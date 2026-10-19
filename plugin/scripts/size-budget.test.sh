@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for the body-size budget, okf_check.size (cases S16-SB-* in docs/0.9.x-cases.md and
-# docs/gherkin/s16-size-budget.feature; GitHub #104, public okf-knowledge-gate #17).
+# docs/gherkin/s16-size-budget.feature; public okf-knowledge-gate #17).
 #
 # Agents read a note whole inside a fixed context window, so a house rule caps the BODY of a note in characters.
 # These tests observe what a maintainer sees: `okf-check` text, `--json` and the exit code, on small bundles.
