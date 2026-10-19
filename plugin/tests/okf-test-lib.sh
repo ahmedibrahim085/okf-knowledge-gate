@@ -86,11 +86,12 @@ okf_test_summary() {
   [ "${OKF_TEST_TIMING:-}" = 1 ] && section_flush
   echo
   if [ "$SKIPPED" -gt 0 ]; then
-    echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"
+    # The remedies come first: the gate runners take only the LAST line of a suite as its summary.
     [ -n "$SKIP_REMEDIES" ] && {
       printf '  to run the skipped coverage:%s\n' "$SKIP_REMEDIES"
       printf '  or in one step: tools/install-dev-deps.sh --yes\n'
     }
+    echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"
   else
     echo "  $PASS passed, $FAIL failed"
   fi

@@ -16,7 +16,7 @@ VERIFY="$HERE/okf-verify"
 REALPY=$(command -v python3)   # captured before any PATH stub shadows it
 PASS=0; FAIL=0
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t okfverify)
-trap 'rm -rf "$TMP" ${LOOPDIR:+"$LOOPDIR"}' EXIT   # LOOPDIR is set later; the trap is live before it exists
+trap 'rm -rf "$TMP" ${LOOPDIR:+"$LOOPDIR"} >/dev/null 2>&1' EXIT   # LOOPDIR is set later; the trap is live before it exists. Silent: the gates read a suite's last line as its summary, and a wrapped rm can print
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -970,16 +970,17 @@ cc num-str   '  duplicates:\n    time_limit: soon\n' 2 'okf_check.duplicates.tim
 cc num-bool  '  duplicates:\n    threshold: true\n' 2 'okf_check.duplicates.threshold must be a number'
 
 echo
-if [ "$SKIPPED" -gt 0 ]; then
-  echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"
-else
-  echo "  $PASS passed, $FAIL failed"
-fi
+# Before the summary: the gate runners take only a suite's LAST line as its summary, and a wrapped `rm` can print.
 if [ "$FAIL" -gt 0 ]; then
   echo "  diagnostic snapshot: $FAILCTX"
   echo "  (this suite has an unreproduced intermittent failure mode — if that is"
   echo "   what you just hit, that file is the evidence nobody has captured yet)"
 else
-  rm -f "$FAILCTX"
+  rm -f "$FAILCTX" >/dev/null 2>&1
+fi
+if [ "$SKIPPED" -gt 0 ]; then
+  echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"
+else
+  echo "  $PASS passed, $FAIL failed"
 fi
 [ "$FAIL" -eq 0 ] || exit 1

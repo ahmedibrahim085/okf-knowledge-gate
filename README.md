@@ -309,7 +309,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.27
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.28
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -325,7 +325,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.27
+    rev: v0.9.28
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -446,7 +446,12 @@ fix. A change is reviewed on two axes (standards and spec) before it is released
    (tests LT-37f and LT-41a).
 2. Add a `## [x.y.z] - YYYY-MM-DD` section to [`CHANGELOG.md`](CHANGELOG.md).
 3. Run the suites and `--selftest`, on macOS and on Linux: `tools/linux-gate.sh` streams the committed tree
-   into a Debian container (settings in `tools/linux-gate.conf`; Docker context from `OKF_DOCKER_CONTEXT`).
+   into a Debian container (settings in `tools/linux-gate.conf`; Docker context from `OKF_DOCKER_CONTEXT`), and
+   `tools/macos-gate.sh <log>` runs the same suite list on this Mac's working tree, holding the heavy-suite lock (a lock
+   left by a killed gate is taken over) and writing a machine sample every 5 s to `<log>.samples`. Both gates run each
+   suite with stdin from `/dev/null` under a time limit (`OKF_GATE_SUITE_TIMEOUT`) and pass it only when it exits 0 and
+   its last line is a summary of at least 1 passed and 0 failed, so a suite that stops early fails. `tools/check-tests.sh` (run by
+   the pre-push gate) fails on a `*.test.sh` that `tools/linux-gate.conf` does not list.
    Two rules for whoever runs them (the full text, to paste into an agent's brief, is `docs/agents/safe-probe-brief.md`):
    - **Dangerous probes never run on the machine you work on.** A real device, a pipe, a socket, a file over 10 MB, an
      alias or zip bomb or a fork loop runs only in a throwaway container with hard caps

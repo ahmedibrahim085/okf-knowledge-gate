@@ -74,5 +74,16 @@ else
   bad "TS-4 section call missing" "headers without a section call:$miss"
 fi
 
+# TS-5 (S18-H4): the summary is the last line a suite prints, also when a skip lists how to run the skipped coverage.
+# The gate runners take only a last line of the form "N passed, M failed" as the summary.
+printf '#!/usr/bin/env bash\n. "$OKF_LIB"\nok a\nskip b "install the thing"\nokf_test_summary\n[ "$FAIL" -eq 0 ] || exit 1\n' > "$TMP/rem.test.sh"
+OKF_LIB="$LIB" bash "$TMP/rem.test.sh" > "$TMP/rem.txt" 2>&1
+last=$(awk 'NF { l = $0 } END { print l }' "$TMP/rem.txt")
+if printf '%s\n' "$last" | grep -Eq '^ *1 passed, 0 failed, 1 SKIPPED' && grep -q 'install the thing' "$TMP/rem.txt"; then
+  ok "TS-5 the summary is the last line, after the skipped-coverage remedies"
+else
+  bad "TS-5 summary last" "last line: $last"
+fi
+
 echo; echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

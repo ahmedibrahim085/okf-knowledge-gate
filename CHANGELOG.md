@@ -9,6 +9,23 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.28] - 2026-10-19
+
+OKF Knowledge Gate 0.9.28 closes holes in our own release gate: a test suite that ran nothing could be reported as passing, and six suites never ran on Linux.
+
+### Fixed
+- **The gate runners no longer pass a suite that did not run its tests.** `tools/check-tests.sh` accepted a suite with an early `exit 0` in forms it could not see (`true && exit 0`, `{ exit 0; }`, an `if` body, a one-line `FAIL=0; exit 0; ...`). Both gate runners now call one verdict function: a suite passes only when it exits 0, its last non-empty line is a summary of at least one passed and no failed, and the log holds as many `PASS` lines as the summary says. A suite with no summary, with `0 passed`, with a summary quoted inside a failure message, or killed after printing a good summary fails.
+- **Six suites that the Debian gate never ran are now listed in `tools/linux-gate.conf` and pass there** (check-tests, install-git-hooks, linux-gate, pre-push-gate, refresh-graphs, sync-all-graphs), and a new check fails when a `*.test.sh` file is neither listed nor marked macOS-only with a reason.
+- **An empty suite list fails** in both runners (it passed with zero suites run).
+
+### Added
+- **`tools/macos-gate.sh`**: the macOS gate that was a scratch script is now in the repository. It reads the same suite list from the conf, runs the two halves of the okf-check tests side by side, gives each suite stdin from `/dev/null` and a time limit from the conf, and writes a machine sample (load, Defender CPU, process count, top five processes) every 5 s next to its log, so a slow run keeps its own evidence.
+- It takes the heavy-suite lock with its pid in it, takes the lock over from a gate that was killed, waits a bounded time for a live one, and stops the side-by-side suites before it gives the lock back on TERM, INT or HUP.
+
+### Changed
+- The Debian gate runs the tested tree as a one-commit git repository, because three of the newly listed suites need one.
+- Known limits, on the backlog: a suite that skips most of its cases still passes; killing the gate with SIGKILL leaves the side-by-side suites running until their time limit.
+
 ## [0.9.27] - 2026-10-19
 
 OKF Knowledge Gate 0.9.27 makes `okf-check` and the other tools safe to run on a folder that holds a note which is not a regular file. On 2026-10-18 a note that was a symbolic link to `/dev/zero` made the L2 profile tool grow to more than 100 GB of memory and brought a 24 GB Mac down.
@@ -598,7 +615,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.27...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.28...HEAD
+[0.9.28]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.27...v0.9.28
 [0.9.27]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.26...v0.9.27
 [0.9.26]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.25...v0.9.26
 [0.9.25]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.24...v0.9.25
