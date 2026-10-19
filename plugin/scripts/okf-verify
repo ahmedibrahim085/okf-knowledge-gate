@@ -83,7 +83,11 @@ PATH_RE = re.compile(r"([`\"'])((?:~|/)[A-Za-z0-9._/ -]*[A-Za-z0-9._-]\.[A-Za-z0
 # (an absolute path is a PATH_RE claim); the lookbehind keeps a match from starting mid-token, so a Windows path (`C:\x\y.py:3`)
 # or a URL is not cut into a citation of its last piece. (#56) A path cut at a SPACE cannot be told from prose here: check_citation
 # answers UNRESOLVED when the cut is the end of a longer file name.
-CITE_RE = re.compile(r"(?<![\w./\\-])([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?`?\s+(?:@|at\s+)`?([0-9a-f]{7,40})\b`?", re.I)
+CITE_RE = re.compile(r"(?<![\w./\\-])([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?`?(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:@|at(?:[ \t]+|[ \t]*\r?\n[ \t]*))`?([0-9a-f]{7,40})\b`?", re.I)
+# The gap between `path:line` and `@sha` may hold ONE line break (a wrapped line) but never a blank line: across a paragraph break the two
+# are separate statements and one was read as the other's citation. (#111, audit R058)
+# The same claim with a path that holds a space, QUOTED: the quotes say where the path starts, so nothing is cut and nothing is guessed. (#111)
+QCITE_RE = re.compile(r"(?<![\w./\\-])([`\"'])([A-Za-z0-9_][A-Za-z0-9_./-]*(?: [A-Za-z0-9_./-]+)+\.[A-Za-z0-9]{1,8})\1:(\d+)(?:-(\d+))?`?(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:@|at(?:[ \t]+|[ \t]*\r?\n[ \t]*))`?([0-9a-f]{7,40})\b`?", re.I)
 QUOTED = re.compile(r"[\"“]([^\"”\n]{12,120})[\"”]")
 RESERVED = {"index.md", "log.md"}
 FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})")
@@ -275,7 +279,34 @@ def blob_lines(repo: Path, sha: str, path: str):
     return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0), ""
 
 
-def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects: list[str]):
+def spaced_names(path: str, prefix: str):
+    """The names the writer's own words could spell if the cut at a space was wrong: `my big w.py:3` -> `big w.py`, `my big w.py`. (#111)"""
+    toks = prefix[-200:].split()[-3:]
+    out = []
+    for k in range(1, len(toks) + 1):
+        words = toks[-k:]
+        words[0] = words[0].lstrip("`\"'([<")
+        if words[0]:
+            out.append(" ".join(words + [path]))
+    return out
+
+
+_TREES: dict[tuple[str, str], tuple[int, str]] = {}
+
+
+def tree_listing(repo: Path, sha: str):
+    """`git ls-tree -r` of one commit, read once per run: it ran per citation and grew the spawns with the citations. Only a success is kept."""
+    k = (str(repo), sha)
+    if k not in _TREES:
+        rc, out = git(repo, "ls-tree", "-r", "--name-only", sha)
+        if rc != 0:
+            return rc, out
+        _TREES[k] = (rc, out)
+    return _TREES[k]
+
+
+def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects: list[str], prefix: str = "", quoted: bool = False,
+                   named: list | None = None):
     """`path:lines @sha`: the sha must resolve, then the path must exist in THAT commit's tree.
 
     REFUTED only when the commit was found and its tree lacks the path: then we looked in the right place. A sha that
@@ -285,7 +316,8 @@ def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects:
     v, d = check_sha(sha, repos, subjects)
     if v != CONFIRMED:
         return v, f"sha part: {d}"
-    found, absent, cut = [], [], []
+    found, absent, cut, spaced = [], [], [], []
+    cands = [] if quoted else spaced_names(path, prefix)
     for r in repos:
         rc, out = git(r, "cat-file", "-e", f"{sha}^{{commit}}")
         if rc == GIT_UNAVAILABLE:
@@ -293,18 +325,32 @@ def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects:
         if rc != 0:
             continue
         rc, _ = git(r, "cat-file", "-e", f"{sha}:{path}")
-        if rc == 0:
+        exact = rc == 0
+        if exact:
             found.append((r, path))
+        if exact and not cands:
             continue
-        rc, out = git(r, "ls-tree", "-r", "--name-only", sha)
+        rc, out = tree_listing(r, sha)
         if rc != 0:
             return UNRESOLVED, f"could not list {sha} in {r.name}: {out}"
+        # `my w.py:3` may name the file `my w.py`, whose end `w.py` is another file: the words before the cut decide nothing alone.
+        spaced.extend((r, n) for n in out.splitlines() if any(n == c or n.endswith("/" + c) for c in cands))
+        if exact:
+            continue
         hits = [n for n in out.splitlines() if n.endswith("/" + path)]
         found.extend((r, n) for n in hits)
         if not hits:
             # `my dir/w.py` cited with its space reads as `dir/w.py`: the end of a longer name, not at a "/". Not a missing file.
             longer = [n for n in out.splitlines() if n.endswith(" " + path)]
-            (cut.extend(longer) if longer else absent.append(r.name))
+            (cut.extend(longer) if longer and not quoted else absent.append(r.name))
+    if spaced:
+        names = sorted({n for _, n in found} | {n for _, n in spaced})
+        if found or len({n for _, n in spaced}) > 1:
+            return UNRESOLVED, (f"the cited path is ambiguous: {path} with the words before it can name {' or '.join(names[:4])} "
+                                f"at {sha}, so no file was checked")
+        found = spaced
+        if named is not None:
+            named.append(spaced[0][1])  # the caller prints the file that was checked, not the cut tail
     if len({n for _, n in found}) > 1:
         names = sorted({n for _, n in found})
         return UNRESOLVED, (f"path part is ambiguous: {len(names)} files at {sha} end with {path} "
@@ -653,21 +699,32 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False):
         # A citation is ONE claim: blank it out before the SHA and path scans so its sha is not also counted on its own.
         cites = []
         def take(m):
-            cites.append(m)
+            g = m.groups()
+            quoted = len(g) == 5
+            cites.append((g[1:] if quoted else g) + (m.string[m.string.rfind("\n", 0, m.start()) + 1:m.start()], quoted))
             return " " * len(m.group(0))
-        body = CITE_RE.sub(take, body)
+        body = CITE_RE.sub(take, QCITE_RE.sub(take, body))
         found = 0
-        seen: set[tuple[str, str]] = set()
+        seen: set[tuple] = set()
+        checked: dict = {}
 
-        for m in cites:
-            path, lo, hi, sha = m.group(1), m.group(2), m.group(3), m.group(4).lower()
+        for path, lo, hi, sha, prefix, quoted in cites:
+            sha = sha.lower()
             lines = f"{lo}-{hi}" if hi else lo
             claim = f"{path}:{lines} @{sha}"
-            if ("cite", claim) in seen:
+            # The words before the cut can change which file is named, so only the RESULT can say two citations are the same claim.
+            ck = (claim, quoted, tuple(() if quoted else spaced_names(path, prefix)))
+            if ck not in checked:
+                named: list = []
+                checked[ck] = (*check_citation(path, lines, sha, repos, subjects, prefix, quoted, named), named)
+            v, d, named = checked[ck]
+            if named:
+                claim = f"{named[0]}:{lines} @{sha}"
+            key = (claim, v, d)
+            if key in seen:
                 continue
-            seen.add(("cite", claim))
+            seen.add(key)
             found += 1
-            v, d = check_citation(path, lines, sha, repos, subjects)
             results.append({"concept": rel, "kind": "citation", "claim": claim,
                             "verdict": v, "detail": d})
 

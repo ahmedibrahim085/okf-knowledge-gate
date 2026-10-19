@@ -934,7 +934,7 @@ here"*. Conformance is a question about form; this is a question about fact.
 | RV-14 | Range ending on the last line (S2-E2); one past it; line 0; last line without a final newline | CONFIRMED; REFUTED; REFUTED; counted | ✅ |
 | RV-15 | Cited file empty or binary (S2-E1) | empty: REFUTED (0 lines); binary: UNRESOLVED, detail `binary`; never a crash | ✅ |
 | RV-20 | Cited path is a symlink at that commit (S2-N4) | UNRESOLVED, detail `symlink`; never REFUTED, never CONFIRMED | ✅ |
-| RV-21 | `my dir/w.py:1 @sha` (path cut at a space); `C:\x\y.py:3`, a URL, `v1.2:3 @ 5pm` (S2-E3) | the space case is UNRESOLVED (never REFUTED; a missing `ta.py` beside `data.py` is still REFUTED); the others are no claim and get no verdict | ✅ |
+| RV-21 | `a dir/w.py:1 @sha` (path cut at a space, words that do not spell the file; `my dir/w.py:1 @sha` is RV-27); `C:\x\y.py:3`, a URL, `v1.2:3 @ 5pm` (S2-E3) | the space case is UNRESOLVED (never REFUTED; a missing `ta.py` beside `data.py` is still REFUTED); the others are no claim and get no verdict | ✅ |
 | RV-22 | Line number of 5000 digits, alone or ending a range (S2-N5) | REFUTED `line number out of range`, exit 1, the other citations still print, also under Python 3.11-3.13 | ✅ |
 | RV-23 | Reversed range `20-10` (S2-E4) | read as up to the larger number: CONFIRMED when within the file, REFUTED when past the end | ✅ |
 | RV-16 | An unknown key under `okf_check`, `verify` or a repository entry; a null `okf_check`/`verify`; `repos` as a list of strings; an empty `path`; invalid UTF-8 | exit 2, one line naming the key (S1-N3, schema shared with `okf-check`) | ✅ |
@@ -944,6 +944,7 @@ here"*. Conformance is a question about form; this is a question about fact.
 | RV-24 | An `{enum: [...]}` schema node (`okf_check.deprecated_requires`) | the listed value: exit 0; any other: exit 2, the error names the value as JSON (`true`, `null`, `"x "`, not a Python repr) and the allowed ones (#67) | ✅ |
 | RV-25 | A `{type: boolean}` node (`require_owner`), a `{map: node}` node (`owners`: free keys, each value a node) and a node that `requires` a sibling value (`owners` needs `require_owner: true`), and `key_no_prefix` (an `owners` key that starts with `!`) | valid: exit 0; a non-boolean, a list for the map, a non-string or empty value, and a missing sibling: exit 2 with the message (#68) | ✅ |
 | RV-26 | A `{type: number, min, max}` node (`okf_check.duplicates.threshold`, `time_limit`) | a number within the bounds, int or float: exit 0; out of bounds, a string, a boolean: exit 2 naming the bounds (#69) | ✅ |
+| RV-27 | A citation with a space before `:line` (S2-SP-*, #111): `my w.py:3 @sha` with `my w.py` and `w.py` present, with only one of them, with two spaces, in a table cell, quoted; `w.py:3`, a blank line, `@sha` | both present: UNRESOLVED naming both; only `my w.py`: checked in that file; only `w.py`: CONFIRMED (prose) or, quoted, REFUTED; a blank line splits a citation | ✅ |
 
 **V-10 and V-11 came from live-firing, not from imagination.** The first run on
 the real bundle REFUTED `/tmp/net-spy.log` — a `const LOG = …` literal inside an

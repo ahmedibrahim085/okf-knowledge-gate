@@ -9,6 +9,18 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.29] - 2026-10-19
+
+OKF Knowledge Gate 0.9.29 stops `okf-verify` from confirming a code citation against the wrong file when the cited path contains a space.
+
+### Fixed
+- **A citation whose path has a space is no longer confirmed against the part after the space.** Given a note that cites `my w.py:3 @sha`, `okf-verify` read the path as `w.py` (the text after the last space) and reported CONFIRMED against a different file, even when a file named `my w.py` existed. It now looks for the longest name the words before `:line` can spell: when only `my w.py` exists the claim is checked in that file (CONFIRMED or REFUTED with its line count), when both `my w.py` and `w.py` exist it is UNRESOLVED and names both, and when only `w.py` exists the plain text form is still CONFIRMED against `w.py` (`my` is prose), while the quoted form (`` `my w.py`:3 ``, `"my w.py":3`) is REFUTED. A Windows path with a space is not a citation.
+- **A blank line ends a citation.** `w.py:3`, a blank line and then `@sha` were read as one citation; only a single line break between them still counts.
+- Two consequences of the new path search were kept out of the output: the same citation written twice with different words in front (`see w.py:3 @sha` and `Also in w.py:3 @sha`) is still one claim, and `git ls-tree -r` runs once per commit, not once per citation.
+
+### Changed
+- The case for a space-cut path in an earlier release (S2-E3) is amended: `a dir/w.py:1 @sha` (words that do not spell a file) stays UNRESOLVED, and `my dir/w.py:1 @sha` is CONFIRMED against `my dir/w.py`.
+
 ## [0.9.28] - 2026-10-19
 
 OKF Knowledge Gate 0.9.28 closes holes in our own release gate: a test suite that ran nothing could be reported as passing, and six suites never ran on Linux.
@@ -615,7 +627,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.28...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.29...HEAD
+[0.9.29]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.28...v0.9.29
 [0.9.28]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.27...v0.9.28
 [0.9.27]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.26...v0.9.27
 [0.9.26]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.25...v0.9.26

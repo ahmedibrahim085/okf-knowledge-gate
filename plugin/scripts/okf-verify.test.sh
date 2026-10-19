@@ -912,9 +912,9 @@ done
 mkdir -p "$CREPO/my dir"; printf 'w\n' > "$CREPO/my dir/w.py"; printf 'd\n' > "$CREPO/data.py"; git -C "$CREPO" add -A
 git -C "$CREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: a directory with a space"
 C5=$(git -C "$CREPO" rev-parse --short HEAD)
-cite "$TMP/sp1" "my dir/w.py:1 @$C5"; rc=$(run "$TMP/sp1" --repo "$CREPO")
+cite "$TMP/sp1" "a dir/w.py:1 @$C5"; rc=$(run "$TMP/sp1" --repo "$CREPO")  # "a" does not spell the real name `my dir/w.py`; the spelled-out `my dir/w.py:1` is RV-27
 { [ "$rc" = "0" ] && grep -qE '^  unresolved ' "$TMP/out.txt" && ! grep -qE '^  (REFUTED|ok  ) ' "$TMP/out.txt"; } \
-  && ok "RV-21 (S2-E3) 'my dir/w.py:1 @sha' (a space inside the path) is UNRESOLVED, not a false REFUTED of 'dir/w.py'" \
+  && ok "RV-21 (S2-E3) 'a dir/w.py:1 @sha' (a space inside the path, words that do not spell the file) is UNRESOLVED, not a false REFUTED of 'dir/w.py'" \
   || bad "RV-21 space in the directory" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-250)"
 # only a cut AT A SPACE is UNRESOLVED: a missing file whose name merely ends the same way (ta.py vs data.py) is still a real REFUTED
 cite "$TMP/sp2" "ta.py:1 @$C5"; rc=$(run "$TMP/sp2" --repo "$CREPO")
@@ -948,6 +948,87 @@ cite "$TMP/rv1" "\`src/a.py:20-10 @$C2\`"; rc=$(run "$TMP/rv1" --repo "$CREPO")
 vok "RV-23 (S2-E4) a reversed range '20-10' is read as up to line 20 (the larger number): CONFIRMED for a 20-line file"
 cite "$TMP/rv2" "\`src/a.py:25-10 @$C2\`"; rc=$(run "$TMP/rv2" --repo "$CREPO")
 vrefuted "RV-23 (S2-E4) ... and REFUTED when the larger number is past the end"
+# --- RV-27 (#111, audit R056/R058): a citation whose text before `:line` holds a space. The parser cuts the path at the space, so `my w.py:3` was
+# checked against `w.py` and CONFIRMED. Fixtures are tiny repos: spcommit makes one commit holding the named files with the given line counts.
+spcommit() { # <repo> <name:lines>... — a fresh repo with one commit; prints the short sha
+  local r="$1"; shift; mkdir -p "$r"; git -C "$r" init -q 2>/dev/null; git -C "$r" config user.email t@t; git -C "$r" config user.name t
+  local f; for f in "$@"; do mkdir -p "$r/$(dirname "${f%:*}")"; seq 1 "${f##*:}" > "$r/${f%:*}"; done
+  git -C "$r" add -A; git -C "$r" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: files"; git -C "$r" rev-parse --short HEAD
+}
+# S2-SP-N1: both `my w.py` and `w.py` exist: the writer's intent cannot be told, so UNRESOLVED naming both; never CONFIRMED on a guess
+SP1=$(spcommit "$TMP/sp-both" "my w.py:1" "w.py:5")
+cite "$TMP/sp-b1" "my w.py:3 @$SP1"; rc=$(run "$TMP/sp-b1" --repo "$TMP/sp-both")
+{ [ "$rc" = "0" ] && grep -qE '^  unresolved ' "$TMP/out.txt" && ! grep -qE '^  (REFUTED|ok  ) ' "$TMP/out.txt" && grep -q 'my w.py' "$TMP/out.txt" && grep -qE 'and w\.py|w\.py and|or w\.py' "$TMP/out.txt"; } \
+  && ok "RV-27 (S2-SP-N1) 'my w.py:3 @sha' with both 'my w.py' and 'w.py' present is UNRESOLVED naming both, not CONFIRMED against w.py" \
+  || bad "RV-27 S2-SP-N1 both files" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
+
+# one line of the form `<verdict word> ... <detail>`: the first verdict row, for a compact failure message
+sprow() { grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300; }
+# S2-SP-H1/N2: only `my w.py` exists (5 lines): the spelled-out name is tried first, so the line is checked in THAT file
+SP2=$(spcommit "$TMP/sp-only-spaced" "my w.py:5")
+cite "$TMP/sp-h1" "my w.py:3 @$SP2"; rc=$(run "$TMP/sp-h1" --repo "$TMP/sp-only-spaced")
+vok "RV-27 (S2-SP-H1) 'my w.py:3' with only 'my w.py' present is CONFIRMED against that file"
+rc=$(run "$TMP/sp-h1" --repo "$TMP/sp-only-spaced" --json)
+grep -q 'path my w.py has 5 lines' "$TMP/out.txt" && ok "RV-27 (S2-SP-H1) ... and the detail names 'my w.py', not 'w.py'" || bad "RV-27 S2-SP-H1 detail" "$(grep '"detail"' "$TMP/out.txt" | tr '\n' ' ')"
+cite "$TMP/sp-n2" "my w.py:9 @$SP2"; rc=$(run "$TMP/sp-n2" --repo "$TMP/sp-only-spaced")
+{ vrefuted "RV-27 (S2-SP-N2) 'my w.py:9' (file has 5 lines) is REFUTED" && grep -q 'my w.py has 5 lines' "$TMP/out.txt"; } || bad "RV-27 S2-SP-N2 detail" "exit $rc: $(sprow)"
+# S2-SP-N3: the path is written QUOTED, so the boundary is explicit: `w.py` is never the file named, even when it is the only one that exists
+SP3=$(spcommit "$TMP/sp-only-plain" "w.py:5")
+for q in '"my w.py":3' "\`my w.py\`:3" "'my w.py':3"; do
+  cite "$TMP/sp-n3" "$q @$SP3"; rc=$(run "$TMP/sp-n3" --repo "$TMP/sp-only-plain")
+  { [ "$rc" = "1" ] && grep -qE '^  REFUTED ' "$TMP/out.txt" && grep -q 'path part failed' "$TMP/out.txt" && ! grep -qE '^  ok  ' "$TMP/out.txt"; } \
+    && ok "RV-27 (S2-SP-N3) quoted $q with only 'w.py' present is REFUTED (path part), never CONFIRMED against w.py" || bad "RV-27 S2-SP-N3 $q" "exit $rc: $(sprow)"
+done
+cite "$TMP/sp-n3b" "\"my w.py\":3 @$SP2"; rc=$(run "$TMP/sp-n3b" --repo "$TMP/sp-only-spaced")
+vok "RV-27 (S2-SP-N3) a quoted \"my w.py\":3 resolves against the file of that name"
+# S2-SP-E1: a name with TWO spaces is read from the writer's words: `my big w.py` alone resolves, and with `w.py` present it is UNRESOLVED
+SP4=$(spcommit "$TMP/sp-two" "my big w.py:5"); cite "$TMP/sp-e1" "my big w.py:3 @$SP4"; rc=$(run "$TMP/sp-e1" --repo "$TMP/sp-two")
+vok "RV-27 (S2-SP-E1) 'my big w.py:3' (two spaces) with only 'my big w.py' present is CONFIRMED against that file"
+SP5=$(spcommit "$TMP/sp-two-b" "my big w.py:5" "w.py:5"); cite "$TMP/sp-e1b" "my big w.py:3 @$SP5"; rc=$(run "$TMP/sp-e1b" --repo "$TMP/sp-two-b")
+{ vunresolved "RV-27 (S2-SP-E1) ... and UNRESOLVED when 'w.py' also exists" && ! grep -qE '^  (ok  |REFUTED) ' "$TMP/out.txt"; } || bad "RV-27 S2-SP-E1 two spaces" "exit $rc: $(sprow)"
+# S2-SP-E2: inside a table cell and inside a backtick-wrapped citation, with both files present
+cite "$TMP/sp-e2" "| note | my w.py:3 @$SP1 |"; rc=$(run "$TMP/sp-e2" --repo "$TMP/sp-both")
+vunresolved "RV-27 (S2-SP-E2) a citation in a table cell is UNRESOLVED when 'my w.py' and 'w.py' both exist"
+cite "$TMP/sp-e2b" "\`my w.py:3 @$SP1\`"; rc=$(run "$TMP/sp-e2b" --repo "$TMP/sp-both")
+vunresolved "RV-27 (S2-SP-E2) a backtick-wrapped citation is UNRESOLVED when both exist"
+cite "$TMP/sp-e2c" "| note | my w.py:3 @$SP2 |"; rc=$(run "$TMP/sp-e2c" --repo "$TMP/sp-only-spaced")
+vok "RV-27 (S2-SP-E2) a table-cell citation resolves against 'my w.py' when that is the only match"
+# S2-SP-E3: a Windows path with a space and backslashes is not a citation (no claim, no verdict), as for the space-free one
+cite "$TMP/sp-e3" "See C:\\my dir\\w.py:3 @$SP1 here."; rc=$(run "$TMP/sp-e3" --repo "$TMP/sp-both")
+{ [ "$rc" = "0" ] && grep -q 'no checkable' "$TMP/out.txt" && ! grep -qE '^  (REFUTED|unresolved|ok  ) ' "$TMP/out.txt"; } \
+  && ok "RV-27 (S2-SP-E3) 'C:\\my dir\\w.py:3 @sha' is not a citation: no claim, no verdict" || bad "RV-27 S2-SP-E3" "exit $rc: $(sprow)"
+# S2-SP-E4: an ordinary word before a citation whose path exists alone stays CONFIRMED (prose, RV-8): only a SPELLED-OUT name changes the reading
+SP6=$(spcommit "$TMP/sp-plain" "w.py:5"); cite "$TMP/sp-e4" "my w.py:3 @$SP6"; rc=$(run "$TMP/sp-e4" --repo "$TMP/sp-plain")
+vok "RV-27 (S2-SP-E4) 'my w.py:3' with only 'w.py' present is CONFIRMED: 'my' is prose when no file is named 'my w.py'"
+# S2-SP-N4 (R058): `path:line` and `@sha` in different paragraphs are two statements, not one citation; a soft-wrapped single newline is still one
+cite "$TMP/sp-n4" "w.py:3
+
+@$SP6"; rc=$(run "$TMP/sp-n4" --repo "$TMP/sp-plain")
+{ [ "$rc" = "0" ] && ! grep -qE '^  (REFUTED|unresolved|ok  ) .*citation' "$TMP/out.txt" && ! grep -q '\[citation\]' "$TMP/out.txt"; } \
+  && ok "RV-27 (S2-SP-N4) 'w.py:3', a blank line, '@sha' is not one citation (R058)" || bad "RV-27 S2-SP-N4 paragraphs" "exit $rc: $(sprow)"
+cite "$TMP/sp-n4b" "w.py:3
+at $SP6"; rc=$(run "$TMP/sp-n4b" --repo "$TMP/sp-plain")
+vok "RV-27 (S2-SP-N4) ... while 'w.py:3' and 'at sha' on consecutive lines of one paragraph are still one citation"
+# S2-SP-D1 (round 2): the same citation written twice with different words before it is ONE claim when no spaced file exists: output must not depend on prose
+mkb "$TMP/sp-d1"; printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nsee w.py:3 @%s\n\nAlso in w.py:3 @%s\n' "$SP6" "$SP6" > "$TMP/sp-d1/n.md"
+rc=$(run "$TMP/sp-d1" --repo "$TMP/sp-plain")
+{ [ "$rc" = "0" ] && grep -q 'CONFIRMED 1 ' "$TMP/out.txt" && [ "$(grep -cE '^  ok  ' "$TMP/out.txt")" = "1" ]; } \
+  && ok "RV-27 (S2-SP-D1) 'see w.py:3 @sha' and 'Also in w.py:3 @sha' (only w.py exists) collapse to one CONFIRMED claim" || bad "RV-27 S2-SP-D1 duplicate" "exit $rc: $(grep -E 'CONFIRMED|^  ok' "$TMP/out.txt" | tr '\n' ' ')"
+# ... two ambiguous readings with both files present give the SAME result, so they collapse; a reading that resolves differently prints beside it
+mkb "$TMP/sp-d2"; printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nmy w.py:3 @%s\n\nAlso my w.py:3 @%s\n\nsee w.py:3 @%s\n' "$SP1" "$SP1" "$SP1" > "$TMP/sp-d2/n.md"
+rc=$(run "$TMP/sp-d2" --repo "$TMP/sp-both")
+{ [ "$(grep -cE '^  unresolved ' "$TMP/out.txt")" = "1" ] && [ "$(grep -cE '^  ok  ' "$TMP/out.txt")" = "1" ] ; } \
+  && ok "RV-27 (S2-SP-D1) identical results collapse (two UNRESOLVED readings -> one) while a differing result prints beside them" || bad "RV-27 S2-SP-D1 distinct" "exit $rc: $(sprow)"
+# S2-SP-H1 (round 2): the text `ok` line names the file it was checked against, not the cut tail
+cite "$TMP/sp-h1b" "my w.py:3 @$SP2"; rc=$(run "$TMP/sp-h1b" --repo "$TMP/sp-only-spaced")
+grep -E '^  ok  ' "$TMP/out.txt" | grep -q 'my w\.py:3' && ok "RV-27 (S2-SP-H1) the ok line names 'my w.py', the file that was checked" || bad "RV-27 S2-SP-H1 ok line" "$(sprow)"
+# S2-SP-P1 (round 2): the tree listing is read once per (repo, sha), not once per citation
+mkdir -p "$TMP/gitspy"; printf '#!/bin/sh\necho "$@" >> "%s/gitspy.log"\nexec "%s" "$@"\n' "$TMP" "$(command -v git)" > "$TMP/gitspy/git"; chmod +x "$TMP/gitspy/git"
+{ printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\n'; for i in 1 2 3 4 5; do echo "see w.py:$i @$SP6"; echo; done; } > "$TMP/sp-p1.md"
+mkb "$TMP/sp-p1"; cp "$TMP/sp-p1.md" "$TMP/sp-p1/n.md"; : > "$TMP/gitspy.log"
+PATH="$TMP/gitspy:$PATH" "$VERIFY" "$TMP/sp-p1" --repo "$TMP/sp-plain" >"$TMP/out.txt" 2>&1
+n=$(grep -c 'ls-tree -r' "$TMP/gitspy.log")
+{ grep -q 'CONFIRMED 5 ' "$TMP/out.txt" && [ "$n" -le 1 ]; } && ok "RV-27 (S2-SP-P1) 5 citations of one commit run 'git ls-tree -r' at most once (ran $n)" || bad "RV-27 S2-SP-P1 spawns" "ls-tree -r ran $n times: $(grep -E 'CONFIRMED' "$TMP/out.txt")"
 # --- RV-25 (#68): a {type: boolean} node, a {map: node} node (free keys) and a node that {requires} a sibling value
 RVID=RV-25
 cc() { # <name> <okf_check body, printf %b> <want rc> [message the error must contain]
