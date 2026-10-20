@@ -1,6 +1,7 @@
 # CI: the release suites on GitHub's Linux runner, and the repository's own Action on a valid and an invalid bundle.
-# The file ships in the public export too (.github ships whole). Every job runs only when the repository is public: Actions
-# minutes are billed for private repositories, so in the private one the jobs show as skipped, never as passed.
+# The file ships in the public export too (.github ships whole). The GitHub-hosted jobs run only when the repository is
+# public: Actions minutes are billed for private repositories, so in the private one they show as skipped, never as passed.
+# In the private one the selfhosted job runs the same suites on the owner's own runner instead.
 # run-suites.sh reads tools/linux-gate.conf when the tree has it and otherwise uses the defaults below.
 name: CI
 
@@ -35,7 +36,9 @@ jobs:
       OKF_LINUX_UV: "0.11.28"
       OKF_LINUX_PRECOMMIT: "4.7.0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Versions from tools/linux-gate.conf (private tree only)
         run: |
@@ -67,13 +70,77 @@ jobs:
       - name: Suites and --selftest
         run: .github/ci/run-suites.sh
 
+  selfhosted:
+    # The private repository's own runner (one runner, one job at a time; its minutes cost nothing). Its container is
+    # recreated, so gawk and uv are installed in the job every time. The versions come from tools/linux-gate.conf and
+    # plugin/config/pinned-versions.txt, never from this file. The guard names the owner, not the repository: the public
+    # export renames the repository, and a job guarded by its name would then wait for ever in the public one, which has
+    # no self-hosted runner.
+    name: Suites on the self-hosted runner (gawk)
+    # A pull request from a fork never runs here: its code would run on the owner's machine (GitHub's hardening guide for
+    # self-hosted runners).
+    if: ${{ github.event.repository.private && github.repository_owner == 'ahmedibrahim085' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository) }}
+    runs-on: [self-hosted, Linux, ARM64]
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      - name: Versions from tools/linux-gate.conf; the venv and caches under RUNNER_TEMP
+        run: |
+          for k in OKF_LINUX_PYTHON OKF_LINUX_UV OKF_LINUX_PRECOMMIT; do
+            v=$(sed -n "s/^$k=//p" tools/linux-gate.conf)
+            [ -n "$v" ] || { echo "::error::$k is not set in tools/linux-gate.conf"; exit 1; }
+            echo "$k=$v" >> "$GITHUB_ENV"
+          done
+          # The runner is not ephemeral: its work folder and caches survive between jobs. Everything this job makes lives
+          # under RUNNER_TEMP or the workspace, which the last step empties (uv itself stays in ~/.local/bin, pinned).
+          echo "OKF_VENV=$RUNNER_TEMP/venv" >> "$GITHUB_ENV"
+          echo "UV_CACHE_DIR=$RUNNER_TEMP/uv-cache" >> "$GITHUB_ENV"
+          echo "UV_PYTHON_INSTALL_DIR=$RUNNER_TEMP/uv-python" >> "$GITHUB_ENV"   # a Python uv downloads when the runner has none
+          echo "XDG_CACHE_HOME=$RUNNER_TEMP/cache" >> "$GITHUB_ENV"
+
+      - name: gawk as awk (the runner has mawk only)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq gawk > /dev/null
+          mkdir -p "$RUNNER_TEMP/awk-bin" && ln -sf "$(command -v gawk)" "$RUNNER_TEMP/awk-bin/awk"
+          echo "$RUNNER_TEMP/awk-bin" >> "$GITHUB_PATH"
+
+      - name: The pinned uv, okflint and pre-commit in a venv, as the runner's own user
+        run: |
+          curl -LsSf "https://astral.sh/uv/$OKF_LINUX_UV/install.sh" | sh > /dev/null
+          export PATH="$HOME/.local/bin:$PATH"
+          uv venv -q --clear --python "$OKF_LINUX_PYTHON" "$OKF_VENV"
+          . "$OKF_VENV/bin/activate"
+          pins=plugin/config/pinned-versions.txt
+          okflint=$(awk '$1=="okflint_source"{print $2}' "$pins")
+          [ -n "$okflint" ] || okflint="okflint==$(awk '$1=="okflint"{print $2}' "$pins")"
+          uv pip install -q "$okflint" "pre-commit==$OKF_LINUX_PRECOMMIT"
+          echo "$OKF_VENV/bin" >> "$GITHUB_PATH"
+          echo "VIRTUAL_ENV=$OKF_VENV" >> "$GITHUB_ENV"
+
+      - name: Suites and --selftest
+        run: .github/ci/run-suites.sh
+
+      - name: Leave nothing behind (the runner is not ephemeral)
+        if: always()
+        run: |
+          # :? stops the step when a path is empty, so find never starts from another folder. A test may leave a folder
+          # without write permission: give the owner write access back first, or -delete cannot empty it.
+          chmod -R u+rwX "${GITHUB_WORKSPACE:?}" "${RUNNER_TEMP:?}" 2>/dev/null || true
+          find "${GITHUB_WORKSPACE:?}" -mindepth 1 -delete
+          find "${RUNNER_TEMP:?}" -mindepth 1 -delete
+
   action:
     name: The Action on itself
     if: ${{ !github.event.repository.private }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
 
       - name: Two bundles, one valid and one with an L1 error (no type)
         run: |

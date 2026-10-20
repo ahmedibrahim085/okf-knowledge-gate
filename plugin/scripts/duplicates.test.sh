@@ -64,6 +64,59 @@ rc=$(OKF_DUP_CUT_AT=body run "$B" --duplicates-body)
 rc=$(OKF_DUP_CUT_AT=body runjson "$B" --duplicates-body)
 { [ "$rc" = 0 ] && [ "$(jget '[d["complete"], d["cut_in"]]')" = '[false, "body"]' ]; } \
   && ok "S25-DU-E2b --json cut_in body" || bad "S25-DU-E2b json" "rc=$rc $(head -c 300 "$TMP/out.json")"
+# S25-DU-E4: the check inside an LSH bucket, with a fake clock instead of the wall clock: time.monotonic advances 1 per
+# call, so where the cut falls is a count, the same on every machine and load. The tool runs in this process (exec of its
+# own source, time patched first); 97 notes share one body, so each of the 32 band buckets holds all of them (4,656 pairs,
+# never a multiple of the 1,000 checks between two looks at the clock). A first run without a limit counts the clock
+# calls; the second gets a limit 12 calls short of that, which falls in the last buckets: the cut must come INSIDE a
+# bucket (checks not a multiple of 4,656). Without the check in the bucket the tool looks at the clock only between
+# buckets, makes fewer calls, and either finishes or stops on a bucket edge: the case fails.
+B4="$TMP/fake"; mkdir -p "$B4"; cp "$HERE/../config/okf-base.yaml.template" "$B4/okf-base.yaml"
+"$REALPY" - "$B4" <<'PY'
+import sys
+for i in range(97):
+    open("%s/n%03d.md" % (sys.argv[1], i), "w").write('---\ntype: Lesson\ntitle: Note %d\ndescription: Item %d\nstatus: stable\nstale_after: "2099-01-01"\n---\nthe same six words in every note\n' % (i, i))
+PY
+cat > "$TMP/fakeclock.py" <<'PY'
+import contextlib, io, os, sys, time
+tool, bundle, schema, vendor, scripts = sys.argv[1:6]
+os.environ.update(OKF_SCRIPTS_DIR=scripts, OKF_VENDOR_DIR=vendor)
+sys.path.insert(0, os.path.join(vendor, "pyyaml"))
+src = compile(open(tool, encoding="utf-8").read(), tool, "exec")
+def run(limit, cut_at=""):
+    calls = [0]
+    def fake():
+        calls[0] += 1
+        return float(calls[0])
+    os.environ["OKF_DUP_TIME_LIMIT"] = repr(limit)
+    os.environ["OKF_DUP_CUT_AT"] = cut_at
+    real, time.monotonic = time.monotonic, fake
+    g = {"__name__": "__main__", "__file__": tool}
+    sys.argv = [tool, bundle, schema, "1", "1"]
+    try:
+        with contextlib.redirect_stdout(io.StringIO()):
+            exec(src, g)
+    except SystemExit:   # the tool ends a --json run with sys.exit(0) after printing its report
+        pass
+    finally:
+        time.monotonic = real
+    return calls[0], g
+c, g = run(1e9)
+per = 97 * 96 // 2
+total = g["checked"]
+n, g = run(c - 12)
+inside = g["cut_in"] == "body" and g["checked"] < total and g["checked"] % per != 0
+# The first bucket too: the clock calls up to the body pass (a run stopped there by OKF_DUP_CUT_AT=body), one per note
+# while the bodies are signed, then 2 more: the limit falls at the third look at the clock inside the first bucket.
+pre, _ = run(1e9, "body")
+n1, g1 = run(pre + 97 + 2)
+first = g1["cut_in"] == "body" and g1["checked"] < per and g1["checked"] % 1000 == 0
+print("cut_in=%s checked=%d total=%d per=%d bands=%s inside=%s first=%s checked_first=%d" % (
+    g["cut_in"], g["checked"], total, per, total == 32 * per, inside, first, g1["checked"]))
+PY
+fc=$("$REALPY" "$TMP/fakeclock.py" "${OKF_DUP_TOOL:-$HERE/okf-duplicates.py}" "$B4" "$HERE/../config/okf-check-block.json" "$HERE/../vendor" "$HERE" 2>&1)
+printf '%s\n' "$fc" | grep -Eq '^cut_in=body checked=[0-9]+ total=148992 per=4656 bands=True inside=True first=True checked_first=[0-9]+$' \
+  && ok "S25-DU-E4 with a fake clock the bucket loop stops inside a bucket at the limit ($fc)" || bad "S25-DU-E4 fake-clock bucket cut" "$fc"
 # S25-DU-E3: the limit is checked inside one LSH bucket: 1,200 notes with one shared body stop near the limit, not after
 # the whole bucket (0.9.10: 1,500 notes, limit 3 s, 5.1 s wall).
 B="$TMP/bucket"; mkdir -p "$B"; cp "$HERE/../config/okf-base.yaml.template" "$B/okf-base.yaml"
@@ -72,12 +125,26 @@ import sys
 for i in range(1200):
     open("%s/n%04d.md" % (sys.argv[1], i), "w").write('---\ntype: Lesson\ntitle: Note %d\ndescription: Item %d\nstatus: stable\nstale_after: "2099-01-01"\n---\nthe same six words in every note\n' % (i, i))
 PY
-t0=$("$REALPY" -c 'import time; print(time.time())')
-rc=$(OKF_DUP_TIME_LIMIT=2 runjson "$B" --duplicates-body)
+# The limit is set from this machine's own speed, not a fixed number: reading 1,200 notes took 2.8 s on a Mac with a
+# virus scanner, so a fixed 2 s limit cut the run while it was still reading and the bucket was never reached. First the
+# time to the start of the body pass (OKF_DUP_CUT_AT=body stops there), then a run whose limit is 1.5 times that: it must
+# stop inside the body pass, within 6 s of the limit (the slack this case always had: startup, the JSON report).
+now() { "$REALPY" -c 'import time; print(time.time())'; }
+t0=$(now); rc=$(OKF_DUP_CUT_AT=body runjson "$B" --duplicates-body)
+pre=$("$REALPY" -c "import time; print('%.2f' % (time.time() - $t0))")
+lim=$("$REALPY" -c "print('%.2f' % ($pre * 1.5))")
+t0=$(now); rc=$(OKF_DUP_TIME_LIMIT=$lim runjson "$B" --duplicates-body)
 el=$("$REALPY" -c "import time; print('%.1f' % (time.time() - $t0))")
-{ [ "$rc" = 0 ] && [ "$(jget 'd["cut_in"]')" = '"body"' ] && "$REALPY" -c "import sys; sys.exit(0 if $el < 2 + 6 else 1)"; } \
-  && ok "S25-DU-E3 a single crowded bucket stops at the limit (cut_in body, ${el} s for the whole okf-check run)" \
-  || bad "S25-DU-E3 bucket cut" "rc=$rc el=${el}s cut_in=$(jget 'd.get("cut_in")' 2>/dev/null)"
+cut=$(jget 'd.get("cut_in")' 2>/dev/null)
+if [ "$rc" = 0 ] && [ "$cut" != '"body"' ] && [ "$cut" != '"read"' ] && [ "$cut" != '"pairs"' ]; then
+  skip "S25-DU-E3 bucket cut: the whole body pass finished within ${lim} s (1.5 x the ${pre} s before it), so this machine cannot show a cut inside the bucket (cut_in=$cut)"
+elif [ "$rc" = 0 ] && [ "$cut" != '"body"' ]; then
+  skip "S25-DU-E3 bucket cut: this run reached its ${lim} s limit before the body pass (cut_in=$cut, ${el} s): reading was 1.5 times slower than ${pre} s a moment ago"
+else
+  { [ "$rc" = 0 ] && [ "$cut" = '"body"' ] && "$REALPY" -c "import sys; sys.exit(0 if $el < $lim + 6 else 1)"; } \
+    && ok "S25-DU-E3 a single crowded bucket stops at the limit (limit ${lim} s = 1.5 x ${pre} s to the body pass; cut_in body, ${el} s)" \
+    || bad "S25-DU-E3 bucket cut" "rc=$rc el=${el}s limit=${lim}s cut_in=$cut"
+fi
 
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

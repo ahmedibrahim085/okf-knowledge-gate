@@ -13,6 +13,8 @@
 # see it. This runs the same list on GitHub's runner, a non-root user as in tools/linux-gate.sh.
 set -uo pipefail
 unset CDPATH
+# Not as root: root ignores chmod, so the suites' permission tests would fail (the gates run them as a plain user).
+[ "$(id -u)" -ne 0 ] || { echo "run-suites: refusing to run as root: run it as a plain user" >&2; exit 2; }
 
 # --- copy of tools/lib/suite-verdict.sh (keep byte-identical) ---
 suite_verdict() {

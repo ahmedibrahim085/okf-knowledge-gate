@@ -9,6 +9,22 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.36] - 2026-10-20
+
+OKF Knowledge Gate 0.9.36 makes `okf-export` follow CommonMark for lists, and closes the findings of the first macOS run of 0.9.35 and the open items of our own release tooling.
+
+### Fixed
+- **`okf-export` finds headings after a list the way CommonMark does.** A paragraph indented one to three spaces after a list and a blank line is no longer read as list content, so a setext heading in it (`Para` over `---`) resolves instead of giving a false `missing heading` line (exit 1, the bundle was still written). The exporter now keeps a stack of the open list items' content indents: a marker, or a line after a blank line, closes only the items it is indented below; a margin line continues an item only under an open paragraph (a lazy continuation), so a thematic break, a fence, an empty item or indented code inside an item ends the list as it should. Headings and the code-block rules for link rewriting come from the same tracker, so a link inside an item's indented code or fence stays as written. Checked against a CommonMark reference implementation on 81 cases (0 mismatches on the exporter's own set), and the export of the repository's own bundle is byte-identical to 0.9.35. Known gaps, listed on the ticket: a setext heading inside a list item, a heading on the marker line (`- # H`), an ATX heading more than three spaces into an item, a heading inside a block quote, a fence on the marker line, and an HTML block or a link reference definition inside an item.
+- **`tools/linux-gate.sh` validates every value that reaches Docker or the container script.** A double quote in `tools/linux-gate.conf` broke the inner script, and a value such as `--privileged` as the image name became a Docker option. The image, memory, process and CPU limits, the Docker context, the Python, uv and pre-commit versions, the okflint pin, the suite list and the suite timeout are now checked against strict patterns; a bad value stops the gate with exit 2 and names the key before Docker runs, and control characters in the rejected value are written escaped.
+- **`plugin.test.sh` P-10 reads `claude plugin list --json`.** It no longer guesses the installed version from the cache folder: it reads the `okf` entry (version, enabled, scope), compares the version with the source tree and compares the installed copy's files with the source plugin folder. A stale version, a disabled plugin, a copy with edited files, a missing install path and another project's install each fail with a message that names the fix. With no `claude` command, or output that is not JSON, the old cache-folder check runs as before. A hung `claude` is stopped at a time limit, with its child processes.
+- **Two macOS-only test fragilities from the first macOS run of 0.9.35.** The `edit-hook` tests SH-3 and SH-13 assumed a short temp folder (the macOS one is about 100 characters long, which makes the hook print its short hint); they run in a short folder now and a new case pins the short form on a long path. The `duplicates` test S25-DU-E3 assumed that reading 1,200 notes takes less than the 2 s limit; it times the run first, skips with a printed reason when the phases cannot be told apart, and a new test, S25-DU-E4, cuts the scan with a fake clock at an exact count (140,000 of 148,992 checks), so a bucket loop that ignores the limit fails on every machine. The products were correct.
+
+### Added
+- **A CI job on the self-hosted runner** (private repository only): it runs the same suites as the hosted jobs on the machine that runs the Debian gate, only for branches of this repository, with the checkout pinned to a commit and without stored credentials, a time limit, and a last step that always empties the workspace and temp folder because the runner is not ephemeral. `run-suites.sh` refuses to run as root, because the permission tests need a normal user.
+
+### Changed
+- README: how to install the optional okf-memory binary by hand, with the sha256 values of v0.6.2 (the plugin still never downloads it; vendoring was decided against: 30 MB of unsigned binaries in the history, and both features that use it are opt-in); the release steps say that the plugin is read from the working copy, so a release needs a fast-forward of that copy and a restart, not an uninstall and install.
+
 ## [0.9.35] - 2026-10-19
 
 OKF Knowledge Gate 0.9.35 clears the backlog's "later" list: an optional okf-memory layer finds orphan notes and broken concept links, the duplicates report stops comparing stub bodies and says where it was cut short, `.okfignore` reaches symlinked notes, `okf-export` matches targets as Obsidian does, and settings that used to switch something off without a word are now refused or fall back to their default.
@@ -725,7 +741,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.35...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.36...HEAD
+[0.9.36]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.35...v0.9.36
 [0.9.35]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.34...v0.9.35
 [0.9.34]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.33...v0.9.34
 [0.9.33]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.32...v0.9.33

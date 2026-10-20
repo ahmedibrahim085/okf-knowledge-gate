@@ -883,6 +883,172 @@ note "$V" u.md "[[t#Bar]]"
 rc=$(run "$V" "$TMP/po10/out")
 { [ "$rc" = 0 ] && grep -qF '[t > Bar](t.md#bar)' "$TMP/po10/out/u.md"; } \
   && ok "S10-PO-10 *** then Bar underlined with === is a break and the heading Bar" || bad "S10-PO-10 thematic break" "rc=$rc $(head -2 "$TMP/out.txt")"
+# S10-PO-11: after a list and a blank line, a line indented less than the item's content (2 for `- `, 3 for `1. `) ends
+# the list (CommonMark 0.31.2, 5.2 List items), so a setext heading there is found.
+V="$TMP/po11/vault"; note "$V" t.md "- item
+
+ Spaced Para
+ ---"
+note "$V" o.md "1. item
+
+  Ordered Para
+  ---"
+note "$V" u.md "[[t#Spaced Para]] [[o#Ordered Para]]"
+rc=$(run "$V" "$TMP/po11/out")
+{ [ "$rc" = 0 ] && grep -qF '[t > Spaced Para](t.md#spaced-para)' "$TMP/po11/out/u.md" \
+    && grep -qF '[o > Ordered Para](o.md#ordered-para)' "$TMP/po11/out/u.md"; } \
+  && ok "S10-PO-11 a paragraph indented less than the list item's content is out of the list: its setext heading resolves" \
+  || bad "S10-PO-11 list ends by indent" "rc=$rc $(head -2 "$TMP/out.txt")"
+# S10-PO-11b: indented exactly as the item's content, the paragraph stays in the item, so a --- at the margin after it is
+# a thematic break that ends the list, not its underline.
+V="$TMP/po11b/vault"; note "$V" t.md "- item
+
+  Two In
+---"
+note "$V" u.md "[[t#Two In]]"
+rc=$(run "$V" "$TMP/po11b/out")
+{ [ "$rc" = 1 ] && grep -q 'missing heading \[\[t#Two In\]\]' "$TMP/out.txt"; } \
+  && ok "S10-PO-11b a paragraph indented as the item's content stays list content: no heading" \
+  || bad "S10-PO-11b equal indent" "rc=$rc $(head -2 "$TMP/out.txt")"
+# S10-PO-11c: a tab counts to the next stop of 4 columns (CommonMark 2.2 Tabs), so a tab-indented paragraph is list content.
+V="$TMP/po11c/vault"; note "$V" t.md "$(printf -- '- item\n\n\tTabbed\n---')"
+note "$V" u.md "[[t#Tabbed]]"
+rc=$(run "$V" "$TMP/po11c/out")
+{ [ "$rc" = 1 ] && grep -q 'missing heading \[\[t#Tabbed\]\]' "$TMP/out.txt"; } \
+  && ok "S10-PO-11c a tab-indented paragraph after a list item stays list content: no heading" \
+  || bad "S10-PO-11c tab indent" "rc=$rc $(head -2 "$TMP/out.txt")"
+# S10-PO-11d/11e: in a nested list, a paragraph indented as the OUTER item's content belongs to the outer item: a --- at the
+# margin after it is a thematic break, and a === there is a lazy continuation line; neither makes it a heading.
+for u in --- ===; do
+  V="$TMP/po11d$u/vault"; note "$V" t.md "- a
+  - b
+
+  Outer text
+$u"
+  note "$V" u.md "[[t#Outer text]]"
+  rc=$(run "$V" "$TMP/po11d$u/out")
+  case $u in ---) id=S10-PO-11d;; *) id=S10-PO-11e;; esac
+  { [ "$rc" = 1 ] && grep -q 'missing heading \[\[t#Outer text\]\]' "$TMP/out.txt"; } \
+    && ok "$id a paragraph of the outer item after a nested item, then $u at the margin: no heading" \
+    || bad "$id nested outer paragraph $u" "rc=$rc $(head -2 "$TMP/out.txt")"
+done
+# S10-PO-11f: two open levels (content at 2 and 4): a paragraph at 6 (beyond the inner item), 4 or 2 stays in the list;
+# one indented 1 space is below every level, so the list ends and its setext heading resolves. A third level is not
+# possible here: LIST_ITEM reads a marker only 0-3 spaces in, so `    - c` would be text of `b`.
+V="$TMP/po11f/vault"; for lv in 6 4 2 1; do
+  pad=$(printf '%*s' "$lv" '')
+  note "$V" "d$lv.md" "- a
+  - b
+
+${pad}Level $lv
+---"
+done
+note "$V" u.md "[[d6#Level 6]] [[d4#Level 4]] [[d2#Level 2]] [[d1#Level 1]]"
+rc=$(run "$V" "$TMP/po11f/out")
+{ [ "$rc" = 1 ] && grep -q 'missing heading \[\[d6#Level 6\]\]' "$TMP/out.txt" \
+    && grep -q 'missing heading \[\[d4#Level 4\]\]' "$TMP/out.txt" && grep -q 'missing heading \[\[d2#Level 2\]\]' "$TMP/out.txt" \
+    && ! grep -q 'd1#Level 1' "$TMP/out.txt" && grep -qF '[d1 > Level 1](d1.md#level-1)' "$TMP/po11f/out/u.md"; } \
+  && ok "S10-PO-11f two levels: a paragraph at 6, 4 or 2 spaces stays in the list; 1 space ends it" \
+  || bad "S10-PO-11f two levels" "rc=$rc $(head -4 "$TMP/out.txt" | tr '\n' ' ')"
+# S10-PO-12a..e: the list rules of CommonMark 0.31.2 (5.2 List items, 4.1 Thematic breaks, 4.5 Fenced code) that end or
+# keep a list, read by ONE tracker for headings and for code. Each note's [[x#P]] heading must resolve.
+V="$TMP/po12/vault"
+note "$V" a.md "- x
+***
+P
+---"                                   # 12a: a thematic break at the margin ends the list, even with no blank line
+note "$V" b.md "-
+
+  P
+---"                                   # 12b: an empty item ends at the blank line after it
+note "$V" c.md "- a
+
+  # In Item
+  text
+---
+Q
+---"                                   # 12c: an ATX heading inside an item is a heading and does not end the list
+note "$V" e.md "- a
+\`\`\`
+x
+\`\`\`
+P
+---"                                   # 12e: a fence at the margin ends the list, even with no blank line
+note "$V" u.md "[[a#P]] [[b#P]] [[c#In Item]] [[c#Q]] [[e#P]] [[c#text]]"
+rc=$(run "$V" "$TMP/po12/out"); U="$TMP/po12/out/u.md"
+for c in 'a#P|a > P](a.md#p)' 'b#P|b > P](b.md#p)' 'c#In Item|c > In Item](c.md#in-item)' 'c#Q|c > Q](c.md#q)' 'e#P|e > P](e.md#p)'; do
+  link=${c%%|*}; id=S10-PO-12${link%%#*}
+  { grep -qF "[${c#*|}" "$U" && ! grep -qF "missing heading [[$link]]" "$TMP/out.txt"; } \
+    && ok "$id [[$link]] resolves: [${c#*|}" || bad "$id [[$link]]" "rc=$rc $(grep -F "[[$link]]" "$TMP/out.txt" | head -1)"
+done
+{ [ "$rc" = 1 ] && grep -q 'missing heading \[\[c#text\]\]' "$TMP/out.txt"; } \
+  && ok "S10-PO-12c text in the item after its heading is list content, not a setext heading" \
+  || bad "S10-PO-12c text in the item" "rc=$rc: 'text' under the item's heading was read as a setext heading"
+# S10-PO-12f..k: a line at the margin continues a list item only lazily, under an open paragraph. After a block that
+# leaves no paragraph open inside the item (an ATX heading, a break, a closed fence, also in a nested item, indented
+# code, an empty marker, a setext underline), it ends the list, so P below is a heading.
+V="$TMP/po12f/vault"
+note "$V" f.md "- a
+  # H
+P
+---"
+note "$V" g.md "- a
+  ***
+P
+---"
+note "$V" h.md "- a
+  - b
+    \`\`\`
+    x
+    \`\`\`
+P
+---"
+note "$V" i.md "- a
+
+      code
+P
+---"
+note "$V" j.md "-
+P
+---"
+note "$V" k.md "- a
+  ----
+P
+---"
+note "$V" u.md "[[f#P]] [[g#P]] [[h#P]] [[i#P]] [[j#P]] [[k#P]]"
+rc=$(run "$V" "$TMP/po12f/out"); U="$TMP/po12f/out/u.md"
+for n in f g h i j k; do
+  { grep -qF "[$n > P]($n.md#p)" "$U" && ! grep -qF "missing heading [[$n#P]]" "$TMP/out.txt"; } \
+    && ok "S10-PO-12$n [[$n#P]] resolves: P at the margin is no lazy line after a block that closes the paragraph" \
+    || bad "S10-PO-12$n [[$n#P]]" "rc=$rc $(grep -F "[[$n#P]]" "$TMP/out.txt" | head -1)"
+done
+# S10-PO-12l: inside a list item, indented code (content indent + 4) and a fence in a nested item are code: a link in
+# them stays as written, while the item's text links (also the line after the fence closes) are rewritten.
+V="$TMP/po12l/vault"; note "$V" u.md "# Top"
+note "$V" t.md "- a [[u#Top]]
+
+      code [[u#Top]]
+
+  - b
+    \`\`\`
+    fenced [[u#Top]]
+    \`\`\`
+    after [[u#Top]]"
+rc=$(run "$V" "$TMP/po12l/out"); O="$TMP/po12l/out/t.md"
+{ [ "$rc" = 0 ] && grep -qFe '- a [u > Top](u.md#top)' "$O" && grep -qF '      code [[u#Top]]' "$O" && grep -qF '    fenced [[u#Top]]' "$O" && grep -qF '    after [u > Top](u.md#top)' "$O"; } \
+  && ok "S10-PO-12l a link in an item's indented code and in a nested item's fence stays as written" \
+  || bad "S10-PO-12l code in items" "rc=$rc $(grep -n 'Top' "$O" 2>&1 | tr '\n' ' ')"
+# S10-PO-12d: the code reader uses the same tracker: a paragraph indented less than the item's content ends the list,
+# so a 4-space line after it and a blank line is an indented code block and its link stays as written.
+V="$TMP/po12d/vault"; note "$V" t.md "- item
+
+ Para
+
+    code [[nope]]"
+rc=$(run "$V" "$TMP/po12d/out")
+{ [ "$rc" = 0 ] && grep -qF '    code [[nope]]' "$TMP/po12d/out/t.md"; } \
+  && ok "S10-PO-12d after a list ends by indent, a 4-space line is code: [[nope]] stays as written" \
+  || bad "S10-PO-12d code after the list" "rc=$rc $(head -2 "$TMP/out.txt")"
 
 echo
 echo "  $PASS passed, $FAIL failed"

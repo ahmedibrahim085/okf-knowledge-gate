@@ -13,7 +13,7 @@ TEMPLATE="$HERE/../config/okf-base.yaml.template"
 REALPY=$(command -v python3)
 PASS=0; FAIL=0
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t okfedithook)
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP" ${SHORT:+"$SHORT"}' EXIT   # SHORT is set below; the trap is live before it exists
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -61,6 +61,13 @@ fire() {
     | boxed 30 env "$@" "$REALPY" "$HOOK" >"$TMP/out.txt" 2>"$TMP/err.txt"
   printf '%s' "$?"
 }
+
+# SHORT: a bundle under a short path. Whether the hook's '(+N more: ...)' hint gives the full command depends on the
+# length of the paths in it (the hint must fit half of max_line_chars): under macOS's long TMPDIR it never does, under
+# /tmp it does. The cases that pin the long form run here; SH-3b and SH-13b pin the short form on a long path.
+SHORT=$(mktemp -d /tmp/ehXXXXXX) && [ -d "$SHORT" ] && SHORT=$(cd -P "$SHORT" && pwd) || { echo "edit-hook tests: cannot make a folder under /tmp" >&2; exit 1; }
+bundle "$SHORT/on" 'okf_check:
+  edit_hook: true'
 
 # --- S9-H1: on, an L1 error in the edited note -> one warning line ----------------------------
 B="$TMP/on"; bundle "$B" 'okf_check:
@@ -137,11 +144,19 @@ printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\ntags: [t]\nstatus: draft
 rc=$(fire "$B/q/draft.md")
 { [ "$rc" = 2 ] && grep -q '^okf-check: q/draft.md: Trust warning: ' "$TMP/err.txt"; } \
   && ok "SH-2 a Trust warning (a human verified a draft) is one warning line" || bad "SH-2 trust" "rc=$rc err: $(head -2 "$TMP/err.txt" | tr '\n' '|')"
-printf -- '---\ntitle: T\nstatus: draft\nverified:\n  by: human:t\n  at: "2026-01-02"\n---\nb\n' > "$B/q/many.md"
-rc=$(fire "$B/q/many.md")
+mkdir -p "$SHORT/on/q"; printf -- '---\ntitle: T\nstatus: draft\nverified:\n  by: human:t\n  at: "2026-01-02"\n---\nb\n' > "$SHORT/on/q/many.md"
+rc=$(fire "$SHORT/on/q/many.md")
 { [ "$rc" = 2 ] && [ "$(wc -l < "$TMP/err.txt" | tr -d ' ')" = 1 ] && grep -q 'L1 error.*(+1 more: okf-check .* --file .*many.md)$' "$TMP/err.txt"; } \
   && ok "SH-3 two findings are still one line: the first, then '(+1 more: okf-check <bundle> --file <note>)'" \
   || bad "SH-3 more" "rc=$rc err: $(cat "$TMP/err.txt" | tr '\n' '|')"
+# SH-3b: the same note under a longer path, still under $SHORT so its length is the same on every host: the full hint
+# would be about 210 to 230 characters, more than half of max_line_chars (300) and less than all of it, so it pins that the
+# threshold is half: the hint keeps only its count, and the line stays within max_line_chars.
+LQ="$SHORT/on/$(printf 'long-folder-name-%s/' 1 2 3 4 5 6 7)"; mkdir -p "$LQ"; cp "$SHORT/on/q/many.md" "$LQ/many.md"
+rc=$(fire "$LQ/many.md")
+{ [ "$rc" = 2 ] && [ "$(wc -l < "$TMP/err.txt" | tr -d ' ')" = 1 ] && grep -q 'L1 error.* (+1 more)$' "$TMP/err.txt" && ! grep -q -- '--file' "$TMP/err.txt"; } \
+  && ok "SH-3b under a long path the hint is the short '(+1 more)', without the command" \
+  || bad "SH-3b short hint" "rc=$rc err: $(cut -c1-200 "$TMP/err.txt" | tr '\n' '|')"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\ntags: [t]\nstatus: stable\ngenerated:\n  by: human:t\n  at: "2026-01-01"\n---\nb\n' > "$B/q/clean.md"
 rc=$(fire "$B/q/clean.md")
 silent "$rc" && ok "SH-4 a clean note: exit 0, no output" || bad "SH-4 clean" "rc=$rc"
@@ -256,7 +271,7 @@ rc=$(fire "$BT/bad.md")
 { [ "$rc" = 2 ] && "$REALPY" "$HERE/okf-verify" "$BT" --check-config >/dev/null 2>&1; } \
   && ok "SH-12b edit_hook: True in flow style still switches the hook on" || bad "SH-12b True" "rc=$rc"
 # SH-13: the 300-character cut applies to the first finding alone, so the '(+N more: ...)' hint survives a long finding.
-LV="$TMP/on/long"; mkdir -p "$LV"
+LV="$SHORT/on/long"; mkdir -p "$LV"
 "$REALPY" - "$LV/l.md" <<'PY'
 import sys
 by = "human:" + "B" * 2000   # two Trust warnings, the first one long

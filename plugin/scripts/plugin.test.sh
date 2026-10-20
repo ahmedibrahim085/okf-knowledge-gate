@@ -220,38 +220,190 @@ fi
 # and reporting a benign reason, exactly when the manifest it depends on is
 # unreadable. Distinguish "cannot run" from "nothing to compare".
 p10_installed_versions() { ls -d "$1"/*/okf/*/ 2>/dev/null | sed 's#.*/okf/##; s#/$##' | tr '\n' ' '; }
+# p10_verdict <source version> <cache root> <source plugin folder>: ONE line, tab-separated, for the caller to report:
+# `ok<TAB>title`, `bad<TAB>title<TAB>detail` or `skip<TAB>title`. A function so a test can run it against a fixture cache.
+# p10_drift <installed plugin folder> <source plugin folder>: what differs, the first three lines. The WHOLE folder, not
+# scripts/ alone: the manifest, hooks.json, skills, bin, config and vendor run as much as a script does. Left out: `*.test.sh`
+# (shipped, never invoked by a hook or skill) and `__pycache__` (Python writes it beside a module it imports; on the real
+# machine, 0.9.35, it was the only difference between the installed copy and the source:
+# `Only in ~/.claude/plugins/cache/ahmedmaged-okf/okf/0.9.35/vendor/pyyaml/yaml: __pycache__`).
+p10_drift() { diff -rq -x '*.test.sh' -x '__pycache__' "$1" "$2" 2>&1 | head -3 | tr '\n' ' '; }
+p10_verdict() {
+  local pv="$1" root="$2" src="$3" cache drift inst kind id ver folder ipath proj
+  # With the `claude` CLI on PATH the plugin manager is asked first: `claude plugin list --json` is an array with, per
+  # installed plugin, id, version, enabled, scope and installPath (a COPY under ~/.claude/plugins/cache) and, for a
+  # directory marketplace, folderVersion. An okf entry that is enabled at the source version passes, once the copy at
+  # installPath holds the same plugin folder as the source (a version number says nothing about edits made after it); a
+  # missing installPath fails. Output that is not a JSON array, or an array without an okf entry of this user or repository, says nothing
+  # about okf: the cache comparison below then decides, as it does where the CLI is absent. The time limit lives in
+  # python (P10_LIST_LIMIT seconds), so it holds on a machine without the `timeout` binary.
+  if command -v claude >/dev/null 2>&1; then
+    proj=$(cd "$src/.." 2>/dev/null && pwd -P)
+    IFS=$'\t' read -r kind id ver folder ipath <<< "$("$REALPY" -c '
+import json, os, signal, subprocess, sys
+pv, proj = sys.argv[1], sys.argv[2]
+try:
+    # A new session, so the whole group can be stopped: a hung claude may have started children that hold its pipes.
+    proc = subprocess.Popen(["claude", "plugin", "list", "--json"], stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+    try:
+        out = proc.communicate(timeout=float(os.environ.get("P10_LIST_LIMIT", "30")))[0]
+    except subprocess.TimeoutExpired:
+        os.killpg(proc.pid, signal.SIGKILL)
+        proc.communicate()
+        sys.exit(0)
+    d = json.loads(out)
+except (OSError, ValueError, subprocess.SubprocessError):
+    sys.exit(0)
+if not isinstance(d, list):
+    sys.exit(0)
+def mine(e):
+    # An entry installed for another project (scope project, another projectPath) is not this install.
+    if e.get("scope") == "project" and os.path.realpath(str(e.get("projectPath", ""))) != proj:
+        return False
+    return isinstance(e, dict) and str(e.get("id", "")).split("@")[0] == "okf"
+es = [e for e in d if isinstance(e, dict) and mine(e)]
+if not es:
+    sys.exit(0)
+def on(e):
+    return e.get("enabled") is True or str(e.get("enabled")).lower() == "true"
+def row(kind, e):
+    fv = e.get("folderVersion")
+    print("\t".join([kind, str(e.get("id")), str(e.get("version")), str(fv) if fv and fv != e.get("version") else "-",
+                     str(e.get("installPath") or "-")]))
+good = [e for e in es if on(e) and e.get("version") == pv]
+live = [e for e in es if on(e)]
+if good:
+    row("ok", good[0])
+elif live:
+    row("stale", live[0])
+else:
+    row("disabled", es[0])
+' "$pv" "$proj")"
+    case "$kind" in
+      ok)
+        # An assignment on its own: the diff in a pipeline exits 1 on a difference, and under pipefail that would end an && chain.
+        drift=""; if [ "$ipath" != "-" ] && [ -d "$ipath" ]; then drift=$(p10_drift "$ipath" "$src"); fi
+        if [ "$ipath" != "-" ] && [ ! -d "$ipath" ]; then
+          printf 'bad\tP-10 the installed plugin is MISSING — its folder is not there\tclaude plugin list shows %s at version %s, but its installPath %s does not exist, so nothing of it can load; fix: claude plugin update %s (or uninstall and install it again)\n' "$id" "$ver" "$ipath" "$id"
+        elif [ -n "$drift" ]; then
+          printf 'bad\tP-10 the installed plugin is STALE — users run pre-fix code\tclaude plugin list shows %s at version %s, but its copy at %s differs from this source tree; bump the version, then `claude plugin update %s`; drift: %s\n' "$id" "$ver" "$ipath" "$id" "$drift"
+        else
+          printf 'ok\tP-10 the INSTALLED plugin matches this source tree (claude plugin list: %s %s, enabled)\n' "$id" "$ver"
+        fi
+        return 0 ;;
+      stale) printf 'bad\tP-10 the installed plugin is STALE — users run pre-fix code\tclaude plugin list shows %s at version %s, this source tree is %s%s; fix: claude plugin update %s, then restart the session\n' \
+               "$id" "$ver" "$pv" "$([ "$folder" = "-" ] || printf ' (its marketplace folder holds %s)' "$folder")" "$id"; return 0 ;;
+      disabled) printf 'bad\tP-10 the installed plugin is disabled — nothing of it runs\tclaude plugin list shows %s at version %s and enabled is not true; fix: claude plugin enable %s\n' "$id" "$ver" "$id"; return 0 ;;
+    esac
+  fi
+  cache=$(ls -d "$root"/*/okf/"$pv"/ 2>/dev/null | head -1)
+  if [ -n "$cache" ] && [ -d "$cache/scripts" ]; then
+    # Compare the RUNTIME surface only. `*.test.sh` ships in the package but no
+    # hook or skill invokes it, so a test edit is not "users run pre-fix code" —
+    # and a gate that cries stale on every dev edit gets ignored, which is the
+    # failure mode this whole repo exists to fight.
+    drift=$(p10_drift "$cache" "$src")
+    if [ -z "$drift" ]; then
+      printf 'ok\tP-10 the INSTALLED plugin matches this source tree\n'
+    else
+      printf 'bad\tP-10 the installed plugin is STALE — users run pre-fix code\tbump the version, then `claude plugin update okf@<marketplace>`; drift: %s\n' "$drift"
+    fi
+  else
+    # Only a genuine "nothing installed at all" is a skip. An OLDER okf in the cache is the commonest stale state (the
+    # version was bumped and the plugin never reinstalled): that is a failure, not a skip (0.9.2 F7).
+    inst=$(p10_installed_versions "$root")
+    if [ -n "$inst" ]; then
+      printf 'bad\tP-10 the installed plugin is STALE — only other versions are installed\tsource is %s, the cache holds: %s; reinstall: claude plugin uninstall okf@<marketplace> && claude plugin install okf@<marketplace>\n' "$pv" "$inst"
+    else
+      printf 'skip\tP-10 — plugin not installed on this machine (a skip, not a pass)\n'
+    fi
+  fi
+}
+p10_report() { local k a b; IFS=$'\t' read -r k a b <<< "$1"; case "$k" in ok) ok "$a";; bad) bad "$a" "$b";; skip) skip "$a";; esac; }
 if [ -z "$pv" ]; then
   bad "P-10 cannot run — no version could be read from plugin.json" \
       "P-9 above explains why; P-10 is NOT a skip here, it is unable to check"
-  CACHE=""
 else
-  CACHE=$(ls -d "$HOME/.claude/plugins/cache"/*/okf/"$pv"/ 2>/dev/null | head -1)
-fi
-if [ -n "$CACHE" ] && [ -d "$CACHE/scripts" ]; then
-  # Compare the RUNTIME surface only. `*.test.sh` ships in the package but no
-  # hook or skill invokes it, so a test edit is not "users run pre-fix code" —
-  # and a gate that cries stale on every dev edit gets ignored, which is the
-  # failure mode this whole repo exists to fight.
-  drift=$(diff -rq -x '*.test.sh' "$CACHE/scripts" "$PLUGIN/scripts" 2>&1 | head -3 | tr '\n' ' ')
-  [ -z "$drift" ] && ok "P-10 the INSTALLED plugin matches this source tree" \
-    || bad "P-10 the installed plugin is STALE — users run pre-fix code" \
-           "bump the version, then \`claude plugin update okf@<marketplace>\`; drift: $drift"
-elif [ -n "$pv" ]; then
-  # Only a genuine "nothing installed at all" is a skip; the unreadable-version case was reported above. An OLDER okf
-  # in the cache is the commonest stale state (the version was bumped and the plugin never reinstalled): that is a
-  # failure, not a skip (0.9.2 F7).
-  inst=$(p10_installed_versions "$HOME/.claude/plugins/cache")
-  if [ -n "$inst" ]; then
-    bad "P-10 the installed plugin is STALE — only other versions are installed" \
-        "source is $pv, the cache holds: $inst; reinstall: claude plugin uninstall okf@<marketplace> && claude plugin install okf@<marketplace>"
-  else
-    skip "P-10 — plugin not installed on this machine (a skip, not a pass)"
-  fi
+  p10_report "$(p10_verdict "$pv" "$HOME/.claude/plugins/cache" "$PLUGIN")"
 fi
 # P-10b: the cache listing itself, against a fixture cache (the live one above depends on this machine).
 mkdir -p "$TMP_W/p10cache/mk/okf/0.0.1/scripts" "$TMP_W/p10cache/mk/okf/0.0.2/scripts"
 [ "$(p10_installed_versions "$TMP_W/p10cache")" = "0.0.1 0.0.2 " ] && ok "P-10b the cache listing names every installed okf version" || bad "P-10b cache listing" "got '$(p10_installed_versions "$TMP_W/p10cache")'"
 [ -z "$(p10_installed_versions "$TMP_W/p10none")" ] && ok "P-10c an empty cache lists nothing (that is the skip case)" || bad "P-10c empty cache" "listed something"
+
+# P-10d..g: the cache comparison against fixture caches: the same version and the same scripts pass, a changed script is
+# stale, only other versions is stale, an empty cache is a skip.
+mkdir -p "$TMP_W/p10nobin" "$TMP_W/p10src/scripts" "$TMP_W/p10src/.claude-plugin" "$TMP_W/p10src/skills/okf" "$TMP_W/p10c3/mk/okf/2.0.0/scripts" "$TMP_W/p10c4"
+p10_cache() { PATH="$TMP_W/p10nobin:/usr/bin:/bin" p10_verdict "$@"; }   # the claude CLI hidden: the cache comparison alone
+printf 'echo a\n' > "$TMP_W/p10src/scripts/a.sh"; printf '{"name":"okf","version":"3.0.0"}\n' > "$TMP_W/p10src/.claude-plugin/plugin.json"; printf 'skill text\n' > "$TMP_W/p10src/skills/okf/SKILL.md"
+for n in 1 2 5 6; do mkdir -p "$TMP_W/p10c$n/mk/okf/3.0.0"; cp -R "$TMP_W/p10src/." "$TMP_W/p10c$n/mk/okf/3.0.0/"; done   # c1 identical; c2 script, c5 manifest, c6 skill changed below
+printf 'echo OLD\n' > "$TMP_W/p10c2/mk/okf/3.0.0/scripts/a.sh"; printf '{"name":"okf","version":"3.0.0","x":1}\n' > "$TMP_W/p10c5/mk/okf/3.0.0/.claude-plugin/plugin.json"; printf 'skill text edited\n' > "$TMP_W/p10c6/mk/okf/3.0.0/skills/okf/SKILL.md"
+v=$(p10_cache 3.0.0 "$TMP_W/p10c1" "$TMP_W/p10src"); case "$v" in ok$'\t'*) ok "P-10d the same version with the same scripts passes";; *) bad "P-10d matching cache" "got: $v";; esac
+v=$(p10_cache 3.0.0 "$TMP_W/p10c2" "$TMP_W/p10src"); case "$v" in bad$'\t'*"STALE — users run pre-fix code"*"drift:"*) ok "P-10e the same version with a changed script is stale";; *) bad "P-10e drifted cache" "got: $v";; esac
+v=$(p10_cache 3.0.0 "$TMP_W/p10c3" "$TMP_W/p10src"); case "$v" in bad$'\t'*"only other versions"*"2.0.0"*) ok "P-10f only an older version installed is stale and names it";; *) bad "P-10f older version" "got: $v";; esac
+v=$(p10_cache 3.0.0 "$TMP_W/p10c4" "$TMP_W/p10src"); case "$v" in skip$'\t'*) ok "P-10g an empty cache is a skip";; *) bad "P-10g empty cache" "got: $v";; esac
+
+# P-10h..n: with the `claude` CLI on PATH the installed plugin is read from `claude plugin list --json`: a stub prints the
+# list. The cache fixtures are chosen to DISAGREE with the list wherever a test needs to show the list wins.
+mkdir -p "$TMP_W/p10bin" "$TMP_W/p10nobin"
+printf '#!/bin/sh\nprintf "%%s" "$P10_STUB_OUT"\nexit "${P10_STUB_RC:-0}"\n' > "$TMP_W/p10bin/claude"; chmod +x "$TMP_W/p10bin/claude"
+p10_with() { # <stub output> <cache root>: the verdict with the stub `claude` first on PATH
+  PATH="$TMP_W/p10bin:$PATH" P10_STUB_OUT="$1" p10_verdict 3.0.0 "$2" "$TMP_W/p10src"
+}
+v=$(p10_with '[{"id":"okf@mk","version":"3.0.0","enabled":true,"installPath":"'"$TMP_W"'/p10c1/mk/okf/3.0.0"}]' "$TMP_W/p10c4")
+case "$v" in ok$'\t'*"claude plugin list"*"okf@mk"*"3.0.0"*) ok "P-10h an enabled okf at the source version passes from the list alone (no cache needed)";; *) bad "P-10h list ok" "got: $v";; esac
+v=$(p10_with '[{"id":"okf@mk","version":"2.0.0","enabled":true,"installPath":"x"}]' "$TMP_W/p10c1")
+case "$v" in bad$'\t'*"2.0.0"*"3.0.0"*"claude plugin update okf@mk"*) ok "P-10i an older installed version fails, names both versions and the update command, whatever the cache holds";; *) bad "P-10i stale version" "got: $v";; esac
+v=$(p10_with '[{"id":"okf@mk","version":"2.0.0","enabled":true,"folderVersion":"3.0.0"}]' "$TMP_W/p10c1")
+case "$v" in bad$'\t'*"its marketplace folder holds 3.0.0"*) ok "P-10o a stale entry of a directory marketplace also names the version the folder holds";; *) bad "P-10o folder version" "got: $v";; esac
+# P-10p: the version alone is not the proof: the installed copy (installPath) is compared with the source scripts, as the
+# cache comparison does. p10c2 holds a changed script, p10c1 the same one.
+v=$(p10_with '[{"id":"okf@mk","version":"3.0.0","enabled":true,"installPath":"'"$TMP_W"'/p10c2/mk/okf/3.0.0"}]' "$TMP_W/p10c4")
+case "$v" in bad$'\t'*"STALE — users run pre-fix code"*"p10c2/mk/okf/3.0.0"*"drift:"*) ok "P-10p the right version with a changed installed script is stale and names the installed folder";; *) bad "P-10p drifted installPath" "got: $v";; esac
+v=$(p10_with '[{"id":"okf@mk","version":"3.0.0","enabled":true,"installPath":"'"$TMP_W"'/p10c1/mk/okf/3.0.0"}]' "$TMP_W/p10c4")
+case "$v" in ok$'\t'*) ok "P-10p2 the right version with the same installed plugin folder passes";; *) bad "P-10p2 matching installPath" "got: $v";; esac
+# P-10p3: an installPath that is not there means the plugin cannot load: that fails and says so.
+v=$(p10_with '[{"id":"okf@mk","version":"3.0.0","enabled":true,"installPath":"'"$TMP_W"'/nowhere"}]' "$TMP_W/p10c4")
+case "$v" in bad$'\t'*"installPath"*"nowhere"*"does not exist"*) ok "P-10p3 an installPath that does not exist fails and names it";; *) bad "P-10p3 missing installPath" "got: $v";; esac
+# P-10t, P-10u: the whole plugin folder is compared, not only scripts/: a one-line edit to the manifest (c5) or to a skill
+# (c6) in the installed copy is stale, by the list and by the cache comparison alike.
+for pair in "t:5:.claude-plugin/plugin.json" "u:6:skills/okf/SKILL.md"; do
+  id=${pair%%:*}; rest=${pair#*:}; n=${rest%%:*}; file=${rest#*:}
+  v=$(p10_with '[{"id":"okf@mk","version":"3.0.0","enabled":true,"installPath":"'"$TMP_W"'/p10c'$n'/mk/okf/3.0.0"}]' "$TMP_W/p10c4"); w=$(p10_cache 3.0.0 "$TMP_W/p10c$n" "$TMP_W/p10src")
+  { case "$v" in bad$'\t'*"STALE — users run pre-fix code"*"$file"*) true;; *) false;; esac; case "$w" in bad$'\t'*"STALE — users run pre-fix code"*"$file"*) true;; *) false;; esac; } \
+    && ok "P-10$id an edit to $file in the installed copy is stale (list and cache comparison)" || bad "P-10$id edit to $file" "list: $v | cache: $w"
+done
+# P-10q: an entry that belongs to another project (scope project, a projectPath that is not this repository) is not this install.
+v=$(p10_with '[{"id":"okf@mk","version":"3.0.0","enabled":true,"scope":"project","projectPath":"/some/other/project"}]' "$TMP_W/p10c4")
+case "$v" in skip$'\t'*) ok "P-10q an okf entry of another project does not count as installed";; *) bad "P-10q project scope" "got: $v";; esac
+# P-10r: enabled written as a string: "true" counts, "false" does not and the message says what it saw.
+v=$(p10_with '[{"id":"okf@mk","version":"3.0.0","enabled":"true"}]' "$TMP_W/p10c4"); w=$(p10_with '[{"id":"okf@mk","version":"3.0.0","enabled":"false"}]' "$TMP_W/p10c4")
+{ case "$v" in ok$'\t'*) true;; *) false;; esac; case "$w" in bad$'\t'*"disabled"*"enabled is not true"*) true;; *) false;; esac; } \
+  && ok "P-10r enabled as the string true passes; as the string false it fails with 'enabled is not true'" || bad "P-10r string enabled" "got: $v | $w"
+# P-10s: a claude that hangs must not hang the suite, and must not leave a process behind: the stub starts a child
+# (no exec, so the shell stays its parent) and the whole process group is stopped when the limit passes.
+mkdir -p "$TMP_W/p10hangbin"
+printf '#!/bin/sh\nsleep 62 &\necho $! > "$P10_PIDFILE"\nwait\n' > "$TMP_W/p10hangbin/claude"; chmod +x "$TMP_W/p10hangbin/claude"
+t0=$SECONDS; v=$(PATH="$TMP_W/p10hangbin:/usr/bin:/bin" P10_LIST_LIMIT=1 P10_PIDFILE="$TMP_W/p10hang.pid" p10_verdict 3.0.0 "$TMP_W/p10c1" "$TMP_W/p10src"); t1=$((SECONDS-t0))
+# Alive means running: in a container with no init process a killed orphan stays as a zombie (state Z) that `kill -0` still sees.
+sleep 1; alive=no; st=$(ps -o stat= -p "$(cat "$TMP_W/p10hang.pid" 2>/dev/null)" 2>/dev/null | tr -d ' ')
+case "$st" in ""|Z*) ;; *) alive=yes; kill "$(cat "$TMP_W/p10hang.pid")" 2>/dev/null ;; esac
+{ [ "$t1" -lt 6 ] && [ "$alive" = no ] && case "$v" in ok$'\t'"P-10 the INSTALLED plugin matches this source tree") true;; *) false;; esac; } \
+  && ok "P-10s a claude that hangs is given up on after the limit, its child is stopped too, and the cache comparison runs (${t1}s)" || bad "P-10s hung claude" "took ${t1}s, child still running: $alive (state '$st'), got: $v"
+v=$(p10_with '[{"id":"okf@mk","version":"3.0.0","enabled":false,"installPath":"x"}]' "$TMP_W/p10c1")
+case "$v" in bad$'\t'*"disabled"*"claude plugin enable okf@mk"*) ok "P-10j a disabled okf fails and names the enable command";; *) bad "P-10j disabled" "got: $v";; esac
+v=$(p10_with '[{"id":"okf@old","version":"2.0.0","enabled":false},{"id":"okf@mk","version":"3.0.0","enabled":true}]' "$TMP_W/p10c4")
+case "$v" in ok$'\t'*"okf@mk"*) ok "P-10k two okf entries: the enabled one at the source version is enough";; *) bad "P-10k two entries" "got: $v";; esac
+v=$(p10_with 'error: not logged in' "$TMP_W/p10c1"); w=$(p10_with 'error: not logged in' "$TMP_W/p10c4")
+{ case "$v" in ok$'\t'"P-10 the INSTALLED plugin matches this source tree") true;; *) false;; esac; case "$w" in skip$'\t'*) true;; *) false;; esac; } \
+  && ok "P-10l output that is not JSON falls back to the cache comparison (match, and skip)" || bad "P-10l not JSON" "got: $v | $w"
+v=$(p10_with '[{"id":"other@x","version":"9.9.9","enabled":true}]' "$TMP_W/p10c1"); w=$(p10_with '[]' "$TMP_W/p10c4")
+{ case "$v" in ok$'\t'"P-10 the INSTALLED plugin matches this source tree") true;; *) false;; esac; case "$w" in skip$'\t'*) true;; *) false;; esac; } \
+  && ok "P-10m a list without an okf entry falls back to the cache comparison" || bad "P-10m no okf entry" "got: $v | $w"
+v=$(PATH="$TMP_W/p10nobin:/usr/bin:/bin" p10_verdict 3.0.0 "$TMP_W/p10c1" "$TMP_W/p10src")
+{ ! PATH="$TMP_W/p10nobin:/usr/bin:/bin" command -v claude >/dev/null 2>&1 && case "$v" in ok$'\t'"P-10 the INSTALLED plugin matches this source tree") true;; *) false;; esac; } \
+  && ok "P-10n without the claude CLI on PATH the cache comparison runs" || bad "P-10n no claude CLI" "claude on that PATH: $(PATH="$TMP_W/p10nobin:/usr/bin:/bin" command -v claude); got: $v"
 
 # W-1/W-2: the extractors themselves, against manifests crafted to break the
 # old sed. Both shapes are legal per the official schema.

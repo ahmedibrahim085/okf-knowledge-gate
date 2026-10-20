@@ -43,6 +43,21 @@ ATX = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
 # An indented code block is 4 spaces or a tab in; it cannot interrupt a paragraph.
 INDENTED = re.compile(r"^(?: {4}| {0,3}\t)")
 LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
+# A list item's content starts after the marker and 1-4 spaces; with none, or 5 and more (code in the item), one column
+# after the marker. A line after a blank line belongs to the item only if it is indented at least that far (CommonMark
+# 0.31.2, 5.2 List items). Tabs count to the next stop of 4 columns (2.2 Tabs).
+ITEM_CONTENT = re.compile(r"^( {0,3}(?:[-*+]|\d{1,9}[.)]))( *)(.?)")
+
+
+def item_content_indent(line: str) -> int:
+    m = ITEM_CONTENT.match(line.expandtabs(4))
+    marker, spaces, rest = len(m.group(1)), len(m.group(2)), m.group(3)
+    return marker + spaces if rest and 1 <= spaces <= 4 else marker + 1
+
+
+def indent_width(line: str) -> int:
+    wide = line.expandtabs(4)
+    return len(wide) - len(wide.lstrip(" "))
 # A code span closes on a backtick run of exactly its opening length.
 # SHORTCUT: one line only; a span wrapped across lines is read as text. Track spans per paragraph if one shows up.
 CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`).+?(?<!`)\1(?!`)")
@@ -84,39 +99,85 @@ def frontmatter_len(lines: list[str]) -> int:
     return 0
 
 
+def dedent(line: str, cols: int) -> str:
+    """The line with up to `cols` columns of leading space taken off: its text as the list item it sits in sees it."""
+    wide = line.expandtabs(4)
+    return wide[min(cols, indent_width(line)):]
+
+
+class ListItems:
+    """The open list items, read the way CommonMark 0.31.2 reads them (5.2 List items): one tracker, so the heading
+    finder and the code reader agree on where a list ends."""
+
+    def __init__(self):
+        self.indents = []    # content indents of the open items, outer first
+        self.empty = False   # the innermost item has no text yet: a blank line ends it
+        self.para = False    # a paragraph is open above: only then may a line at the margin continue it (lazily)
+
+    def step(self, line: str) -> bool:
+        """Read one line outside a fence (a fence's opening line included); True while a list is open after it. The
+        caller sets `para` False when the line turns out to be code (a fence, indented code inside an item)."""
+        if not line.strip():
+            if self.empty:
+                self.indents.pop()
+                self.empty = False
+            self.para = False
+            return bool(self.indents)
+        w, brk = indent_width(line), THEMATIC.match(line)
+        item = LIST_ITEM.match(line) and not brk   # `- - -` is a thematic break, not an item
+        inside = bool(self.indents) and w >= self.indents[-1]
+        underline = self.para and inside and SETEXT.match(dedent(line, self.indents[-1]))   # a setext heading in the item
+        block = brk or FENCE.match(line) or ATX.match(line)
+        # A marker, a block that cannot continue a paragraph, or any line with no paragraph open above closes the items
+        # it is indented below; under an open paragraph any other line is a continuation, lazy or not.
+        if not underline and (item or block or not self.para):
+            while self.indents and w < self.indents[-1]:
+                self.indents.pop()
+        self.empty = False
+        if item:
+            self.indents.append(item_content_indent(line))
+            self.empty = not ITEM_CONTENT.match(line.expandtabs(4)).group(3)
+            self.para = not self.empty
+        else:
+            self.para = not (underline or block)
+        return bool(self.indents)
+
+
 def body_lines(lines: list[str]):
-    """Yield (index, line, in_code) for each body line; in_code is True inside a fence, fence lines included, and on
-    the lines of an indented code block. A blank line is never code: it holds no link, and the log reader counts it."""
-    fence = ""
+    """Yield (index, line, in_code, in_list) for each body line; in_code is True inside a fence, fence lines included,
+    and on the lines of an indented code block; in_list is True while a list item is open (ListItems). A fence or an
+    indented code block inside a list item is read relative to the item's content. A blank line is never code: it
+    holds no link, and the log reader counts it."""
+    fence, fence_at = "", 0   # the open fence and the content indent it sits at (0: not in an item)
     indented = False   # inside an indented code block
     can_open = True    # no paragraph line just above, so an indented line opens a code block
-    in_list = False    # inside a list, where an indented line continues the item instead
-    blank = False      # the line above was blank
-    # SHORTCUT: a list ends only at an unindented line after a blank line, and code inside a list item (8 spaces) is
-    # read as text. Track list item indents if such a note shows up.
+    items, in_list = ListItems(), False
     for i in range(frontmatter_len(lines), len(lines)):
         line = lines[i]
-        m = FENCE.match(line)
+        if fence and line.strip() and indent_width(line) < fence_at:
+            fence = ""   # the item ends and its fence with it (CommonMark 4.5: a container's end closes the fence)
         if fence:
+            m = FENCE.match(dedent(line, fence_at))
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
                 fence = ""
-            yield i, line, True
-        elif not line.strip():
-            can_open = blank = True
-            yield i, line, False
-        elif INDENTED.match(line) and (indented or (can_open and not in_list)):
-            indented, blank = True, False
-            yield i, line, True
+            yield i, line, True, in_list
+            continue
+        in_list = items.step(line)
+        at = items.indents[-1] if in_list and not LIST_ITEM.match(line) and indent_width(line) >= items.indents[-1] else 0
+        text = dedent(line, at)
+        m = FENCE.match(text)
+        if not line.strip():
+            can_open = True
+            yield i, line, False, in_list
+        elif INDENTED.match(text) and (indented or can_open):
+            indented, items.para = True, False
+            yield i, line, True, in_list
         elif m:
-            fence, indented, can_open, blank = m.group(1), False, True, False
-            yield i, line, True
+            fence, fence_at, indented, can_open, items.para = m.group(1), at, False, True, False
+            yield i, line, True, in_list
         else:
-            if LIST_ITEM.match(line):
-                in_list = True
-            elif (blank and not line[:1].isspace()) or ATX.match(line):
-                in_list = False
-            indented, can_open, blank = False, bool(ATX.match(line)), False
-            yield i, line, False
+            indented, can_open = False, bool(ATX.match(line))
+            yield i, line, False, in_list
 
 
 def read_text(path: Path) -> str:
@@ -133,17 +194,11 @@ def heading_slugs(path: Path) -> set[str]:
     except UnicodeDecodeError:
         return set()   # the target is reported on its own as not valid UTF-8; a heading in it cannot be found
     found, para = set(), []   # para: the paragraph lines above, the text of a setext heading
-    in_list, blank = False, False   # a list continues until a blank line and then an unindented line that is no item
-    for _, line, code in body_lines(lines):
+    for _, line, code, in_list in body_lines(lines):
         m = None if code else ATX.match(line)
-        if not code and line.strip():
-            if LIST_ITEM.match(line):
-                in_list = True
-            elif in_list and blank and not line[:1].isspace():
-                in_list = False
         if m:
-            found.add(slug(m.group(1)))
-            para, in_list = [], False
+            found.add(slug(m.group(1)))   # inside a list item too: an item holds any block (CommonMark 5.2)
+            para = []
         elif code or not line.strip() or in_list:
             para = []   # a list item's text and its continuation lines are not a paragraph: `---` after them is a break
         elif para and SETEXT.match(line):
@@ -153,8 +208,6 @@ def heading_slugs(path: Path) -> set[str]:
             para = []   # `***`, or `---` with no paragraph above: a break, never heading text (review 0.9.35)
         else:
             para.append(line)
-        if not code:
-            blank = not line.strip()
     return found
 
 
@@ -268,7 +321,7 @@ def build_log(rel: Path, lines: list[str], problems: list[str]) -> str | None:
         group.append(CONTROL.sub("?", text))   # the log is read by people and agents (X-20)
         blank = False
 
-    for i, line, code in body_lines(lines):
+    for i, line, code, _ in body_lines(lines):
         text, where = line.rstrip("\r\n"), f"{name}:{i + 1}"
         if not code:
             if not text.strip():
@@ -457,7 +510,7 @@ def main() -> int:
             problems.append(f"{rel.as_posix()}:1: not valid UTF-8, copied unchanged")
             shutil.copy2(vault / rel, dest)
             continue
-        for i, line, code in body_lines(lines):
+        for i, line, code, _ in body_lines(lines):
             if code:
                 continue
             no = i + 1

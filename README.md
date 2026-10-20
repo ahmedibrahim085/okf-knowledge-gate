@@ -208,7 +208,7 @@ binary called `okf`) finds what no layer here looks for: notes that no other not
 target is gone. With `okf_check: {graph: true}` (or `OKF_MEMORY_BIN` set), `okf-check` runs its read-only `okf validate --json`
 on the frozen copy and prints the findings as advisories (`L2 graph  WARN  2 broken concept link(s), 5 orphan(s)`; `--json`
 `l2_graph`). The exit code does not change. When okf-memory is not installed the line says SKIPPED and what is unchecked; a
-different tool that is also called `okf` is not mistaken for it. The plugin never installs or downloads it.
+different tool that is also called `okf` is not mistaken for it. The plugin never installs or downloads it. It is installed by hand: download the binary for your platform from the [v0.6.2 release](https://github.com/okf-memory/okf-agent-memory/releases/tag/v0.6.2) (the version this layer was tested with) and check it against these sha256 values from the release's `checksums.txt`: `okf-darwin-arm64` `44bbc5c7caf2de390231ac57858e0bb7a948a5b5107e07ead667d88926ef8535`, `okf-darwin-amd64` `c9167a3545375531f17bad9aded2c4b9d42e5cd02711daebac12c6a46e102cad`, `okf-linux-arm64` `4385f5fa5278a08ba36214aee80e4be2d3b931429d127887f9c69d7f57a24dc0`, `okf-linux-amd64` `2da161da80132f70112a61fc237ce77aca0cbb0ea3767e73d7986dbd7cdcf47c`. Upstream publishes no signature file.
 
 ```yaml
 okf_check:
@@ -388,7 +388,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.35
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.36
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -404,7 +404,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.35
+    rev: v0.9.36
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -558,6 +558,13 @@ fix. A change is reviewed on two axes (standards and spec) before it is released
    awk '/^## \[x.y.z\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md \
      | gh release create vx.y.z -R ahmedibrahim085/okf-knowledge-gate --title "okf x.y.z" --notes-file -
    ```
+7. Bring the installed plugin to the new version. `okf@ahmedmaged-okf` is read from the working copy (a directory
+   marketplace), so no uninstall or reinstall is needed: fast-forward the working copy that the marketplace points at
+   (`git merge --ff-only origin/main`, it stays on `main`), then check `claude plugin list --json`: the `okf` entry shows
+   the new `version` and `folderVersion`. `claude plugin update okf@ahmedmaged-okf` only says "okf is read from its
+   folder ... nothing to update". A running session loads the plugin when it starts: restart it, or run `/reload-plugins`,
+   and prove the loaded version with `okf-check --version`. `plugin.test.sh` P-10 reads the same `claude plugin list --json`
+   and compares the installed copy with the source tree.
 
 ## License
 
