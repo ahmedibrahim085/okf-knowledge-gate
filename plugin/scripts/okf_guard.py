@@ -7,13 +7,69 @@ The shell twin is note-guard-lib.sh. Run as `okf_guard.py freeze <src> <dst> <ca
 `okf_guard.py read <file> <cap>` prints one file read the same way (ignore-lib.sh reads .okfignore through it).
 """
 import errno
+import functools
 import json
 import os
 import stat
 import sys
+import unicodedata
 from pathlib import Path
 
 SCHEMA = Path(__file__).resolve().parent.parent / "config" / "okf-check-block.json"
+
+
+def obsidian_path(base, rel):
+    """The path below folder `base` that the link path `rel` names by Obsidian's rule, or None.
+
+    Each part is the name in its folder spelled exactly so, else the one name equal to it under lower() (okf-export's
+    case rule) after Unicode NFC normalisation (macOS may store a name decomposed; okf-export does not normalise yet).
+    Two such names (Notes.md and notes.md on a case-sensitive disk) are ambiguous: None, okf-export does not pick one
+    either. A part that matches no name is None too: the verdict comes from the rule, not from the disk, whose own case
+    folding is wider (macOS equates straße with STRASSE). The one exception: a part whose folder cannot be listed is
+    taken as written and the caller's isfile() decides. `..` is left to the OS, so after a folder link it is the link
+    target's parent, as open() reads it; `..` after a part that is not there drops it by name, as realpath() does
+    (`sub/../new` with no sub/ folder is new).
+    """
+    stack, missing = [base], 0   # missing: how many trailing parts name nothing on disk
+    for part in rel.replace(os.sep, "/").split("/"):
+        if part in ("", "."):
+            continue
+        if part == ".." and missing:
+            stack.pop()   # `..` after a part that is not there: dropped by name, as realpath() drops it
+            missing -= 1
+            continue
+        if part != ".." and not missing:
+            try:
+                exact, folded = _names(stack[-1])
+            except OSError:
+                exact = folded = None
+            if exact is not None and part not in exact:
+                hits = folded.get(_fold(part), ())
+                if len(hits) > 1:
+                    return None
+                if hits:
+                    part = hits[0]
+                else:
+                    missing += 1
+        elif part != "..":
+            missing += 1
+        stack.append(os.path.join(stack[-1], part))
+    return None if missing else stack[-1]
+
+
+def _fold(name):
+    # lower(), as okf-export and Obsidian: casefold() would also match ß to ss.
+    return unicodedata.normalize("NFC", name).lower()
+
+
+@functools.lru_cache(maxsize=4096)
+def _names(folder):
+    # One listing per folder and run: a bundle with thousands of links lists each folder once.
+    names = os.listdir(folder)
+    folded = {}
+    for n in names:
+        folded.setdefault(_fold(n), []).append(n)
+    return frozenset(names), {k: tuple(v) for k, v in folded.items()}
 
 
 class NoteRefused(OSError):
@@ -159,9 +215,13 @@ def freeze_main(src_root, dst_root, cap):
     return 0
 
 
-def read_main(p, cap):
+def read_main(p, cap, trim=False):
     """Print the text of `p` (ignore-lib.sh reads .okfignore through this). Exit 3 with the reason on stderr
-    when it is refused and 4 when it cannot be read, with the reason on stdout in place of the text; 1 when it is gone."""
+    when it is refused and 4 when it cannot be read, with the reason on stdout in place of the text; 1 when it is gone.
+
+    `trim` (the `lines` command): each line without the white space around it: space, tab, CR, VT, FF, POSIX [:space:]
+    in the C locale. ignore-lib.sh trimmed in bash, where each strip tried every prefix or suffix of the line: a line of
+    80 KB of spaces took over a minute. One pass here is linear in the file."""
     try:
         t = read_note(p, "utf-8-sig", "replace", cap=cap)
     except NoteRefused as exc:
@@ -172,6 +232,8 @@ def read_main(p, cap):
     except OSError as exc:
         sys.stdout.write("cannot be read (%s)" % (exc.strerror or exc))
         return 4
+    if trim:
+        t = "\n".join(line.strip(" \t\r\v\f") for line in t.split("\n"))
     sys.stdout.write(t)
     return 0
 
@@ -179,8 +241,8 @@ def read_main(p, cap):
 if __name__ == "__main__":
     if len(sys.argv) == 5 and sys.argv[1] == "freeze" and sys.argv[4].isdigit():
         sys.exit(freeze_main(sys.argv[2], sys.argv[3], int(sys.argv[4])))
-    if len(sys.argv) == 4 and sys.argv[1] == "read" and sys.argv[3].isdigit():
-        sys.exit(read_main(sys.argv[2], int(sys.argv[3])))
+    if len(sys.argv) == 4 and sys.argv[1] in ("read", "lines") and sys.argv[3].isdigit():
+        sys.exit(read_main(sys.argv[2], int(sys.argv[3]), trim=sys.argv[1] == "lines"))
     sys.stderr.write("usage: okf_guard.py freeze <src root> <dst root> <cap bytes>  (records on stdin)\n"
-                     "       okf_guard.py read <file> <cap bytes>\n")
+                     "       okf_guard.py read|lines <file> <cap bytes>\n")
     sys.exit(64)

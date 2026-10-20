@@ -36,7 +36,8 @@ _okfignore_read() {
   okfignore_present "$1" || return 0
   _OKFIGNORE_RC=2
   [ -r "$f" ] || { _OKFIGNORE_MSG="okfignore: $f exists but cannot be read"; return 0; }
-  text=$(PYTHONDONTWRITEBYTECODE=1 "${PY:-python3}" "$_OKF_GUARD_DIR/okf_guard.py" read "$f" "$(okf_note_cap)"); rc=$?
+  # `lines`: each line comes back trimmed of the white space around it, in one linear pass (see okf_guard.read_main).
+  text=$(PYTHONDONTWRITEBYTECODE=1 "${PY:-python3}" "$_OKF_GUARD_DIR/okf_guard.py" lines "$f" "$(okf_note_cap)"); rc=$?
   case "$rc" in
     0) ;;
     1) _OKFIGNORE_RC=1; return 0 ;;   # gone since the check above: no .okfignore
@@ -45,10 +46,9 @@ _okfignore_read() {
     *) _OKFIGNORE_MSG="okfignore: $f could not be read (okf_guard.py exited $rc)"; return 0 ;;
   esac
   _OKFIGNORE_RC=0
+  # No parameter-expansion trim here: ${line%$'\r'} and ${line%"${line##*[![:space:]]}"} try every suffix or prefix,
+  # so one long line cost time in the square of its length (S30-CF-I1). okf_guard.py trimmed the lines already.
   while IFS= read -r line; do
-    line=${line%$'\r'}
-    line=${line%"${line##*[![:space:]]}"}      # trailing whitespace
-    line=${line#"${line%%[![:space:]]*}"}      # leading whitespace
     case "$line" in
       ''|'#'*) continue;;
       '!'*) _OKFIGNORE_MSG="${_OKFIGNORE_MSG:+$_OKFIGNORE_MSG

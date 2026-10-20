@@ -9,6 +9,24 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.38] - 2026-10-20
+
+OKF Knowledge Gate 0.9.38 closes the false passes found by the overnight review of the open backlog: the public-export scan, `okf-verify` results, and `okf-check` link and warning handling.
+
+### Fixed
+- **The public-export scan no longer lets private text through.** `tools/export-public.sh` refuses links to any page of the private repository except a compare link, `GH-` references and full-width `＃` numbers, and text hidden in encoded forms (HTML entities, percent encoding, full-width or zero-width characters, UTF-16 and UTF-32 text), in file and folder names, or behind a binary file name or header. It copies only tracked files and refuses when it cannot tell which files those are; a read-only destination and any `tar` failure now fail the export; a symlink (also to a folder) is a finding. A binary file is allowed only when `tools/export-public.allow` pins its path and sha256; the one tracked binary, `docs/demo.gif`, is pinned. The checks are one table (`python3 tools/export-refs.py matrix`), each cell measured, and the tests are generated from it. Three scans that were quadratic in the line length are linear now.
+- **`tools/publish-public.sh` checks what was scanned.** The export marker carries a digest of the exported tree and publish recomputes it, so a file added or edited after the scan is refused. The digest catches edits after the export, not a marker written by hand.
+- **`okf-verify` reads zero-padded line numbers.** `a.py:0000000003` is line 3, in every place a line number is read (also `--since` and the moved-line detail).
+- **`okf-verify --repo` with a relative path finds citations written with an absolute path**, and a bundle or `--repo` folder that cannot be read gives one clear line instead of a traceback (exit 2 for a bundle; an unreadable `--repo` is listed under `repos_unreadable` in `--json`).
+- **`okf-verify` is faster on bundles with many citations.** It remembers the answers of its git calls for the run: 100 citations took 717 git processes and now take 16.
+- **`okf-check` resolves wikilinks and `superseded_by` successors by one rule on every disk.** The rule is the Obsidian one that `okf-export` already used: case is ignored, the Unicode form (NFC or NFD) is ignored, an exact name wins, and two names that differ only by case are ambiguous and not resolved. Before, macOS accepted what Linux refused (`[[New]]` for `new.md`). Behaviour change: on Linux a link in another case now resolves; on macOS a link that only the disk's own folding accepted (`[[STRASSE]]` for `straße.md`) does not.
+- **`okf-check` counts L1 warnings in the advisory total** and prints the share of each layer: `(advisories: L1 9 + L2 24)`. A finding that both layers report counts once per layer.
+- **`okf-check` explains a too-shallow `wikilink_root`** (a hint in the text output and `l2_hint` in `--json`), and a key written twice in `okf_check`, or a second `okf_check:` block, exits 2 naming the nested key.
+- **A very long `.okfignore` line is read in linear time.** A 640 KB line of spaces took over a minute; it takes about half a second. Only space, tab, CR, VT and FF are trimmed, so a trailing no-break or ideographic space is now part of the pattern.
+
+### Changed
+- README: the platform rows state the release they were measured on (0.9.37, `tools/macos-gate.sh` and `tools/linux-gate.sh`), a warning that `okf_check.verify.repos` from an untrusted pull request is trusted input for `okf-verify`, the wikilink rule above, and how to re-pin a re-recorded `docs/demo.gif` in Release step 5.
+
 ## [0.9.37] - 2026-10-20
 
 OKF Knowledge Gate 0.9.37 finishes the CommonMark list work in `okf-export` and corrects one step of the release recipe.
@@ -752,7 +770,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.37...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.38...HEAD
+[0.9.38]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.37...v0.9.38
 [0.9.37]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.36...v0.9.37
 [0.9.36]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.35...v0.9.36
 [0.9.35]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.34...v0.9.35

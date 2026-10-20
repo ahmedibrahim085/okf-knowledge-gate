@@ -5,7 +5,7 @@ points at. Needs the vendored okf_validate on sys.path (its bounded loader refus
 """
 import os
 
-from okf_guard import NoteRefused, note_cap, read_note, refusal  # noqa: F401  (re-exported: one reader for every tool)
+from okf_guard import NoteRefused, note_cap, obsidian_path, read_note, refusal  # noqa: F401  (re-exported: one reader for every tool)
 from okf_validate import load_frontmatter, split_frontmatter
 
 
@@ -47,7 +47,8 @@ def resolve(ref, note, root):
     """The real path of the note `ref` points at, or None.
 
     A wikilink, a markdown link or a path. Same convention as the L2 wikilink rule: from the bundle root or from the
-    note's own folder, with or without .md, and inside the bundle (`root` is its real path).
+    note's own folder, with or without .md, and inside the bundle (`root` is its real path). Names match by Obsidian's
+    rule on every disk (obsidian_path): `[[New]]` names new.md on Linux as on macOS.
     """
     s = str(ref).strip()
     if s.startswith("[[") and s.endswith("]]"):
@@ -67,7 +68,8 @@ def resolve(ref, note, root):
         return None
     for base in (root, os.path.dirname(os.path.realpath(str(note)))):
         for cand in (s, s + ".md"):
-            q = os.path.realpath(os.path.join(base, cand))
-            if (q == root or q.startswith(root + os.sep)) and os.path.isfile(q) and q.endswith(".md"):
+            q = obsidian_path(base, cand)
+            q = q and os.path.realpath(q)
+            if q and (q == root or q.startswith(root + os.sep)) and os.path.isfile(q) and q.endswith(".md"):
                 return q
     return None

@@ -56,13 +56,26 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.37"
+VERSION="0.9.38"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
 # Initialised HERE, not in main(): --selftest calls the layer functions directly
 # and never enters main, so declaring these there left them unbound under `set -u`.
 # (Regression introduced by the summary-counter change; caught by okf-check.test.sh.)
+# advise <source> <n>: count n advisories of one source. The summary line names each source's share: one finding can be
+# listed by two layers (a broken link is an L1 warning and an L2 L002) and is then counted once per layer.
+ADV_SRC=(); ADV_N=()
+advise() {
+  local i=0
+  case "${2:-}" in ''|*[!0-9]*|0) return 0 ;; esac
+  ADVISORIES=$((ADVISORIES + $2))
+  while [ "$i" -lt "${#ADV_SRC[@]}" ]; do
+    [ "${ADV_SRC[$i]}" = "$1" ] && { ADV_N[$i]=$((ADV_N[$i] + $2)); return 0; }
+    i=$((i + 1))
+  done
+  ADV_SRC+=("$1"); ADV_N+=("$2")
+}
 ADVISORIES=0; SKIPPED=0; TRUST_RAN=1; TRUST_FINDINGS=0; TRUST_POLICY_FAIL=0; L2_PROFILE=ran
 
 # ---------------------------------------------------------------- locate self
@@ -230,6 +243,8 @@ if sys.argv[3] == "ran":
                 out["l2_by_rule"][code] = int(n)
             elif r.startswith("W|"):
                 out["l2_advisories"].append(r[2:])
+            elif r.startswith("H|"):
+                out["l2_hint"] = r[2:]   # present only when the text prints a wikilink_root hint
         # A cut is announced with its count, like the text report's "and N more" lines (G-11); l2_warnings keeps the total.
         # 200: a CI job reads this key whole, and the other detail dumps cut at 3 to 12 lines.
         cap = 200
@@ -435,7 +450,7 @@ report_refused() {
     worse_other $EXIT_CONFORM
   fi
   if [ "$nwarn" -gt 0 ]; then
-    ADVISORIES=$((ADVISORIES + nwarn))
+    advise "Skipped folders" "$nwarn"
     say "  Skipped folders  WARN   $nwarn folder(s) named like a note are not notes and were skipped (the exit code is unchanged):"
     say_capped 12 "                   " < "$TMP/refused.warn"
   fi
@@ -922,6 +937,8 @@ PY
   case "$L1_ERR" in
     ''|*[!0-9]*) say "  L1 conformance   COULD NOT RUN (unreadable validator report)"; return $EXIT_DEP ;;
   esac
+  # The L1 warnings are advisories like the L2 ones: the summary line counts every warning the sections above list.
+  advise L1 "$L1_WARN"
   if [ "${L1_ERR:-1}" -eq 0 ]; then
     say "  L1 conformance   PASS   ${L1_CONCEPTS} concepts, 0 errors, ${L1_WARN} warning(s)"
     l1_list_warnings
@@ -958,7 +975,7 @@ run_trust() {
     say "  Trust (C4)       PASS   no unauthenticated human verification"
     return 0
   fi
-  ADVISORIES=$((ADVISORIES + nw + na)); TRUST_FINDINGS=$((nw + na))
+  advise Trust $((nw + na)); TRUST_FINDINGS=$((nw + na))
   say "  Trust (C4)       WARN   ${nw} warning(s), ${na} advisory(ies)"
   printf '%s\n' "$out" | sed -n 's/^[WA]|//p' | say_capped 50 "                   "
   say "                   okf-check cannot prove who a person is. A human: entry is a claim in the file."
@@ -981,7 +998,7 @@ run_config() {   # $1 the real bundle (paths in the block resolve against it), $
     # other line says so. One advisory per key; the exit code does not change.
     while IFS=$'\t' read -r key dup; do
       [ -n "$key" ] || continue
-      ADVISORIES=$((ADVISORIES + 1)); record misplaced "$key"
+      advise Config 1; record misplaced "$key"
       if [ -n "$dup" ]; then
         say "  Config           WARN   \`$key\` is at the top level of okf-base.yaml and also inside okf_check:; okf-check reads \`$key\` only inside okf_check: delete the top-level copy"
       else
@@ -1264,7 +1281,7 @@ PYEOF
     say "  Size             PASS   $(printf '%s\n' "$out" | sed -n 's/^N|//p') note(s) within the body budget$xs"
     return 0
   fi
-  ADVISORIES=$((ADVISORIES + nw))
+  advise Size "$nw"
   printf '%s\n' "$out" | grep '^[EW]|' | while IFS= read -r l; do
     case "${l%%|*}" in E) record error "${l#?|}";; W) record warning "${l#?|}";; esac
     say "                   ${l#?|}"
@@ -1354,7 +1371,7 @@ with open(sys.argv[3], "w") as f:
     f.writelines("broken link: %s\n" % b for b in broken)
     f.writelines("orphan: %s\n" % o for o in orphans)
 PY
-    ADVISORIES=$((ADVISORIES + 1))
+    advise "L2 graph" 1
     if [ "$ec" -eq 143 ]; then say "  L2 graph         COULD NOT RUN — okf-memory timed out after $secs s (OKF_GRAPH_TIMEOUT); not a pass"
     elif [ "$ec" -gt 1 ]; then say "  L2 graph         COULD NOT RUN — okf-memory exited $ec; not a pass"
     else say "  L2 graph         COULD NOT RUN — okf-memory exited $ec without a readable report; not a pass"; fi
@@ -1366,7 +1383,7 @@ PY
     say "  L2 graph         PASS   no orphan note, no broken concept link (okf-memory)"
     return 0
   fi
-  ADVISORIES=$((ADVISORIES + nb + no))
+  advise "L2 graph" $((nb + no))
   say "  L2 graph         WARN   $nb broken concept link(s), $no orphan(s) (okf-memory; advisory)"
   tail -n +2 "$TMP/graph.txt" | say_capped 20 "                   "
   return 0
@@ -1625,8 +1642,10 @@ __l2_core() {
   # Parse the structured report. If okflint signalled findings (exit 1) but we
   # cannot parse them, that is COULD NOT RUN — never a pass.
   local counts errs warns
-  counts=$("$PY" - "$TMP/l2.txt" "$bundle" "$dlst" "$(l2_wikilink_root "$_src" "$bundle")" <<'PY' 2>/dev/null
+  counts=$(OKF_SCRIPTS_DIR="$HERE" "$PY" - "$TMP/l2.txt" "$bundle" "$dlst" "$(l2_wikilink_root "$_src" "$bundle")" "$_src" <<'PY' 2>/dev/null
 import json, os, re, sys
+sys.path.insert(0, os.environ["OKF_SCRIPTS_DIR"])
+from okf_guard import obsidian_path
 raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
 
 # `raw.find("[")` grabbed the FIRST bracket anywhere — including one inside
@@ -1655,25 +1674,38 @@ def sev(x):
 # okflint 0.5.0 resolves a wikilink by FILE NAME only, so [[sub/b]] is reported as L001 "broken" although sub/b.md
 # exists (okf-knowledge-gate#1: 2,368 of 2,477 L001 findings on one real bundle). OKF section 6.1 defines markdown links only,
 # so how a wikilink resolves is a house convention, and this one matches Obsidian: a path from the bundle root, or from
-# the note's own folder, with or without .md. An L001 whose target is such a file is dropped and COUNTED, never hidden.
+# the note's own folder, with or without .md; each name spelled exactly so, else the one name equal to it under lower()
+# (okf-export's case rule) and NFC (okf-export does not normalise yet), on every disk and decided by that rule, not by
+# the disk's own folding (okf_guard.obsidian_path: [[Sub/S]] names sub/s.md on Linux as on macOS, [[STRASSE]] never
+# names straße.md). An L001 whose target is such a file is dropped and COUNTED, never hidden.
 _root = os.path.realpath(sys.argv[2])
 _wl_root = sys.argv[4]
-def _resolves(x):
+def _target(x):
+    """The path an L001 wikilink names, or "" for another finding."""
     if not (isinstance(x, dict) and x.get("code") == "L001"):
-        return False
+        return ""
     m = re.search(r"\[\[(.*)\]\]", str(x.get("message", "")))
-    target = m.group(1).split("|")[0].split("#")[0].strip().lstrip("/") if m else ""
+    return m.group(1).split("|")[0].split("#")[0].strip().lstrip("/") if m else ""
+def _resolves(x):
+    target = _target(x)
     if not target:
         return False
     note_dir = os.path.dirname(os.path.join(_root, str(x.get("file", ""))))
     for base in (_root, note_dir):
         for cand in (target, target + ".md"):
-            p = os.path.realpath(os.path.join(base, cand))
-            if (p == _root or p.startswith(_root + os.sep)) and os.path.isfile(p) and p.endswith(".md"):
+            p = obsidian_path(base, cand)
+            p = p and os.path.realpath(p)
+            if p and (p == _root or p.startswith(_root + os.sep)) and os.path.isfile(p) and p.endswith(".md"):
                 return True
     if _wl_root:
         for cand in (target, target + ".md"):
             lex = os.path.normpath(os.path.join(_wl_root, cand))
+            if not lex.startswith(_wl_root + os.sep):
+                continue
+            # The names as they are on disk (Obsidian's rule), so the folder-link test below looks at real entries.
+            lex = obsidian_path(_wl_root, os.path.relpath(lex, _wl_root))
+            if not lex:
+                continue
             # A folder link is not entered (as find -H elsewhere): no step of the path below the root may be a symlink
             # to a folder, and a note that is itself a link must stay inside the root.
             steps = os.path.relpath(os.path.dirname(lex), _wl_root).split(os.sep)
@@ -1690,6 +1722,22 @@ def _resolves(x):
 dropped = [x for x in doc if _resolves(x)]
 dropped_err = sum(1 for x in dropped if sev(x) == "error")
 doc = [x for x in doc if not _resolves(x)]
+
+# A wikilink_root one folder too shallow left every vault link an L001 with nothing to say why: name the closest folder
+# above the root that holds the target. The walk stops at the home folder and the file system root, the values
+# okf-verify refuses as too broad (check_node).
+from collections import Counter
+_above = Counter()
+if _wl_root:
+    _home = os.path.realpath(os.path.expanduser("~"))
+    for x in doc:
+        t = _target(x)
+        anc = os.path.dirname(_wl_root) if t else os.sep
+        while anc != os.sep and anc != _home and not _home.startswith(anc + os.sep):
+            if any(c.endswith(".md") and os.path.isfile(obsidian_path(anc, c) or "") for c in (t, t + ".md")):
+                _above[anc] += 1
+                break
+            anc = os.path.dirname(anc)
 
 # A finding with NO severity key is not a warning — it is a finding we cannot
 # classify. Counting it as a warning let okflint exit 1 while L2 said PASS. (G-4b)
@@ -1714,6 +1762,10 @@ for code, n in sorted(Counter(str(x.get("code", "?")) for x in others).items(), 
 # finding, so the text is flattened: a newline in a file name or message must not forge a C| or E| row.
 for x in others:
     print("W|" + re.sub(r"[\r\n\t]", " ", "%s %s \u2014 %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", ""))))
+if _above:
+    anc, n = _above.most_common(1)[0]
+    src = os.path.realpath(sys.argv[5])
+    print("H|%d L001 link(s) resolve from %s, a folder above wikilink_root %s" % (n, os.path.relpath(anc, src), os.path.relpath(_wl_root, src)))
 PY
   ) || counts=""
   if [ -z "$counts" ]; then
@@ -1730,7 +1782,7 @@ PY
   errs=$(head -1 "$TMP/l2parsed.txt" | awk '{print $1}')
   warns=$(head -1 "$TMP/l2parsed.txt" | awk '{print $2}')
   unknown=$(head -1 "$TMP/l2parsed.txt" | awk '{print $3}')
-  local dropped dropped_err
+  local dropped dropped_err hint
   dropped=$(head -1 "$TMP/l2parsed.txt" | awk '{print $4+0}')
   dropped_err=$(head -1 "$TMP/l2parsed.txt" | awk '{print $5+0}')
   # okflint's EXIT STATUS is authoritative about whether findings exist. If it
@@ -1748,7 +1800,7 @@ PY
     return $EXIT_PROFILE
   fi
   # The L2 warnings are advisories like the Size and Trust ones: the summary line counts what the sections above list.
-  ADVISORIES=$((ADVISORIES + ${warns:-0}))
+  advise L2 "${warns:-0}"
   # "by rule: S208 x12, S209 x4": top six codes, then a remainder count.
   local bycode
   bycode=$(awk -F'|' '$1=="C"{ if (n<6) printf "%s%s x%s", (n?", ":""), $2, $3; n++ } END { if (n>6) printf " (+%d more codes)", n-6 }' "$TMP/l2parsed.txt")
@@ -1757,12 +1809,14 @@ PY
     [ -n "$bycode" ] && say "                   by rule: $bycode"
     l2_say_dangling "$dlst"
     [ "${dropped:-0}" -gt 0 ] && say "                   ${dropped} path wikilink(s) resolved by okf-check (okflint reports them as L001 although the note exists)"
+    hint=$(sed -n 's/^H|//p' "$TMP/l2parsed.txt"); [ -z "$hint" ] || say "                   hint: $hint"
     return 0
   fi
   say "  L2 profile       FAIL   ${errs} house-rule error(s)"
   [ -n "$bycode" ] && say "                   advisory by rule: $bycode"
   l2_say_dangling "$dlst"
   [ "${dropped:-0}" -gt 0 ] && say "                   ${dropped} path wikilink(s) resolved by okf-check (okflint reports them as L001 although the note exists)"
+  hint=$(sed -n 's/^H|//p' "$TMP/l2parsed.txt"); [ -z "$hint" ] || say "                   hint: $hint"
   grep '^E|' "$TMP/l2parsed.txt" | sed 's/^E|//' | while IFS= read -r _e; do record l2 "$_e"; done
   grep '^E|' "$TMP/l2parsed.txt" | sed 's/^E|//' | say_capped 12 "                   "
   return $EXIT_PROFILE
@@ -2102,7 +2156,7 @@ run_staleness() {
   # 84, and made --fail-stale exit 4 on a bundle in which nothing had expired (okf-knowledge-gate#3).
   local n_stale n_status
   n_stale=$(printf '%s\n' "$report" | grep -Ec '^ +(expired|malformed) '); n_status=$(printf '%s\n' "$report" | grep -Ec '^ +status ')
-  ADVISORIES=$((ADVISORIES + n_stale + n_status))
+  advise L3 $((n_stale + n_status))
   if [ "$n_stale" -gt 0 ]; then
     say "  L3 staleness     ${n_stale} concept(s) need attention"
     # through say(), or --json is corrupted by the detail lines (R-3)
@@ -2586,7 +2640,7 @@ fi
 # If that moved, this verdict is a point-in-time reading and must not be
 # presented as a stable one.
 if [ "$FP_DEGRADED" -eq 1 ]; then
-  ADVISORIES=$((ADVISORIES + 1))
+  advise DEGRADED 1
   say "  DEGRADED         change detection is OFF — the fingerprint came back empty"
   say "                   on a bundle that has concepts. \`stat\` may be missing or"
   say "                   unsupported here; run: okf-check --doctor"
@@ -2602,7 +2656,7 @@ if [ "$FP_DEGRADED" -eq 1 ]; then
     fi
 elif [ "$FP_BEFORE" != "$FP_AFTER" ]; then
   CONCURRENT=1
-  ADVISORIES=$((ADVISORIES + 1))
+  advise CONCURRENT 1
   say "  CONCURRENT       the bundle CHANGED during this scan"
   say "                   Layers run in sequence, so this report may mix two states."
   say "                   The verdict is a point-in-time reading, not a snapshot — re-run"
@@ -2633,7 +2687,9 @@ if [ "$worst" -ne 0 ]; then
     say "  FAILED (exit $worst)"
   fi
 elif [ "$ADVISORIES" -gt 0 ] || [ "$SKIPPED" -gt 0 ]; then
-  say "  PASS — no blocking errors, but ${ADVISORIES} advisory(ies) and ${SKIPPED} skipped layer(s) above"
+  _by=""; _i=0
+  while [ "$_i" -lt "${#ADV_SRC[@]}" ]; do _by="${_by:+$_by + }${ADV_SRC[$_i]} ${ADV_N[$_i]}"; _i=$((_i + 1)); done
+  say "  PASS — no blocking errors, but ${ADVISORIES} advisory(ies) and ${SKIPPED} skipped layer(s) above${_by:+ (advisories: $_by)}"
 else
   say "  ALL GATES PASS"
 fi

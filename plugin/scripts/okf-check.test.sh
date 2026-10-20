@@ -2976,5 +2976,104 @@ mk56 e3u; D="$TMP/lt56-e3u"; body57 "$D/a.md" "Alpha" "One" "$P57"; ln -s missin
   && ok "LT-57k a dangling symlink and a directory named x.md are skipped by --duplicates-body (exit 0)" \
   || bad "LT-57k unreadable .md entry" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
 
+section "S30 (successor resolved by Obsidian's rule, L1 warnings in the tally)"
+# note29 <file> <title> <status> [one more frontmatter line]
+note29() {
+  printf -- '---\ntype: Lesson\ntitle: %s\ndescription: D\nstatus: %s\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n%s---\n\nbody\n' \
+    "$2" "$3" "${4:+$4
+}" > "$1"
+}
+# succ30 <id> <target file> <superseded_by value> [setup, run in the bundle folder]: the target note and old.md
+# (deprecated, naming the value), deprecated_requires on.
+succ30() {
+  mk56 "$1" '  deprecated_requires: superseded_by\n'; D="$TMP/lt56-$1"; rm -f "$D/c.md"
+  [ -z "${4:-}" ] || (cd "$D" && eval "$4")
+  mkdir -p "$D/$(dirname "$2")"; note29 "$D/$2" New stable; note29 "$D/old.md" Old deprecated "superseded_by: $3"
+  "$CHECK" "$D" >"$D.txt" 2>&1 </dev/null
+}
+# S30-CF-H1: a successor resolves by Obsidian's rule, the one okf-export and the L2 wikilink filter use, on every disk:
+# the exact name first, else the one name equal to it ignoring case and Unicode normalisation (macOS may store a name
+# decomposed); `..` is followed the way the OS follows it, through a folder link too. macOS found [[New]] and Linux did
+# not; an earlier fix made macOS fail too (and NFD names, and lnk/..).
+NFC=$(printf 'caf\303\251'); NFD=$(printf 'cafe\314\201')
+while IFS='|' read -r id tgt val setup; do
+  succ30 "cf$id" "$tgt" "$val" "$setup"; rcl=$?
+  { [ "$rcl" -eq 0 ] && grep -q 'Successor *PASS *1 deprecated note(s) name a valid successor' "$D.txt"; } \
+    && ok "S30-CF-H1 $id: superseded_by $val names $tgt: Successor PASS (exit 0), on every disk" \
+    || bad "S30-CF-H1 $id" "rc=$rcl $(grep -A1 'Successor' "$D.txt" | tr '\n' ' ')"
+done <<EOF
+exact|new.md|"[[new]]"|
+case|new.md|"[[New]]"|
+case-mdlink|new.md|"[n](New.md)"|
+case-path|new.md|NEW.md|
+nfd-file|$NFD.md|"[[$NFC]]"|
+nfc-file|$NFC.md|"[[$NFD]]"|
+space|my note.md|"[[My Note]]"|
+dot|new.md|"[[./new]]"|
+dotdot|new.md|"[[sub/../New]]"|mkdir sub
+EOF
+# S30-CF-H2: the resolver itself, on a real tree (okf-duplicates reads the bundle, not a copy): `..` after a folder link
+# is the link target's parent, as the OS reads it, and `..` after a folder that is not there is dropped, as realpath
+# drops it. An earlier fix walked `..` by name and lost the first case.
+D="$TMP/cf-h2"; mkdir -p "$D/d/e"; note29 "$D/d/z.md" Z stable; note29 "$D/new.md" New stable; ln -s d/e "$D/lnk"
+got=$(OKF_D="$D" PYTHONPATH="$HERE:$HERE/../vendor" "$REALPY" -c '
+import os
+from okf_notes import resolve
+r = os.path.realpath(os.environ["OKF_D"])
+for ref in ("[[lnk/../Z]]", "[[nosub/../New]]", "[[sub/../New]]"):
+    q = resolve(ref, os.path.join(r, "old.md"), r)
+    print(os.path.relpath(q, r) if q else None)' 2>&1 | tr '\n' ' ')
+[ "$got" = "d/z.md new.md new.md " ] \
+  && ok "S30-CF-H2 resolve(): [[lnk/../Z]] is d/z.md through the folder link; [[nosub/../New]] is new.md" \
+  || bad "S30-CF-H2 resolve() and .." "got: $got (want: d/z.md new.md new.md)"
+# S30-CF-N1c: a folder link inside the bundle is not entered (rule of the symlinks layer): its notes are not in the copy the
+# layers read, so [[lnk/New]] stays not found, as before.
+succ30 cfn1c sub/new.md '"[[lnk/New]]"' 'mkdir sub && ln -s sub lnk'; rcl=$?
+{ [ "$rcl" -eq 1 ] && grep -qF 'superseded_by [[lnk/New]]: successor not found' "$D.txt"; } \
+  && ok "S30-CF-N1c superseded_by [[lnk/New]] through a folder link: not entered, successor not found (exit 1)" \
+  || bad "S30-CF-N1c folder link" "rc=$rcl $(grep -A1 'Successor' "$D.txt" | tr '\n' ' ')"
+# S30-CF-N1d: the verdict comes from the rule, not from the disk: names that lower() does not equate stay not found even
+# where the disk folds them (macOS equates straße with STRASSE, ΟΔΟΣ with οδος and İ with i; Linux and okf-export
+# do not).
+while IFS='|' read -r id tgt val; do
+  succ30 "cf$id" "$tgt" "$val"; rcl=$?
+  vv=$(printf '%s' "$val" | tr -d '"')
+  { [ "$rcl" -eq 1 ] && grep -qF "superseded_by $vv: successor not found" "$D.txt"; } \
+    && ok "S30-CF-N1d $id: superseded_by $vv with only $tgt: successor not found (exit 1), on every disk" \
+    || bad "S30-CF-N1d $id" "rc=$rcl $(grep -A1 'Successor' "$D.txt" | tr '\n' ' ')"
+done <<EOF
+sz|straße.md|"[[STRASSE]]"
+sigma|ΟΔΟΣ.md|"[[οδος]]"
+idot|İ.md|"[[i]]"
+EOF
+# S30-CF-N1: a name that matches nothing is not found, and two names that differ only in case (a case-sensitive disk)
+# make a link that matches neither exactly ambiguous: not found, as okf-export does not pick one.
+succ30 cfn1 new.md '"[[Neww]]"'; rcl=$?
+{ [ "$rcl" -eq 1 ] && grep -qF 'superseded_by [[Neww]]: successor not found' "$D.txt"; } \
+  && ok "S30-CF-N1 superseded_by [[Neww]] with only new.md: Successor FAIL, successor not found (exit 1)" \
+  || bad "S30-CF-N1 no match" "rc=$rcl $(grep -A1 'Successor' "$D.txt" | tr '\n' ' ')"
+succ30 cfn1b new.md '"[[NEW]]"' 'note29 New.md Other stable'; rcl=$?
+if [ "$(find "$D" -name '*.md' | wc -l | tr -d ' ')" -lt 5 ]; then
+  skip "S30-CF-N1b this disk folds case, so New.md and new.md are one file (run on Linux)"
+else
+  { [ "$rcl" -eq 1 ] && grep -qF 'superseded_by [[NEW]]: successor not found' "$D.txt"; } \
+    && ok "S30-CF-N1b superseded_by [[NEW]] with New.md and new.md: ambiguous, Successor FAIL (exit 1)" \
+    || bad "S30-CF-N1b ambiguous" "rc=$rcl $(grep -A1 'Successor' "$D.txt" | tr '\n' ' ')"
+fi
+# S30-CF-N2: an L1 warning is an advisory like an L2 one; the final tally counted only the others (0 for 1 warning).
+D="$TMP/cf-n2"; mkbundle "$D"; note29 "$D/c.md" T stable; printf 'See [m](missing.md).\n' >> "$D/c.md"
+"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 0 ] && grep -q 'L1 conformance *PASS .*, 1 warning(s)' "$D.txt" && grep -q 'but 1 advisory(ies) and .* above (advisories: L1 1)$' "$D.txt"; } \
+  && ok "S30-CF-N2 one L1 warning (a link to a missing file) and nothing else: the tally says 1 advisory(ies) (advisories: L1 1)" \
+  || bad "S30-CF-N2 L1 warning in the tally" "rc=$rcl $(grep -E 'L1 conf|advisor' "$D.txt" | tr '\n' ' ')"
+# S30-CF-N2b: L1 and L2 warnings add up: the tally is the sum of the two warning counts printed above it.
+mk56 cfn2b; D="$TMP/lt56-cfn2b"; printf 'See [m](missing.md).\n' >> "$D/c.md"
+"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+w1=$(sed -n 's/^  L1 conformance *PASS .*, \([0-9]*\) warning(s).*/\1/p' "$D.txt")
+w2=$(sed -n 's/^  L2 profile *PASS *0 errors, \([0-9]*\) warning(s).*/\1/p' "$D.txt")
+{ [ "$rcl" -eq 0 ] && [ "${w1:-0}" -ge 1 ] && [ -n "$w2" ] && grep -q "but $((w1 + w2)) advisory(ies) and .* above (advisories: L1 $w1 + L2 $w2)\$" "$D.txt"; } \
+  && ok "S30-CF-N2b $w1 L1 and $w2 L2 warning(s): the tally says $((${w1:-0} + ${w2:-0})) advisory(ies), L1 $w1 + L2 $w2" \
+  || bad "S30-CF-N2b L1 + L2 tally" "rc=$rcl w1=$w1 w2=$w2 $(grep -E 'advisor' "$D.txt" | tr '\n' ' ')"
+
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

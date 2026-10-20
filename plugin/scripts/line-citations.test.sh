@@ -39,6 +39,16 @@ rc=$(runjson "$B"); got=$(lineres)
 { [ "$rc" = 0 ] && [ "$got" = '[["spec.md:40-42", "CONFIRMED"]]' ]; } \
   && ok "S21-LC-H2 spec.md:40-42 into a 42-line file is CONFIRMED (the trailing full stop is not part of the claim)" || bad "S21-LC-H2 range" "rc=$rc got=$got"
 
+# S29-LZ-E3: a zero-padded line number is the number it spells, in a document citation too (plain, and with a quoted anchor).
+B="$TMP/lz-d1"; mkbundle "$B"; lines "$B/spec.md" 42; note "$B/a.md" "See spec.md:0000000040-0000000042."
+rc=$(runjson "$B"); got=$(lineres)
+{ [ "$rc" = 0 ] && [ "$got" = '[["spec.md:0000000040-0000000042", "CONFIRMED"]]' ]; } \
+  && ok "S29-LZ-E3 spec.md:0000000040-0000000042 into a 42-line file is CONFIRMED" || bad "S29-LZ-E3 zero-padded range" "rc=$rc got=$got"
+B="$TMP/lz-d2"; mkbundle "$B"; lines "$B/spec.md" 42; note "$B/a.md" 'spec.md:0000000007 "line 7"'
+rc=$(runjson "$B"); got=$(lineres)
+{ [ "$rc" = 0 ] && [ "$got" = '[["spec.md:0000000007", "CONFIRMED"]]' ]; } \
+  && ok "S29-LZ-E3 a zero-padded line with a quoted anchor finds the text on that line" || bad "S29-LZ-E3 zero-padded anchor" "rc=$rc got=$got"
+
 # S21-LC-H3: the short form, resolved by unique file name.
 B="$TMP/h3"; mkbundle "$B"; lines "$B/notes/decision-12.md" 100; note "$B/a.md" "As decided in decision-12:94."
 rc=$(runjson "$B"); got=$(lineres)
@@ -200,6 +210,15 @@ rc=$(runjson "$B"); before=$(warns); rc2=$(runjson "$B" --since HEAD); got=$(war
 { [ "$rc" = 0 ] && [ "$before" = '[["decision.md:3", "CONFIRMED", null, false]]' ] && [ "$rc2" = 1 ] \
   && [ "$got" = '[["decision.md:3", "MOVED", "4", false]]' ] && grep -q 'was on line 3 at HEAD and is now on line 4' "$TMP/out.txt"; } \
   && ok "S21-LC-C1 --since: a citation whose text shifted down one line is MOVED with the new line (exit 1)" || bad "S21-LC-C1 shifted" "rc=$rc before=$before rc2=$rc2 got=$got"
+
+# S29-LZ-E4: the same shift, cited with zero-padded numbers (a line and a range): --since compares the cited block and the MOVED
+# detail names the new line or range.
+B="$TMP/c1z"; mkbundle "$B"; git init -q "$B"; docfile "$B/decision.md" "a" "b" "the rule" "c"; note "$B/a.md" "See decision.md:0000000003 and decision.md:0000000002-0000000003."
+gitc "$B" add -A; gitc "$B" commit -qm base; docfile "$B/decision.md" "new step" "a" "b" "the rule" "c"
+rc=$(runjson "$B" --since HEAD); got=$(warns); run "$B" --since HEAD >/dev/null
+{ [ "$rc" = 1 ] && [ "$got" = '[["decision.md:0000000003", "MOVED", "4", false], ["decision.md:0000000002-0000000003", "MOVED", "3-4", false]]' ] \
+  && grep -q 'was on line 0000000003 at HEAD and is now on line 4' "$TMP/out.txt" && grep -q 'was on line 0000000002-0000000003 at HEAD and is now on line 3-4' "$TMP/out.txt"; } \
+  && ok "S29-LZ-E4 --since: zero-padded line and range citations are MOVED with the new line (4) and range (3-4)" || bad "S29-LZ-E4 zero-padded shift" "rc=$rc got=$got $(grep 'now on' "$TMP/out.txt" | head -2)"
 
 # S21-LC-C2: the cited file did not change since the ref: no comparison, the plain verdict.
 B="$TMP/c2"; mkbundle "$B"; git init -q "$B"; docfile "$B/d.md" "a" "b"; note "$B/a.md" "d.md:2"; gitc "$B" add -A; gitc "$B" commit -qm base

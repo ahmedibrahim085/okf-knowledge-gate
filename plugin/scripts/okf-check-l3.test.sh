@@ -502,5 +502,21 @@ fi
 # LT-06 (ticket 08): an exported CDPATH must not redirect the script's own cd.
 expect_match "L3 staleness" "LT-06a okf-check survives an exported CDPATH with a relative path" bash -c 'cd "$1" && CDPATH="$1" bash scripts/okf-check "$2"' _ "$HERE/.." "$STALE"
 
+# S30-CF-L1: expired notes whose names hold a space, an ESC byte and a byte that is not UTF-8 are each listed by L3 (a
+# PASS that skipped them would be a false pass). A disk that refuses the non-UTF-8 name (APFS) skips this, not a pass.
+T29="$TMP/t29"; mkbundle "$T29"
+for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n---\nbody\n' > "$T29/$n.md" 2>/dev/null
+done
+if [ "$(find "$T29" -name '*.md' | wc -l | tr -d ' ')" -ne 6 ]; then
+  skip "S30-CF-L1 this disk refuses a note name that is not UTF-8 (run on Linux)"
+else
+  "$CHECK" "$T29" >"$TMP/t29.txt" 2>&1; rc=$?
+  { [ "$rc" -eq 0 ] && grep -q 'L3 staleness' "$TMP/t29.txt" && ! grep -q 'COULD NOT RUN' "$TMP/t29.txt" \
+    && [ "$(grep -c '(stale_after' "$TMP/t29.txt")" -eq 3 ]; } \
+    && ok "S30-CF-L1 three expired notes named with a space, ESC and a non-UTF-8 byte: L3 lists all three (exit 0)" \
+    || bad "S30-CF-L1 odd names" "rc=$rc $(grep -c '(stale_after' "$TMP/t29.txt") listed; $(grep -E 'L3|COULD' "$TMP/t29.txt" | cat -v | tr '\n' ' ')"
+fi
+
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

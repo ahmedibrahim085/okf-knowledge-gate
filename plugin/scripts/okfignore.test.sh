@@ -192,6 +192,31 @@ none=$(python3 -c 'import json,sys; print("symlinked_folders" in json.load(open(
   && ok "S12-IG-F3 --json symlinked_folders lists [\"kept\"]; a bundle without folder links has no such key" \
   || bad "S12-IG-F3 json list" "got=$got none=$none"
 
+# S30-CF-I1: one long line costs time in proportion to its length. The bash trims tried every suffix or prefix: a CR
+# strip took 14 s at 320 KB, a line of spaces 20 s at 20 KB and over a minute at 80 KB. Each 640 KB line below (text,
+# spaces, tabs, a mix, text then spaces, spaces then text; LF, and CRLF) loads in well under 10 s, and the pattern after
+# it, written with whitespace around it, still applies (archive/ stays out of the list).
+LONG=$((640 * 1024))
+if [ "$LONG" -ge 1048576 ]; then bad "S30-CF-I1 fixture size" "$LONG bytes is not under 1 MB"; else
+  for kind in text text-crlf spaces tabs mixed text-spaces spaces-text; do
+    B="$TMP/i1-$kind"; mkb "$B"
+    python3 - "$B/.okfignore" "$LONG" "$kind" <<'PY'
+import sys
+n, kind = int(sys.argv[2]), sys.argv[3]
+eol = "\r\n" if kind.endswith("crlf") else "\n"
+line = {"text": "a" * n, "text-crlf": "a" * n, "spaces": " " * n, "tabs": "\t" * n, "mixed": " \t" * (n // 2),
+        "text-spaces": "a" + " " * (n - 1), "spaces-text": " " * (n - 1) + "a"}[kind]
+with open(sys.argv[1], "w", newline="") as f:
+    f.write(line + eol + "  archive/ \t" + eol)
+PY
+    sz=$(wc -c < "$B/.okfignore" | tr -d ' ')
+    t0=$SECONDS; list=$(timeout 30 bash "$HERE/ignore-lib.sh" --list "$B" | tr '\0' ' '); rc=$?; t=$((SECONDS - t0))
+    { [ "$sz" -lt 1048576 ] && [ "$rc" -eq 0 ] && [ "$t" -lt 10 ] && [ "$list" != "${list/a.md/}" ] && [ "$list" = "${list/archive/}" ]; } \
+      && ok "S30-CF-I1 a $sz-byte .okfignore whose first line is $kind loads in ${t} s, under 10 s, and its next pattern applies" \
+      || bad "S30-CF-I1 long line ($kind)" "size=$sz rc=$rc ${t} s list: $list"
+  done
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed, $SKIPPED skipped"
 [ "$FAIL" -eq 0 ] || exit 1

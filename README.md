@@ -132,16 +132,22 @@ $ okf-check notes
   L2 profile       SKIPPED — no okf-base.yaml in notes
   L3 staleness     PASS   nothing expired
 
-  PASS — no blocking errors, but 1 advisory(ies) and 2 skipped layer(s) above
+  PASS — no blocking errors, but 1 advisory(ies) and 2 skipped layer(s) above (advisories: Trust 1)
 ```
 
 A Trust warning counts as an advisory in the last line, so the run still passes (exit 0) unless you pass `--strict-trust`.
+The last line counts every warning the sections above list and names each layer's share. A finding that two layers
+list is counted once per layer: a link to a missing file is an L1 warning and an L2 `L002`, so it counts 2
+(`(advisories: L1 1 + L2 1)`).
 
 `okf-verify` checks four kinds of claim and answers CONFIRMED, REFUTED or UNRESOLVED for each (and MOVED for a citation
 whose quoted text is now on another line):
 
 - **A commit SHA** is looked up in each `--repo` folder and in the repositories the bundle lists under
   `okf_check.verify.repos` in `okf-base.yaml`. A SHA that is in no searched repository is UNRESOLVED, never REFUTED.
+  Treat `verify.repos` as trusted input: an `okf-base.yaml` from a fork pull request can point it at any repository on the
+  runner (an absolute path to an unrelated repository was searched and its commit CONFIRMED), so do not run `okf-verify`
+  on an untrusted pull request's bundle with that file in place.
   With `--remote` (or `okf_check.verify.remote: true`) such a SHA is also looked up, read-only, on the GitHub or GitLab
   repository the clone's `origin` names, and is CONFIRMED there when the local clone is only behind.
 - **A code citation**, `path:line @sha` (also `path:first-last @sha` and `path:line at sha`), is one claim: the commit
@@ -152,6 +158,9 @@ whose quoted text is now on another line):
 - **Absolute file paths** in backticks or quotes (and paths that start with `~`) are checked on disk, but only inside
   the bundle or a `--repo` folder, so a bundle you did not write cannot use the check to learn which files exist on your
   machine. `--host-paths` looks up the others too. Relative paths are not read.
+  A cited path is read as written and is never looked up on disk to decide whether it is inside: a relative `--repo` and an
+  absolute one give the same answer, because a relative one also counts as the folder your shell calls it (`$PWD`).
+  A `--repo` or a bundle under a folder you may not enter is named in one line, not a traceback.
 
 In a shallow clone (the `actions/checkout` default), commits older than the clone are missing: use `fetch-depth: 0`.
 The full rules (declared repositories, line ranges, anchors, generated notes, paths that contain a space, what is not a
@@ -192,7 +201,8 @@ Read the exit code, do not just test for zero:
 **Leave paths out:** put globs in `<bundle>/.okfignore` (`archive/`, `.trash/`; a leading `**/` matches at any depth,
 the root included). Every layer skips them and the run says how many files it excluded. A symlinked note whose target is
 ignored is ignored too, and a symlinked folder that `.okfignore` excludes is not named on the `symlinks` line (`--json`
-`symlinked_folders` lists the ones it names). The plugin never creates the file by itself.
+`symlinked_folders` lists the ones it names). The plugin never creates the file by itself. White space around a pattern
+is trimmed: space, tab, CR, VT and FF only, so a trailing no-break or ideographic space is part of the pattern.
 
 **okf-check's own options** live in one `okf_check:` block of `okf-base.yaml`. Every option is off until you set it.
 `okflint` ignores the block (measured: the L2 warning count is the same with and without it), and both `okf-check` and
@@ -242,7 +252,15 @@ from the vault root, `[[projects/p/README]]`, and `okflint` reports each such li
 With the key set, an L001 for a path wikilink is also dropped (and counted in the "resolved by okf-check" line) when
 `<folder>/<path>.md` exists. `<folder>` is relative to the bundle: for the bundle `vault/projects/p/bundle` the vault
 root is `../../..`. A target that is missing under the folder still gives L001, and without the key nothing changes.
-A symlinked folder is not entered. The key is refused (exit 2, naming the key) when it is not a string, is an absolute
+A symlinked folder is not entered. When the target exists in a folder above `<folder>`, the L2 lines say so
+(`hint: 1 L001 link(s) resolve from ../../.., a folder above wikilink_root ../..`; in `--json`, `l2_hint`).
+A wikilink names a note by Obsidian's rule, on every disk, here and in the Successor rule: the name spelled exactly
+so, else the one name equal to it ignoring letter case (Python `lower()`, as `okf-export` does) and the Unicode
+normalisation form (`[[New]]` names `new.md` on Linux as on macOS; macOS may store `café` decomposed; `okf-export`
+does not ignore the normalisation form yet). The rule decides, not the disk: `[[STRASSE]]` does not name `straße.md`,
+although macOS treats the two as one name. Two names that differ only in case (`Notes.md` and `notes.md`, on a
+case-sensitive disk) make a link that matches neither exactly ambiguous: it is not resolved. A key written twice
+inside `okf_check:`, or `okf_check:` written twice, is refused too (YAML would keep the last value in silence). The key is refused (exit 2, naming the key) when it is not a string, is an absolute
 path, does not exist, is not a folder, is not the bundle or one of its parent folders, or is the file system root, the
 home folder or a folder above it.
 
@@ -388,7 +406,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.37
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.38
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -404,7 +422,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.37
+    rev: v0.9.38
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -461,8 +479,8 @@ The full behaviour contract, one row per scenario with its test, is
 
 | Platform | Status |
 |---|---|
-| macOS | The 0.9.2 test suites passed here, on bash 3.2 and the BSD tools. The gate was built and measured on this platform. |
-| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.2 suites passed on Debian 12 (aarch64, GNU coreutils 9.1, gawk 5.2.1, bash 5.2.15, non-root user) with `okflint` and pre-commit 4.7.0 installed in a Python 3.12 environment. 0 tests failed. 6 tests were skipped because they cannot apply there: no `claude` CLI, no installed plugin to compare, a case-sensitive filesystem, no lesson file as a fixture, and no Pillow to render the demo. Debian 12 ships Python 3.11, which cannot install `okflint`. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). In the public repository, every pull request and every push to `main` also runs the suites and `--selftest` on GitHub's Ubuntu 24.04 runner, once with gawk and once with mawk, and runs the GitHub Action on a valid and an invalid bundle (`.github/workflows/ci.yml`). |
+| macOS | The test suites pass here, on bash 3.2 and the BSD tools (0.9.37: `tools/macos-gate.sh`, 36 suites and `--selftest`). The gate was built and measured on this platform. |
+| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.37 suites passed on Debian 12 (aarch64, bash 5.2.15, Python 3.12.13, gawk 5.2.1, non-root user) with `okflint` 0.5.0 and pre-commit 4.7.0 installed in a Python 3.12 environment: `tools/linux-gate.sh`, 36 suites and `--selftest`, 0 failed. Debian 12 ships Python 3.11, which cannot install `okflint`; the gate image installs Python 3.12. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). In the public repository, every pull request and every push to `main` also runs the suites and `--selftest` on GitHub's Ubuntu 24.04 runner, once with gawk and once with mawk, and runs the GitHub Action on a valid and an invalid bundle (`.github/workflows/ci.yml`). |
 | Windows | There is no native Windows support: the gate is a set of bash scripts. WSL (Windows Subsystem for Linux) is the only path, and nothing has been run under it: UNVERIFIED, as are the Action and the pre-commit hook on Windows. |
 | Claude Code | The plugin form (hooks and the skill) needs Claude Code. The command line, the GitHub Action and the pre-commit hook do not. |
 
@@ -553,6 +571,10 @@ fix. A change is reviewed on two axes (standards and spec) before it is released
    git add -A && git commit -m "okf x.y.z: <summary>"
    git tag vx.y.z && git push origin HEAD:main vx.y.z
    ```
+   A binary ships only when `tools/export-public.allow` pins it by path and sha256 (`binary docs/demo.gif <sha256> # reason`):
+   the scan cannot read inside it, so a person looks at it first. After re-recording `docs/demo.gif` (`tools/demo`), look at
+   the new GIF, then replace its pin with the output of `shasum -a 256 docs/demo.gif`. An unpinned or changed binary stops
+   the export, named with its sha256.
 6. Publish the release notes from the changelog section, on the public repository:
    ```bash
    awk '/^## \[x.y.z\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md \

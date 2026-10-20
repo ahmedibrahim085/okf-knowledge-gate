@@ -176,8 +176,19 @@ def frontmatter_end(text: str) -> int:
 GIT_UNAVAILABLE = -1000
 
 
+_GIT_ANSWERS: dict[tuple, tuple[int, str]] = {}
+
+
 def git(repo: Path, *args: str) -> tuple[int, str]:
-    """Run git. GIT_UNAVAILABLE means it could not be RUN — not that it found nothing."""
+    """Run git. GIT_UNAVAILABLE means it could not be RUN — not that it found nothing.
+
+    Every caller only reads (rev-parse, cat-file, ls-tree, log, remote get-url), and a run does not change the repositories
+    it looks at, so one question is asked once: a note with 100 citations of one commit spawned about 600 git processes.
+    A git that could not run is never kept: the next citation asks again.
+    """
+    key = (str(repo), args)
+    if key in _GIT_ANSWERS:
+        return _GIT_ANSWERS[key]
     try:
         p = subprocess.run(["git", "-C", str(repo), *args],
                            capture_output=True, text=True, timeout=15)
@@ -187,7 +198,8 @@ def git(repo: Path, *args: str) -> tuple[int, str]:
         return GIT_UNAVAILABLE, "git could not be executed"
     if p.returncode < 0:
         return GIT_UNAVAILABLE, f"git killed by signal {-p.returncode}"
-    return p.returncode, p.stdout.strip()
+    _GIT_ANSWERS[key] = (p.returncode, p.stdout.strip())
+    return _GIT_ANSWERS[key]
 
 
 def repo_usable(repo: Path) -> tuple[bool, str]:
@@ -398,30 +410,64 @@ def _check_sha(sha: str, repos: list[Path], subjects: list[str]):
     return UNRESOLVED, f"not found in the searched repos ({searched}); other repos not searched{note}"
 
 
+def line_no(digits: str):
+    """The value of a line number written as `digits`, or None when it has more than 9 significant digits.
+
+    Zeros in front carry no value: `0000000003` is line 3. int() of thousands of digits raises on current Pythons and
+    aborted the whole run, and no file has 10^9 lines, so a number that long is out of range.
+    """
+    sig = digits.lstrip("0") or "0"
+    return int(sig) if len(sig) <= 9 else None
+
+
+def line_span(lines: str):
+    """(first, last) of `N` or `N-M`, the larger number last (`20-10` is read as up to 20), or None when a number is out of range."""
+    lo, _, hi = lines.partition("-")
+    first, end = line_no(lo), line_no(hi or lo)
+    if first is None or end is None:
+        return None
+    return first, max(first, end)
+
+
+_BLOB_LINES: dict[tuple, tuple] = {}
+
+
 def blob_lines(repo: Path, sha: str, path: str):
     """Line count of `path` at `sha`: (count, "") or (None, why). Bytes, not text: a source file need not be UTF-8.
 
     A NUL in the first 8000 bytes is git's own test for a binary file; its "lines" are not a thing to check.
+    Asked once per file and commit (only the count is kept, not the blob); an answer given by a git that could not run is not kept.
     """
+    key = (str(repo), sha, path)
+    if key not in _BLOB_LINES:
+        count, why, answered = _blob_lines(repo, sha, path)
+        if answered:
+            _BLOB_LINES[key] = (count, why)
+        return count, why
+    return _BLOB_LINES[key]
+
+
+def _blob_lines(repo: Path, sha: str, path: str):
+    """blob_lines without the memo: (count, why, answered); answered is False when git could not run to an answer."""
     # A symlink's blob is the LINK TEXT: counting it reports "1 lines" for a link to a 20-line file. The tree entry's mode says which it is.
     rc, entry = git(repo, "ls-tree", sha, "--", path)
     if rc == GIT_UNAVAILABLE:
-        return None, entry
+        return None, entry, False
     if entry.split(" ", 1)[0] == "120000":
-        return None, f"{path} is a symlink, so its lines cannot be checked"
+        return None, f"{path} is a symlink, so its lines cannot be checked", True
     try:
         p = subprocess.run(["git", "-C", str(repo), "cat-file", "blob", f"{sha}:{path}"],
                            capture_output=True, timeout=15)
     except subprocess.TimeoutExpired:
-        return None, "git timed out"
+        return None, "git timed out", False
     except (OSError, subprocess.SubprocessError):
-        return None, "git could not be executed"
+        return None, "git could not be executed", False
     if p.returncode != 0:
-        return None, f"{path} at {sha} is not a regular file"
+        return None, f"{path} at {sha} is not a regular file", p.returncode > 0   # a negative code is a signal: git did not answer
     data = p.stdout
     if b"\0" in data[:8000]:
-        return None, f"{path} is a binary file, so its lines cannot be checked"
-    return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0), ""
+        return None, f"{path} is a binary file, so its lines cannot be checked", True
+    return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0), "", True
 
 
 def spaced_names(path: str, prefix: str):
@@ -505,11 +551,10 @@ def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects:
         count, why = blob_lines(r, sha, n)
         if count is None:
             return UNRESOLVED, f"sha {sha} and path {n} exist in {r.name}, but line {lines} was not checked: {why}"
-        lo, _, hi = lines.partition("-")
-        # int() of a thousands-of-digits string raises on current Pythons and aborted the whole run; no file has 10^9 lines.
-        if len(lo) > 9 or len(hi) > 9:
+        span = line_span(lines)
+        if span is None:
             return REFUTED, f"line part failed: line number out of range ({n} has {count} lines at {sha})"
-        first, last = int(lo), max(int(lo), int(hi or lo))
+        first, last = span
         if first < 1 or last > count:
             return REFUTED, (f"line part failed: {n} has {count} lines at {sha}, line {lines} "
                              f"{'does not exist (lines start at 1)' if first < 1 else 'is past the end'}")
@@ -556,10 +601,10 @@ def real_inside(p, roots) -> bool:
 
 def line_range(lines: str, count: int, shown: str):
     """The verdict of `lines` (`N` or `N-M`) against a file of `count` lines; `shown` names the file in the detail."""
-    lo, _, hi = lines.partition("-")
-    if len(lo) > 9 or len(hi) > 9:   # int() of thousands of digits raises on current Pythons; no file has 10^9 lines
+    span = line_span(lines)
+    if span is None:
         return REFUTED, f"line part failed: line number out of range ({shown} has {count} lines)"
-    first, last = int(lo), max(int(lo), int(hi or lo))
+    first, last = span
     if first < 1 or last > count:
         return REFUTED, (f"{shown} has {count} lines, line {lines} "
                          f"{'does not exist (lines start at 1)' if first < 1 else 'is past the end'}")
@@ -573,8 +618,9 @@ def anchor_check(text: str, lines: str, anchor: str, shown: str, may_move: bool 
     if text.endswith("\n"):
         rows = rows[:-1]
     lo, _, hi = lines.partition("-")
-    first = int(lo) if len(lo) <= 9 else 10 ** 9
-    last = max(first, int(hi) if hi and len(hi) <= 9 else first)
+    first = line_no(lo)
+    first = 10 ** 9 if first is None else first
+    last = max(first, line_no(hi) or first) if hi else first
     span = min(last - first + 1, max(len(rows), 1))
     if 1 <= first and last <= len(rows) and want in " ".join(" ".join(rows[first - 1:last]).split()):
         return CONFIRMED, f"{shown}: the quoted text is on line {lines}", None
@@ -625,10 +671,10 @@ def since_check(found: Path, text: str, lines: str, since: tuple):
         r = t.split("\n")
         return r[:-1] if t.endswith("\n") else r
     old, new = rows(p.stdout.decode("utf-8", "replace")), rows(text)
-    lo, _, hi = lines.partition("-")
-    if len(lo) > 9 or len(hi) > 9:
+    span = line_span(lines)
+    if span is None:
         return None
-    first, last = int(lo), max(int(lo), int(hi or lo))
+    first, last = span
     if first < 1 or last > len(old):
         return None   # the citation was already outside the file at the ref
     norm = lambda block: [" ".join(x.split()) for x in block]
@@ -716,8 +762,8 @@ def check_line(target: str, lines: str, by_name: bool, note_dir: Path, bundle: P
     # Only a citation the note already had at the ref: one the branch corrected along with the move is right as it is (B2).
     shifted = since_check(found, text, lines, since) if since and since[2](f"{target}:{lines}") else None
     if shifted and shifted[0] == "moved":
-        span = max(int(lines.partition("-")[2] or lines.partition("-")[0]) - int(lines.partition("-")[0]), 0)
-        at = [str(i) if not span else f"{i}-{i + span}" for i in shifted[1]]
+        first, last = line_span(lines)
+        at = [str(i) if last == first else f"{i}-{i + last - first}" for i in shifted[1]]
         extra["moved_to"] = at[0]
         return MOVED, (f"{shown}: the cited text was on line {lines} at {since[1]} and is now on line "
                        f"{' or '.join(at[:3])}"), extra
@@ -751,10 +797,41 @@ def case_exact(p: Path) -> bool:
     return True
 
 
+_ROOT_FORMS: dict[str, tuple] = {}
+
+
+def root_forms(r) -> tuple:
+    """The spellings of the root folder `r` that a path written in a note can be inside of.
+
+    Its own (normpath) and its real location (realpath). A RELATIVE root has one more: the folder the shell was in, as the
+    shell spells it (`$PWD`). `--repo repo` run from a macOS temp folder is `/private/var/...` for the system but `/var/...` for a
+    note that was written there. Only the root side is looked at on disk, once per root, and the spelling counts only when it
+    names the same folder as the root itself.
+    """
+    key = str(r)
+    if key not in _ROOT_FORMS:
+        forms = [os.path.normpath(key), os.path.realpath(key)]
+        pwd = os.environ.get("PWD", "")
+        if not os.path.isabs(key) and os.path.isabs(pwd):
+            try:
+                if os.path.samefile(pwd, os.getcwd()):   # $PWD can be stale: it counts only while it names the folder we are in
+                    logical = os.path.normpath(os.path.join(pwd, key))
+                    # normpath takes `..` off the spelling (`L/..` is `.` there) while the system takes it off the real folder: a
+                    # `..` under a linked $PWD names two different folders. The spelling counts only when it is the same one.
+                    if os.path.realpath(logical) == forms[1]:
+                        forms.append(logical)
+            except OSError:
+                pass
+        _ROOT_FORMS[key] = tuple(dict.fromkeys(forms))
+    return _ROOT_FORMS[key]
+
+
 def inside_any(p: str, roots: list[Path]) -> bool:
-    """Is the normalised path `p` inside one of `roots`? Lexical (normpath), so asking costs no stat on `p`."""
+    """Is the normalised path `p` inside one of `roots`? Lexical: `p` is read as written and is never touched on disk (a
+    path under `/net/<host>` would make macOS mount that host), so asking costs no stat on `p`. The roots are looked at
+    instead, in every spelling `root_forms` gives."""
     for r in roots:
-        for form in {os.path.normpath(str(r)), os.path.realpath(str(r))}:
+        for form in root_forms(r):
             if p == form or p.startswith(form.rstrip(os.sep) + os.sep):
                 return True
     return False
@@ -961,7 +1038,8 @@ def load_manifest(bundle: Path, source: Path | None = None) -> tuple[dict, dict]
     except (OSError, ValueError) as e:
         raise BaseConfigError(f"cannot be checked: the schema {schema_file} is unreadable ({type(e).__name__})")
     try:
-        data = load_frontmatter(_guard().read_note(base, "utf-8", "strict"))   # bounded: a manifest is not exempt from the cap
+        text = _guard().read_note(base, "utf-8", "strict")   # bounded: a manifest is not exempt from the cap
+        data = load_frontmatter(text)
     except OSError as e:
         raise BaseConfigError(f"cannot read: {e.strerror or str(e) or type(e).__name__}")
     except UnicodeDecodeError:
@@ -974,7 +1052,48 @@ def load_manifest(bundle: Path, source: Path | None = None) -> tuple[dict, dict]
         return {}, schema
     if not isinstance(data, dict):
         raise BaseConfigError("the top level must be a mapping")
+    # YAML keeps the last of two equal keys and drops the first without a word: `wikilink_root: ../..` then
+    # `wikilink_root: ../../..` ran with the second. Inside okf_check, or okf_check itself, that is a config error naming
+    # the key's path. The document parsed above with the bounded loader, so composing it again cannot run away.
+    loader = yaml.SafeLoader(text)
+    try:
+        twice = _written_twice(loader, loader.get_single_node())
+    finally:
+        loader.dispose()
+    if twice:
+        raise BaseConfigError(f"has `{twice}` written twice: YAML keeps the last one and drops the first; write it once")
     return data, schema
+
+
+def _written_twice(loader, top) -> str | None:
+    """The path of a key written twice in the okf_check block (`okf_check` when the block itself is), else None.
+
+    Keys are compared as YAML reads them, value and type: `1` and `"1"` are an integer and a string, two keys. Merge
+    keys (`<<`) may repeat. Other top-level blocks belong to other tools and are not looked at.
+    """
+    import yaml
+    stack, seen = [(top, "")], set()
+    while stack:
+        node, path = stack.pop()
+        if id(node) in seen:
+            continue
+        seen.add(id(node))
+        if isinstance(node, yaml.MappingNode):
+            keys = set()
+            for k, v in node.value:
+                if not isinstance(k, yaml.ScalarNode) or k.tag == "tag:yaml.org,2002:merge":
+                    continue
+                key = loader.construct_object(k)
+                if not path and key != "okf_check":
+                    continue
+                where = f"{path}.{k.value}" if path else "okf_check"
+                if (type(key), key) in keys:
+                    return where
+                keys.add((type(key), key))
+                stack.append((v, where))
+        elif isinstance(node, yaml.SequenceNode) and path:
+            stack.extend((v, f"{path}[{i}]") for i, v in enumerate(node.value))
+    return None
 
 
 def load_block(bundle: Path, source: Path | None = None) -> dict:
@@ -1301,7 +1420,12 @@ def main() -> int:
                          "text that moved is MOVED, text that changed in place gets a warning")
     a = ap.parse_args()
 
-    if not a.bundle.is_dir():
+    try:
+        is_dir = a.bundle.is_dir()
+    except OSError as e:   # a folder above it that nobody may enter: Path.is_dir() raises instead of answering
+        print(f"error: {a.bundle} cannot be read ({e.strerror or type(e).__name__})", file=sys.stderr)
+        return 2
+    if not is_dir:
         print(f"error: {a.bundle} is not a directory", file=sys.stderr)
         return 2
 
@@ -1347,12 +1471,20 @@ def main() -> int:
     except BaseConfigError as e:
         print(f"error: {a.bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
         return 2
+    def git_dir(r: Path):
+        """(True, "") when `r` holds a .git; else (False, why it could not be looked at, or "" for a folder without one)."""
+        try:
+            return (r / ".git").exists(), ""
+        except OSError as e:   # a folder above it that nobody may enter: Path.exists() raises instead of answering
+            return False, e.strerror or type(e).__name__
+    looked = [(r, *git_dir(r)) for r in a.repo]
     repos, seen_repos = [], set()
-    for r in [*declared, *(r for r in a.repo if (r / ".git").exists())]:
+    for r in [*declared, *(r for r, found, _ in looked if found)]:
         if r.resolve() not in seen_repos:  # declared and passed with --repo: searched once
             seen_repos.add(r.resolve())
             repos.append(r)
-    skipped = [str(r) for r in a.repo if not (r / ".git").exists()]
+    skipped = [str(r) for r, found, why in looked if not found and not why]
+    unreadable = [{"path": str(r), "why": why} for r, found, why in looked if why]
     keep = not_ignored(a.bundle)
     if keep is not None:
         total = sum(1 for f in a.bundle.rglob("*.md") if f.is_file() and f.name not in RESERVED)
@@ -1393,6 +1525,8 @@ def main() -> int:
                   "repos_searched": [str(r) for r in repos],
                   "repos_skipped_not_git": skipped,
                   "passed": not failed, "results": results}
+        if unreadable:   # present only when a --repo could not be looked at: it is not "not a git repo"
+            report["repos_unreadable"] = unreadable
         if unrecognized:   # present only when a no-claim note holds citation-shaped text (okf-knowledge-gate#14, part 3)
             report["unrecognized_citations"] = unrecognized
         print(json.dumps(report, indent=2))
@@ -1402,6 +1536,8 @@ def main() -> int:
     print(f"  repos searched: {', '.join(r.name for r in repos) if repos else 'NONE (SHAs cannot be checked)'}")
     for s in skipped:
         print(f"  ! not a git repo, skipped: {s}")
+    for u in unreadable:
+        print(f"  ! cannot read, skipped: {u['path']} ({u['why']})")
     for r in results:
         mark = {CONFIRMED: "ok  ", REFUTED: "REFUTED", UNRESOLVED: "unresolved", MOVED: "MOVED"}[r["verdict"]]
         # Ellipsis, not a bare cut: a claim sliced at 48 characters read as the

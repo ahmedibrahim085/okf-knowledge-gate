@@ -101,6 +101,25 @@ else
   # N14: the value itself holds the text okf-base.yaml; both tools print the whole message (the Config line used to cut
   # everything up to the LAST okf-base.yaml).
   refused N14 "a value that names okf-base.yaml" "../bundle/okf-base.yaml" "okf_check.wikilink_root: ../bundle/okf-base.yaml is not a folder"
+  # N16/N17: YAML keeps the last of two equal keys, so the first value vanished in silence (here the wrong ../.. is
+  # dropped and the right ../../.. used: the run looked fine). Written twice is a config error, inside the block or the
+  # block itself.
+  refused N16 "wikilink_root written twice in okf_check" "../..
+  wikilink_root: ../../.." "written twice"
+  refused N17 "okf_check written twice" "../../.." "written twice" 'printf "okf_check:\n  edit_hook: false\n" >> "$B/okf-base.yaml"'
+  # N18: a key written twice deeper in the block is named by its whole path.
+  refused N18 "a nested key written twice" "../../..
+  verify:
+    remote: false
+    remote: true" '`okf_check.verify.remote` written twice'
+  # N19: `"1"` and `1` are two different YAML keys (a string and an integer): not "written twice"; each is an unknown
+  # key, the schema's own error.
+  refused N19 'the keys "1" and 1' '../../..
+  "1": a
+  1: b' "is not a known key"
+  grep -q 'written twice' "$TMP/out.txt" "$TMP/out2.txt" \
+    && bad "S15-WR-N19b different keys" "reported as written twice: $(grep -h 'twice' "$TMP/out.txt" "$TMP/out2.txt" | head -1)" \
+    || ok "S15-WR-N19b \"1\" and 1 are not reported as a key written twice"
   # N15: the schema check without a bundle folder is a config error, not a Python TypeError.
   got=$("$REALPY" - "$VERIFY" <<'PYEOF' 2>&1
 import importlib.util, sys
@@ -164,6 +183,35 @@ PYEOF
   # is still read from where the bundle really is.
   edge E10 "a bundle that .okfignore copies for L2" '[[projects/p/README]]' 'mkdir -p "$B/archive"; note "$B/archive/old.md" old; printf "archive/\n" > "$B/.okfignore"'
   edge E11 "a bundle with a dangling link that L2 runs around" '[[projects/p/README]]' 'ln -s nowhere.md "$B/dead.md"' '{"DANGLING_MD": 1}'
+  # E12/E13: a wikilink resolves by Obsidian's rule on every disk, as okf-export resolves it: the exact name first, else
+  # the one name equal to it ignoring case and Unicode normalisation. Linux kept the L001 for [[projects/p/readme]],
+  # macOS did not; NFD/NFC: macOS may store a name decomposed.
+  NFC=$(printf 'caf\303\251'); NFD=$(printf 'cafe\314\201')
+  edge E12 "a vault link written in another letter case" '[[projects/p/readme]]'
+  edge E12b "a vault link in NFC to a file named in NFD" "[[projects/p/$NFC]]" 'printf "# c\n" > "$V/projects/p/$NFD.md"'
+  edge E13 "a bundle link written in another letter case" '[[Sub/S]]' 'mkdir -p "$B/sub"; note "$B/sub/s.md" s; printf "[s](sub/s.md)\n" >> "$B/index.md"'
+  edge E13b "a bundle link in NFD to a file named in NFC" "[[$NFD]]" 'note "$B/$NFC.md" c; printf "[c](%s.md)\n" "$NFC" >> "$B/index.md"'
+  # E15: the verdict comes from the rule, not from the disk: [[STRASSE]] does not name straße.md under lower(), so the L001
+  # stays even where the disk folds the two (macOS).
+  notl E15 "a vault link that only the disk's own case folding would match" '[[projects/p/STRASSE]]' 'printf "# s\n" > "$V/projects/p/straße.md"'
+  # E14: a root one folder too shallow (the okf-knowledge-gate#13 layout needs ../../..): the L001 stays, and a hint names
+  # the folder above the root that holds the target. E14b: a target that is nowhere gets no hint.
+  V="$TMP/E14"; B="$V/projects/p/bundle"; mkvault "$V"; setroot "$B" ../..
+  rc=$(runjson "$B"); "$CHECK" "$B" >"$TMP/out.txt" 2>&1
+  { [ "$rc" = 0 ] && [ "$(jget 'd["l2_by_rule"]')" = '{"L001": 1}' ] \
+    && grep -q 'hint: 1 L001 link(s) resolve from \.\./\.\./\.\., a folder above wikilink_root \.\./\.\.' "$TMP/out.txt" \
+    && [ "$(jget 'd.get("l2_hint")')" = '"1 L001 link(s) resolve from ../../.., a folder above wikilink_root ../.."' ]; } \
+    && ok "S15-WR-E14 wikilink_root one folder too shallow: the L001 stays and a hint names ../../.. (text and --json l2_hint)" \
+    || bad "S15-WR-E14 shallow root hint" "rc=$rc by_rule=$(jget 'd["l2_by_rule"]') $(grep -n 'hint\|L001' "$TMP/out.txt" | tr '\n' ' ')"
+  note "$B/a.md" 'See [[projects/p/MISSING]].'; "$CHECK" "$B" >"$TMP/out.txt" 2>&1
+  { grep -q 'L001 x1' "$TMP/out.txt" && ! grep -q 'hint:' "$TMP/out.txt"; } \
+    && ok "S15-WR-E14b a target that exists nowhere above the root gets no hint" \
+    || bad "S15-WR-E14b no hint" "$(grep -n 'hint\|L001' "$TMP/out.txt" | tr '\n' ' ')"
+  # E14c: the hint walk uses the same rule: a target written in another letter case is found above the root too.
+  note "$B/a.md" 'See [[projects/p/readme]].'; "$CHECK" "$B" >"$TMP/out.txt" 2>&1
+  grep -q 'hint: 1 L001 link(s) resolve from \.\./\.\./\.\.,' "$TMP/out.txt" \
+    && ok "S15-WR-E14c the hint finds a target written in another letter case" \
+    || bad "S15-WR-E14c hint and case" "$(grep -n 'hint\|L001' "$TMP/out.txt" | tr '\n' ' ')"
 
   section "S15-WR selftest probe"
   # S15-WR-S1: --selftest has a probe for the key, and it fires on the real script.

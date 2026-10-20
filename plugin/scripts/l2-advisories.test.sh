@@ -89,25 +89,30 @@ x"; mkb "$B" '[x](nope.md)'; mv "$B/a.md" "$B/a\"b.md"; printf '[a](a"b.md)\n' >
     || bad "S13-LF-E4 awkward names" "got: $got; want: $want"
 
   section "S20-IF advisory count"
-  # S20-IF-H1: the summary counts the L2 warnings it just listed. One broken link is one L2 advisory.
+  # S20-IF-H1: the summary counts the warnings the sections listed. One broken link is listed twice, as an L1 warning
+  # and as an L2 one, so it is 2 advisories (L1 warnings are counted since S30-CF-N2); the line names each layer's share.
   B="$TMP/if1"; mkb "$B" '[x](nope.md)'
   "$CHECK" "$B" > "$TMP/if1.txt" 2>&1; rc=$?
-  { [ "$rc" = 0 ] && grep -Fq 'L2 profile       PASS   0 errors, 1 warning(s) (advisory)' "$TMP/if1.txt" \
-    && grep -Fq 'PASS — no blocking errors, but 1 advisory(ies) and' "$TMP/if1.txt"; } \
-    && ok "S20-IF-H1 one L2 warning gives '1 advisory(ies)' in the summary line (exit 0)" \
-    || bad "S20-IF-H1 advisory count" "rc=$rc $(grep -n 'L2 profile\|PASS' "$TMP/if1.txt" | tr '\n' '|')"
+  { [ "$rc" = 0 ] && grep -Fq 'L1 conformance   PASS   1 concepts, 0 errors, 1 warning(s)' "$TMP/if1.txt" \
+    && grep -Fq 'L2 profile       PASS   0 errors, 1 warning(s) (advisory)' "$TMP/if1.txt" \
+    && grep -Fq 'PASS — no blocking errors, but 2 advisory(ies) and' "$TMP/if1.txt" \
+    && grep -Fq 'above (advisories: L1 1 + L2 1)' "$TMP/if1.txt"; } \
+    && ok "S20-IF-H1 one broken link, 1 L1 and 1 L2 warning, gives '2 advisory(ies)' (L1 1 + L2 1) in the summary line (exit 0)" \
+    || bad "S20-IF-H1 advisory count" "rc=$rc $(grep -n 'L1 conf\|L2 profile\|PASS' "$TMP/if1.txt" | tr '\n' '|')"
 
-  # S20-IF-E1: the three sources add up once each: two L2 warnings plus one Trust warning are 3 advisories, not 2 or 4.
+  # S20-IF-E1: the sources add up once each: two L1 warnings, two L2 warnings and one Trust warning are 5 advisories.
   B="$TMP/if2"; mkb "$B" '[x](nope.md)
 [y](gone.md)'
   printf -- '---\ntype: Lesson\ntitle: V\ndescription: D\nstatus: draft\ntags: [t]\ngenerated:\n  by: process:x\n  at: "2026-01-01T00:00:00Z"\nverified:\n  by: human:bob\n  at: "2026-01-02T00:00:00Z"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$B/v.md"
   printf '[v](v.md)\n' >> "$B/index.md"
   "$CHECK" "$B" > "$TMP/if2.txt" 2>&1; rc=$?
-  { [ "$rc" = 0 ] && grep -Fq 'Trust (C4)       WARN   1 warning(s), 0 advisory(ies)' "$TMP/if2.txt" \
+  { [ "$rc" = 0 ] && grep -Fq 'L1 conformance   PASS   2 concepts, 0 errors, 2 warning(s)' "$TMP/if2.txt" \
+    && grep -Fq 'Trust (C4)       WARN   1 warning(s), 0 advisory(ies)' "$TMP/if2.txt" \
     && grep -Fq 'L2 profile       PASS   0 errors, 2 warning(s) (advisory)' "$TMP/if2.txt" \
-    && grep -Fq 'PASS — no blocking errors, but 3 advisory(ies) and' "$TMP/if2.txt"; } \
-    && ok "S20-IF-E1 two L2 warnings and one Trust warning give '3 advisory(ies)' in the summary" \
-    || bad "S20-IF-E1 advisories add up" "rc=$rc $(grep -n 'Trust\|L2 profile\|PASS' "$TMP/if2.txt" | tr '\n' '|')"
+    && grep -Fq 'PASS — no blocking errors, but 5 advisory(ies) and' "$TMP/if2.txt" \
+    && grep -Fq 'above (advisories: L1 2 + Trust 1 + L2 2)' "$TMP/if2.txt"; } \
+    && ok "S20-IF-E1 two L1, two L2 and one Trust warning give '5 advisory(ies)' (L1 2 + Trust 1 + L2 2) in the summary" \
+    || bad "S20-IF-E1 advisories add up" "rc=$rc $(grep -n 'L1 conf\|Trust\|L2 profile\|PASS' "$TMP/if2.txt" | tr '\n' '|')"
 
   # S20-IF-N1: nothing to report keeps the summary count at 0 (the L2 count is not added twice or from a stale value).
   B="$TMP/if3"; mkb "$B"

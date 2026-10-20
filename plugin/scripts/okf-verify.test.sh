@@ -1037,6 +1037,116 @@ mkb "$TMP/sp-p1"; cp "$TMP/sp-p1.md" "$TMP/sp-p1/n.md"; : > "$TMP/gitspy.log"
 PATH="$TMP/gitspy:$PATH" "$VERIFY" "$TMP/sp-p1" --repo "$TMP/sp-plain" >"$TMP/out.txt" 2>&1
 n=$(grep -c 'ls-tree -r' "$TMP/gitspy.log")
 { grep -q 'CONFIRMED 5 ' "$TMP/out.txt" && [ "$n" -le 1 ]; } && ok "RV-27 (S2-SP-P1) 5 citations of one commit run 'git ls-tree -r' at most once (ran $n)" || bad "RV-27 S2-SP-P1 spawns" "ls-tree -r ran $n times: $(grep -E 'CONFIRMED' "$TMP/out.txt")"
+# --- RV-28: a zero-padded line number is the number it spells. The length test ran on the digits as written, so ten digits with
+# leading zeros were "out of range" although the file has the line (src/a.py has 20 lines at $C2).
+cite "$TMP/lz1" "\`src/a.py:0000000003 @$C2\`"; rc=$(run "$TMP/lz1" --repo "$CREPO")
+{ [ "$rc" = "0" ] && grep -qE '^  ok  ' "$TMP/out.txt"; } && ok "RV-28 (S29-LZ-H1) 'a.py:0000000003 @sha' is CONFIRMED, as 'a.py:3' is" || bad "RV-28 S29-LZ-H1 zero-padded" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
+cite "$TMP/lz2" "\`src/a.py:0000000018-0000000020 @$C2\`"; rc=$(run "$TMP/lz2" --repo "$CREPO")
+{ [ "$rc" = "0" ] && grep -qE '^  ok  ' "$TMP/out.txt"; } && ok "RV-28 (S29-LZ-E1) a zero-padded range 0000000018-0000000020 is CONFIRMED" || bad "RV-28 S29-LZ-E1 range" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
+cite "$TMP/lz3" "\`src/a.py:0000000021 @$C2\`"; rc=$(run "$TMP/lz3" --repo "$CREPO")
+{ [ "$rc" = "1" ] && grep -qE '^  REFUTED ' "$TMP/out.txt" && grep -q 'is past the end' "$TMP/out.txt"; } && ok "RV-28 (S29-LZ-N1) 'a.py:0000000021' (20 lines) is REFUTED as past the end, not as 'out of range'" || bad "RV-28 S29-LZ-N1 past the end" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
+cite "$TMP/lz4" "\`src/a.py:0000000000 @$C2\`"; rc=$(run "$TMP/lz4" --repo "$CREPO")
+{ [ "$rc" = "1" ] && grep -q 'lines start at 1' "$TMP/out.txt"; } && ok "RV-28 (S29-LZ-N2) 'a.py:0000000000' is REFUTED: lines start at 1" || bad "RV-28 S29-LZ-N2 zero" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
+ZEROS=$(printf '0%.0s' $(seq 1 5000))
+[ "${#ZEROS}" -le 8192 ] || { echo "fixture too large"; exit 2; }
+cite "$TMP/lz5" "\`src/a.py:${ZEROS}3 @$C2\`"; rc=$(run "$TMP/lz5" --repo "$CREPO")
+{ [ "$rc" = "0" ] && grep -qE '^  ok  ' "$TMP/out.txt" && ! grep -q Traceback "$TMP/out.txt"; } && ok "RV-28 (S29-LZ-E2) 5000 zeros before a 3 is line 3: CONFIRMED, no traceback" || bad "RV-28 S29-LZ-E2 many zeros" "exit $rc: $(grep -E '^  (ok|REFUTED|unresolved)|Error|Traceback' "$TMP/out.txt" | cut -c1-120 | tr '\n' '|' | cut -c1-300)"
+for py in python3.11 python3.12 python3.13; do
+  command -v "$py" >/dev/null 2>&1 || continue
+  "$py" "$VERIFY" "$TMP/lz5" --repo "$CREPO" >"$TMP/out.txt" 2>&1; rc=$?
+  { [ "$rc" = "0" ] && ! grep -q Traceback "$TMP/out.txt"; } && ok "RV-28 (S29-LZ-E2) under $py 5000 zeros before a 3 does not abort the run" || bad "RV-28 S29-LZ-E2 under $py" "exit $rc: $(tail -2 "$TMP/out.txt" | cut -c1-200 | tr '\n' ' ')"
+done
+# --- RV-29: a cited absolute path inside a --repo folder is inside it whether --repo is written relative or absolute.
+# macOS spells its temp folders through a link (/var -> /private/var); a link of our own makes the same case on any system.
+mkdir -p "$TMP/rp/real/repo" "$TMP/rp/other"; ln -s real "$TMP/rp/link"
+git -C "$TMP/rp/real/repo" init -q 2>/dev/null; printf 'x\n' > "$TMP/rp/real/repo/f.txt"; printf 'y\n' > "$TMP/rp/other/o.txt"
+note5 "$TMP/rp/b1" "See \`$TMP/rp/link/repo/f.txt\` for it."
+note5 "$TMP/rp/b2" "See \`$TMP/rp/other/o.txt\` for it."
+for form in relative absolute; do
+  [ "$form" = relative ] && repoarg="link/repo" || repoarg="$TMP/rp/link/repo"
+  (cd "$TMP/rp" && "$VERIFY" "$TMP/rp/b1" --repo "$repoarg" --strict >"$TMP/out.txt" 2>&1); rc=$?
+  { [ "$rc" = "0" ] && grep -qE '^  ok  ' "$TMP/out.txt"; } && ok "RV-29 (S29-RP-H1) a path inside the repo, cited through a link, is CONFIRMED with a $form --repo (--strict exit 0)" || bad "RV-29 S29-RP-H1 $form" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
+  (cd "$TMP/rp" && "$VERIFY" "$TMP/rp/b2" --repo "$repoarg" >"$TMP/out.txt" 2>&1); rc=$?
+  { [ "$rc" = "0" ] && grep -qE '^  unresolved ' "$TMP/out.txt" && grep -q 'outside the bundle and the --repo folders' "$TMP/out.txt"; } && ok "RV-29 (S29-RP-N1) a path outside the repo stays UNRESOLVED with a $form --repo" || bad "RV-29 S29-RP-N1 $form" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
+done
+# S29-RP-N2: asking whether a cited path is inside the roots never touches the file system for a path OUTSIDE them (a path under
+# /net/<host> would make macOS mount that host). The roots are looked at, the cited path is read as written.
+"$REALPY" - "$VERIFY" "$TMP/rp" <<'PY' >"$TMP/out.txt" 2>&1
+import importlib.machinery, importlib.util, os, sys
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("okfv", sys.argv[1])
+spec = importlib.util.spec_from_loader("okfv", loader); m = importlib.util.module_from_spec(spec); loader.exec_module(m)
+seen = []
+real_lstat, real_stat = os.lstat, os.stat
+def spy(fn):
+    def f(path, *a, **k):
+        seen.append(str(path)); return fn(path, *a, **k)
+    return f
+os.lstat, os.stat = spy(real_lstat), spy(real_stat)
+os.chdir(sys.argv[2])
+outside = "/net/zz-no-such-host/share/f.txt"
+got = m.inside_any(outside, [Path("link/repo"), Path(sys.argv[2]) / "real" / "repo"])
+touched = [p for p in seen if "zz-no-such-host" in p or p == "/net"]
+print("inside=%s touched=%s" % (got, touched))
+sys.exit(0 if (got is False and not touched) else 1)
+PY
+[ "$?" = "0" ] && ok "RV-29 (S29-RP-N2) a cited path outside every root is read as written: inside_any does not touch it on disk" || bad "RV-29 S29-RP-N2 no stat outside the roots" "$(tail -2 "$TMP/out.txt" | cut -c1-200 | tr '\n' ' ')"
+# S29-RP-N3 / N4: the shell's spelling of a relative --repo (its $PWD) is only a spelling of the SAME folder. Run from a link L to
+# real/a/b, `--repo ../sib` is real/a/sib for the system but $TMP/pw/B/sib when `..` is taken off the spelling L/..: a file that
+# lies in the other folder is outside the repository and must stay UNRESOLVED. A stale $PWD (it names another folder) counts for nothing.
+mkdir -p "$TMP/pw/B/real/a/b" "$TMP/pw/B/real/a/sib" "$TMP/pw/B/sib" "$TMP/pw/C/w/repo" "$TMP/pw/C/other/repo"
+git -C "$TMP/pw/B/real/a/sib" init -q 2>/dev/null; git -C "$TMP/pw/C/w/repo" init -q 2>/dev/null
+printf 'y\n' > "$TMP/pw/B/sib/x.txt"; printf 'in\n' > "$TMP/pw/B/real/a/sib/in.txt"; printf 'z\n' > "$TMP/pw/C/other/repo/z.txt"; ln -s real/a/b "$TMP/pw/B/L"
+note5 "$TMP/pw/B/out" "See \`$TMP/pw/B/sib/x.txt\` here."; note5 "$TMP/pw/B/in" "See \`$(cd "$TMP/pw/B/real/a/sib" && pwd -P)/in.txt\` here."; note5 "$TMP/pw/C/bun" "See \`$TMP/pw/C/other/repo/z.txt\` here."
+(cd "$TMP/pw/B/L" && PWD="$TMP/pw/B/L" "$VERIFY" "$TMP/pw/B/out" --repo ../sib >"$TMP/out.txt" 2>&1); rc=$?
+{ [ "$rc" = "0" ] && grep -qE '^  unresolved ' "$TMP/out.txt" && ! grep -qE '^  ok  ' "$TMP/out.txt"; } && ok "RV-29 (S29-RP-N3) from a link, '--repo ../sib': a file in the OTHER folder sib stays UNRESOLVED (not CONFIRMED through a \$PWD spelling)" || bad_hard "RV-29 S29-RP-N3 dotdot under a linked PWD" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-260)"
+(cd "$TMP/pw/B/L" && PWD="$TMP/pw/B/L" "$VERIFY" "$TMP/pw/B/in" --repo ../sib >"$TMP/out.txt" 2>&1); rc=$?
+{ [ "$rc" = "0" ] && grep -qE '^  ok  ' "$TMP/out.txt"; } && ok "RV-29 (S29-RP-H2) ... and a file in the folder '--repo ../sib' really names (cited by its real path) is CONFIRMED" || bad "RV-29 S29-RP-H2 dotdot control" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-260)"
+(cd "$TMP/pw/C/w" && PWD="$TMP/pw/C/other" "$VERIFY" "$TMP/pw/C/bun" --repo repo >"$TMP/out.txt" 2>&1); rc=$?
+{ [ "$rc" = "0" ] && grep -qE '^  unresolved ' "$TMP/out.txt" && ! grep -qE '^  ok  ' "$TMP/out.txt"; } && ok "RV-29 (S29-RP-N4) a stale \$PWD (naming another folder) is ignored: a file in that other folder stays UNRESOLVED" || bad_hard "RV-29 S29-RP-N4 stale PWD" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-260)"
+# S29-RP-E1: the guard does not turn away the ordinary case: `..` with an unlinked $PWD (a macOS temp folder is the link here) still
+# reads the repository as the note spells it.
+mkdir -p "$TMP/pw/D/a/b" "$TMP/pw/D/a/sib"; git -C "$TMP/pw/D/a/sib" init -q 2>/dev/null; printf 'd\n' > "$TMP/pw/D/a/sib/f.txt"
+note5 "$TMP/pw/D/bun" "See \`$TMP/pw/D/a/sib/f.txt\` here."
+(cd "$TMP/pw/D/a/b" && "$VERIFY" "$TMP/pw/D/bun" --repo ../sib --strict >"$TMP/out.txt" 2>&1); rc=$?
+{ [ "$rc" = "0" ] && grep -qE '^  ok  ' "$TMP/out.txt"; } && ok "RV-29 (S29-RP-E1) '--repo ../sib' from a plain folder still CONFIRMS a file cited by the spelling of that folder" || bad "RV-29 S29-RP-E1 dotdot plain" "exit $rc: $(grep -A1 -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ' | cut -c1-260)"
+# --- RV-30: a bundle (or --repo) under a folder nobody may enter is one error line naming the folder, never a traceback.
+if [ "$(id -u)" != "0" ]; then
+  mkdir -p "$TMP/pl/outer/b"; note5 "$TMP/pl/outer/b" "Fixed in commit $REAL_SHA."
+  mkdir -p "$TMP/pl/inner/r"; note5 "$TMP/pl/okb" "Fixed in commit $REAL_SHA."
+  chmod 000 "$TMP/pl/outer"
+  rc=$(run "$TMP/pl/outer/b")
+  chmod 755 "$TMP/pl/outer"
+  { [ "$rc" = "2" ] && [ "$(wc -l < "$TMP/out.txt" | tr -d ' ')" = "1" ] && grep -q "^error: .*pl/outer/b" "$TMP/out.txt" && ! grep -q Traceback "$TMP/out.txt"; } \
+    && ok "RV-30 (S29-PE-N1) a bundle under an unreadable folder: one 'error:' line naming it, exit 2, no traceback" \
+    || bad "RV-30 S29-PE-N1 unreadable bundle" "exit $rc: $(head -3 "$TMP/out.txt" | cut -c1-160 | tr '\n' '|')"
+  chmod 000 "$TMP/pl/inner"
+  rc=$(run "$TMP/pl/okb" --repo "$TMP/pl/inner/r"); cp "$TMP/out.txt" "$TMP/pl-text.txt"
+  "$VERIFY" "$TMP/pl/okb" --json --repo "$TMP/pl/inner/r" >"$TMP/pl-json.txt" 2>/dev/null
+  chmod 755 "$TMP/pl/inner"
+  { [ "$rc" != "1" ] && ! grep -q Traceback "$TMP/pl-text.txt" && grep -q "^  ! cannot read, skipped: .*pl/inner/r (Permission denied)" "$TMP/pl-text.txt" && ! grep -q "not a git repo" "$TMP/pl-text.txt"; } \
+    && ok "RV-30 (S29-PE-N2) a --repo under an unreadable folder is 'cannot read, skipped' with the reason, not 'not a git repo', and no traceback" \
+    || bad "RV-30 S29-PE-N2 unreadable --repo" "exit $rc: $(head -3 "$TMP/pl-text.txt" | cut -c1-160 | tr '\n' '|')"
+  "$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["repos_skipped_not_git"] == [], d["repos_skipped_not_git"]; u=d["repos_unreadable"]; assert len(u) == 1 and u[0]["path"].endswith("pl/inner/r") and u[0]["why"] == "Permission denied", u' "$TMP/pl-json.txt" 2>"$TMP/pl-json.err" \
+    && ok "RV-30 (S29-PE-N3) --json lists it in repos_unreadable (path and reason), and repos_skipped_not_git holds only paths that are not git repositories" \
+    || bad "RV-30 S29-PE-N3 json" "$(tail -1 "$TMP/pl-json.err") $(head -c 200 "$TMP/pl-json.txt" | tr '\n' ' ')"
+else
+  skip "RV-30 a bundle under an unreadable folder — running as root, chmod 000 does not stop the read (skip, not a pass)"
+fi
+# --- RV-31: what git answers about one commit and one file is asked once per run. 20 citations of different lines of one file at one
+# commit used to spawn about 6 git processes each; the count must not grow with the citations.
+{ printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\n'; for i in $(seq 1 20); do echo "Cite src/a.py:$i @$C2."; echo; done; } > "$TMP/c-p1.md"
+[ "$(wc -c < "$TMP/c-p1.md" | tr -d ' ')" -lt 1048576 ] || { echo "fixture too large"; exit 2; }
+mkb "$TMP/c-p1"; cp "$TMP/c-p1.md" "$TMP/c-p1/n.md"; : > "$TMP/gitspy.log"
+PATH="$TMP/gitspy:$PATH" "$VERIFY" "$TMP/c-p1" --repo "$CREPO" >"$TMP/out.txt" 2>&1
+n=$(wc -l < "$TMP/gitspy.log" | tr -d ' ')
+{ grep -q 'CONFIRMED 20 ' "$TMP/out.txt" && [ "$n" -le 20 ]; } && ok "RV-31 (S29-SP-H1) 20 citations of one file at one commit run at most 20 git processes (ran $n)" || bad "RV-31 S29-SP-H1 spawns" "git ran $n times: $(grep -E 'CONFIRMED' "$TMP/out.txt")"
+# S29-SP-N1: an answer given by a git that did not run (here: killed by a signal on its first call) is not kept. The first
+# citation is UNRESOLVED (nobody could look); the second, of another line of the same file at the same commit, is CONFIRMED.
+mkdir -p "$TMP/gitflaky"; printf '#!/bin/sh\nif [ ! -e "%s/flaky.once" ]; then : > "%s/flaky.once"; kill -9 $$; fi\nexec "%s" "$@"\n' "$TMP" "$TMP" "$(command -v git)" > "$TMP/gitflaky/git"; chmod +x "$TMP/gitflaky/git"
+rm -f "$TMP/flaky.once"; cite "$TMP/c-p2" "src/a.py:1 @$C2 and src/a.py:2 @$C2"
+PATH="$TMP/gitflaky:$PATH" "$VERIFY" "$TMP/c-p2" --repo "$CREPO" >"$TMP/out.txt" 2>&1
+{ grep -q 'CONFIRMED 1 ' "$TMP/out.txt" && grep -qE '^  unresolved ' "$TMP/out.txt" && ! grep -qE '^  REFUTED ' "$TMP/out.txt"; } && ok "RV-31 (S29-SP-N1) a git killed on its first call is not remembered: one citation UNRESOLVED, the next CONFIRMED, none REFUTED" || bad_hard "RV-31 S29-SP-N1 flaky git" "$(grep -E 'CONFIRMED|^  (ok|unresolved|REFUTED)' "$TMP/out.txt" | cut -c1-140 | tr '\n' '|')"
 # --- RV-25: a {type: boolean} node, a {map: node} node (free keys) and a node that {requires} a sibling value
 RVID=RV-25
 cc() { # <name> <okf_check body, printf %b> <want rc> [message the error must contain]
