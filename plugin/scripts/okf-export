@@ -22,6 +22,7 @@ import re
 import shutil
 import sys
 import tempfile
+import unicodedata
 from pathlib import Path
 from urllib.parse import quote
 
@@ -108,9 +109,14 @@ def plugin_version() -> str:
         return "unknown"
 
 
+def fold(name: str) -> str:
+    """A name compared without case: NFC, then lower() (okf_guard._fold, the rule okf-check uses)."""
+    return unicodedata.normalize("NFC", name).lower()
+
+
 def slug(heading: str) -> str:
     """The anchor GitHub gives a heading: lower case, punctuation dropped, each space a '-'."""
-    return re.sub(r"[^\w\- ]", "", heading.strip().lower()).replace(" ", "-")
+    return re.sub(r"[^\w\- ]", "", unicodedata.normalize("NFC", heading).strip().lower()).replace(" ", "-")
 
 
 def frontmatter_len(lines: list[str]) -> int:
@@ -144,27 +150,89 @@ HTML_BLOCKS = [
 ]
 HTML_TAG_LINE = re.compile(r"^ {0,3}(?:<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][\w.:-]*(?:\s*=\s*(?:[^\s\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)*"
                            r"\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>)\s*$")
+# A block quote marker (5.1): up to 3 spaces, then '>'.
+QUOTE = re.compile(r"^ {0,3}>")
 # A link reference definition (4.7) on one line: it is no paragraph and cannot interrupt one.
 LINK_DEF = re.compile(r"^ {0,3}\[(?:[^\]\\]|\\.)+\]:")
 
 
-def body_lines(lines: list[str]):
+# Block quotes inside list items inside block quotes ... are read by nested calls of body_lines: one level per call. Past
+# this depth the note is named and copied unchanged (Python's own limit would end the run with a traceback near 500).
+NEST_MAX = 100
+
+
+class TooDeep(Exception):
+    """A note whose block quotes and list items nest deeper than NEST_MAX."""
+
+
+def quote_depth(text: str):
+    """(content, depth): a block quote line's text after its '>' markers, and how many there were."""
+    m = re.match(r"(?: {0,3}>[ \t]?)+", text)
+    return (text[m.end():], m.group(0).count(">")) if m else (text, 0)
+
+
+def quote_block(lines: list[str], start: int, first: str, at: int):
+    """(line indexes, contents) of the block quote that starts at `start` with the quote line `first` (its text, markers
+    included): the lines that carry a '>' (read against the item content at `at`) with one '>' taken off, and the lazy
+    lines that continue a paragraph (5.1). body_lines reads the contents, so a quote in this quote is read by a nested call.
+    `para` errs towards True: a line taken in that CommonMark leaves outside can only hide a heading (a loud 'missing
+    heading'), never add one.
+    SHORTCUT: setext headings inside block quotes are not recognised (body_lines with nested=True); a link to one fails
+    with 'missing heading'."""
+    def starts_block(t):
+        return ATX.match(t) or FENCE.match(t) or THEMATIC.match(t) or any(h[0].match(t) for h in HTML_BLOCKS)
+
+    idx, contents = [], []
+    para, fence = False, 0   # a paragraph may be open; the quote level of an open fence (0: none)
+    j, text = start, first
+    while True:
+        if j > start:
+            if j >= len(lines):
+                break
+            line = lines[j].rstrip("\r\n")
+            if not line.strip():
+                break   # a blank line ends the quote
+            text = dedent(line, at)
+        inner, depth = quote_depth(text)
+        if not depth:   # lazy: only under a paragraph, and not a line that starts a block of its own
+            if fence or not para or LIST_ITEM.match(text) or starts_block(text):
+                break
+        elif fence and depth >= fence:   # in the fence: its content keeps any deeper '>'
+            para = False
+            if FENCE.match(re.sub(r"^(?: {0,3}>[ \t]?){%d}" % fence, "", text)):
+                fence = 0
+        else:   # a lower level ends a deeper fence (its quote ends), so the line is read afresh
+            fence = depth if FENCE.match(inner) else 0
+            para = not fence and bool(inner.strip()) and not starts_block(inner)
+        idx.append(j)
+        contents.append(re.sub(r"^ {0,3}>[ \t]?", "", text, count=1))
+        j += 1
+    return idx, contents
+
+
+def body_lines(lines: list[str], nested: bool = False, level: int = 0):
     """Yield (index, line, in_code, heading) for each body line. in_code is True inside a fence, fence lines included,
     and on the lines of an indented code block; heading is the text of a heading that ends on this line (ATX, or the
     underline of a setext heading), else None. Blocks are read the way CommonMark 0.31.2 reads them, inside list items
     too (5.2): each line is matched against the content of the item it sits in, a marker line's own content included.
     A blank line is never code: it holds no link, and the log reader counts it.
 
-    SHORTCUT: block quotes (`>`) are not tracked: a heading inside one is not found, and a quote's lines read as text.
-    A second kind of container needs a stack of quotes and items; track it if notes with quoted headings show up."""
+    A block quote (5.1) is read as a container too: its lines, '>' taken off, are read by this same reader (nested=True),
+    inside a list item as well, and quotes nest. SHORTCUT: a lazy line continues a quote's paragraph by a line test on
+    the quote's last line, not by the inner reader's state; read it from the inner reader if a note shows a difference.
+    Inside a quote (nested) no setext heading is read: see quote_block."""
     items = []             # content indents of the open list items, outer first
     empty = False          # the innermost item has no content yet: a blank line ends it
     para = []              # the lines of the open paragraph, as its item sees them (setext heading text)
     fence, fence_at = "", 0   # the open fence and the content indent it sits at
     html, html_at = False, 0  # an open HTML block: its end pattern (None: a blank line), the content indent
     code = False           # inside an indented code block
-    for i in range(frontmatter_len(lines), len(lines)):
+    quoted = {}            # results for the lines of a block quote read ahead: index -> (in_code, heading)
+    for i in range(0 if nested else frontmatter_len(lines), len(lines)):
         raw = lines[i]
+        if i in quoted:
+            yield (i, raw) + quoted.pop(i)
+            continue
         line = raw.rstrip("\r\n")   # matched without its line end: `$` in SETEXT and THEMATIC must see a CRLF line too
         w = indent_width(line)
         if (fence or html is not False) and line.strip() and w < (fence_at if fence else html_at):
@@ -191,7 +259,7 @@ def body_lines(lines: list[str]):
             continue
         depth = bisect.bisect_right(items, w)   # the items this line's indent keeps it inside (items only grow)
         text = dedent(line, items[depth - 1] if depth else 0)
-        if para and depth == len(items) and SETEXT.match(text):
+        if para and depth == len(items) and SETEXT.match(text) and not nested:   # not in a quote: see quote_block
             heading = " ".join(x.strip() for x in para)
             para = []
             yield i, raw, False, heading
@@ -199,7 +267,7 @@ def body_lines(lines: list[str]):
         brk = THEMATIC.match(text)
         item = LIST_ITEM.match(text) and not brk   # `- - -` is a thematic break, not an item
         starts = [h for h in HTML_BLOCKS if h[0].match(text)]
-        interrupts = item or brk or FENCE.match(text) or ATX.match(text) or starts
+        interrupts = item or brk or FENCE.match(text) or ATX.match(text) or starts or QUOTE.match(text)
         if para and not interrupts:
             para.append(text)   # a paragraph goes on, lazily too: at the margin under an item's paragraph
             yield i, raw, False, None
@@ -222,6 +290,15 @@ def body_lines(lines: list[str]):
                 break
             item = LIST_AT.match(text, pos) and not break_at(text, pos, tail)
         text = text[pos:]   # one slice per line: the cost stays linear in its length
+        if not empty and QUOTE.match(text):   # a block quote: read its lines with this reader, then go on after it
+            if level >= NEST_MAX:   # `level` counts nested reads; `depth` below is the list-item depth of one line
+                raise TooDeep()
+            idx, contents = quote_block(lines, i, text, at)
+            for k, _, c, h in body_lines(contents, nested=True, level=level + 1):
+                quoted[idx[k]] = (c, h)
+            para, code = [], False
+            yield (i, raw) + quoted.pop(i)
+            continue
         heading, in_code = None, False
         starts = [h for h in HTML_BLOCKS if h[0].match(text)]   # again: a marker line's content may start one
         m = ATX.match(text)
@@ -257,7 +334,22 @@ def heading_slugs(path: Path) -> set[str]:
         lines = [l.rstrip("\r\n") for l in split_lines(read_text(path).lstrip("\ufeff"))]   # a BOM is not part of the first heading line
     except UnicodeDecodeError:
         return set()   # the target is reported on its own as not valid UTF-8; a heading in it cannot be found
-    return {slug(h) for _, _, _, h in body_lines(lines) if h is not None}
+    found, counts = set(), {}
+    try:
+        for _, _, _, h in body_lines(lines):
+            if h is None:
+                continue
+            # github-slugger: a repeated anchor gets the next number whose anchor is free (Foo, Foo-1, Foo: foo, foo-1, foo-2)
+            base = anchor = slug(h)
+            n = counts.get(base, 0)
+            while anchor in found:
+                n += 1
+                anchor = f"{base}-{n}"
+            counts[base] = n
+            found.add(anchor)
+    except TooDeep:
+        pass   # the note is named on its own (main); its headings past the cap are not known
+    return found
 
 
 # Spec 9 log input, read from a vault log.md: a level-2 heading (`## 2026-05-22`) whose lines are that day's entries,
@@ -419,7 +511,12 @@ def build_log(rel: Path, lines: list[str], problems: list[str]) -> str | None:
 def link_text(text: str) -> str:
     """Text for the inside of [...] in an index line: one line, no control characters, brackets and backslashes escaped
     (a title is a YAML block scalar or a free string from the vault; 0.9.15 review)."""
-    return re.sub(r"([\\\[\]])", r"\\\1", CONTROL.sub("?", " ".join(text.split())))
+    text = CONTROL.sub("?", " ".join(text.split()))
+    out, pos = [], 0
+    for span in CODE_SPAN.finditer(text):   # inside a code span a backslash is literal (CommonMark 6.1): no escapes there
+        out += [re.sub(r"([\\\[\]])", r"\\\1", text[pos:span.start()]), span.group(0)]
+        pos = span.end()
+    return "".join(out) + re.sub(r"([\\\[\]])", r"\\\1", text[pos:])
 
 
 def entry(path: Path) -> str:
@@ -486,6 +583,12 @@ def main() -> int:
     # never opened; it is reported with the other problems. rglob("*") would list an oversize note, so it goes here.
     refused = sorted((rel, why) for rel, why in ((p.relative_to(vault), refusal(p)) for p in vault.rglob("*.md")) if why
                      and not any(part.startswith(".") for part in rel.parts))
+    # A symlink inside the vault that leads outside it would copy text from elsewhere into the bundle: it is left out and
+    # named by its name and link text (never the host path it resolves to). One that stays inside the vault is exported as
+    # before. rglob does not enter a symlinked folder (Python 3.9 and 3.12 measured), so only a file symlink gets here.
+    refused += sorted((rel, f"a symlink to {os.readlink(vault / rel)}, which leads outside the vault" if (vault / rel).is_symlink()
+                       else "a file under a symlinked folder that leads outside the vault") for rel in files
+                      if not (vault / rel).resolve().is_relative_to(vault))
     skip = {rel for rel, _ in refused}
     files = [rel for rel in files if rel not in skip]
     fileset = set(files)
@@ -494,18 +597,19 @@ def main() -> int:
     by_path_ci: dict[str, list[Path]] = {}
     for p in files:
         by_name.setdefault(p.name, []).append(p)
-        by_name_ci.setdefault(p.name.lower(), []).append(p)   # lower(), as Obsidian: casefold() would match ß to ss
-        by_path_ci.setdefault(p.as_posix().lower(), []).append(p)
+        by_name_ci.setdefault(fold(p.name), []).append(p)   # NFC + lower(), as Obsidian: casefold() would match ß to ss
+        by_path_ci.setdefault(fold(p.as_posix()), []).append(p)
 
     def resolve(name: str) -> list[Path]:
         """Obsidian's rule: a target with '/' is a vault-root path, a bare name is a file name anywhere
         in the vault. Either may leave out '.md'. An exact match wins; otherwise case is ignored, as Obsidian
-        ignores it, and two files that differ only in case are both returned (ambiguous)."""
+        ignores it, and two files that differ only in case are both returned (ambiguous). The case-insensitive step also
+        reads both names in Unicode NFC (macOS may store café decomposed), as okf_guard.obsidian_path does for okf-check."""
         if "/" in name:
             exact = [p for p in (Path(name), Path(name + ".md")) if p in fileset][:1]
-            return exact or by_path_ci.get(name.lower()) or by_path_ci.get((name + ".md").lower()) or []
+            return exact or by_path_ci.get(fold(name)) or by_path_ci.get(fold(name + ".md")) or []
         return (by_name.get(name) or by_name.get(name + ".md")
-                or by_name_ci.get(name.lower()) or by_name_ci.get((name + ".md").lower()) or [])
+                or by_name_ci.get(fold(name)) or by_name_ci.get(fold(name + ".md")) or [])
 
     out_rel = functools.partial(vault_out_rel, root_name=vault.name)
 
@@ -559,7 +663,13 @@ def main() -> int:
             problems.append(f"{rel.as_posix()}:1: not valid UTF-8, copied unchanged")
             shutil.copy2(vault / rel, dest)
             continue
-        for i, line, code, _ in body_lines(lines):
+        try:
+            rows = list(body_lines(lines))
+        except TooDeep:
+            problems.append(f"{rel.as_posix()}:1: block quotes and list items nested deeper than {NEST_MAX} levels: copied unchanged, its links not rewritten")
+            shutil.copy2(vault / rel, dest)
+            continue
+        for i, line, code, _ in rows:
             if code:
                 continue
             no = i + 1
@@ -571,6 +681,9 @@ def main() -> int:
                 if len(found) != 1:
                     what = "ambiguous target" if found else "missing target"
                     names = ", ".join(p.as_posix() for p in found)
+                    if len({unicodedata.normalize("NFC", p.as_posix()) for p in found}) < len(found):   # they look alike
+                        names = ", ".join(p.as_posix().encode("ascii", "backslashreplace").decode() for p in found) \
+                            + " (they differ only in Unicode normalisation)"
                     problems.append(f"{rel.as_posix()}:{no}: {what} {m.group(0)}" + (f": {names}" if names else ""))
                     return m.group(0)
                 # Spec 6.1 allows a relative or a bundle-absolute (/...) link; the relative form is what the ticket

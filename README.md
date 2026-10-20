@@ -54,7 +54,7 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 | L2 index | Does `index.md` describe this bundle? | its bold count declaration against the files on disk |
 | Trust (C4) | Can you believe a `human:` verification? | `okf-trust.py`: a draft note, or a review dated before the change, with a human verifier is a warning; an agent-generated note with one is an advisory. It cannot prove who a person is. |
 | L3 staleness | Is it still true? | `stale_after` against today, and `status` |
-| L3 derived | Has what it describes moved since? | `sources[].last_modified` against the file's mtime |
+| L3 derived | Has what it describes moved since? | `sources[].last_modified` against the file's mtime; a path counts only as written (case-exact, as `okf-verify`) |
 | L4 claims (`okf-verify`) | Do the cited commits and paths exist? | CONFIRMED, REFUTED or UNRESOLVED per claim |
 
 Also shipped:
@@ -375,6 +375,7 @@ body, since every such stub is the same single shingle; the report counts those 
 
 | Variable | Default | Effect |
 |---|---|---|
+| `OKF_L1_TIMEOUT` | 120 | Seconds L1's validator may run in all (the runs that find a note it crashes on share them); its cost grows with frontmatter size. Past it L1 is `COULD NOT RUN — the validator timed out` (exit 2). `0` or a non-number means the default. |
 | `OKF_L2_TIMEOUT` | 120 | Seconds before a hung `okflint` is cut off in L2 (exit 2, named). `0` or a non-number means the default. |
 | `OKF_L2_MAX_RSS_MB` | 2048 | Megabytes `okflint` and its children may hold before they are stopped (exit 2, named). Sampled four times a second with `ps`. `0` or a non-number means the default. |
 | `OKF_L2_ISOLATE_MAX` | 200 | When okflint crashes on a bundle of at most this many notes, L2 finds the crashing notes (one run each), names them and checks the rest. Larger bundles keep the plain "crashed" report. |
@@ -406,7 +407,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.38
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.39
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -422,7 +423,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.38
+    rev: v0.9.39
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

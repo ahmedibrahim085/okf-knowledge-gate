@@ -9,6 +9,24 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.39] - 2026-10-20
+
+OKF Knowledge Gate 0.9.39 closes the leftovers of the overnight review: the public-export scan, `okf-export` anchors and links, and the `okf-check` time limit and path rules.
+
+### Fixed
+- **The public-export scan is linear on long lists of ticket numbers.** A 160 KB line of repeated ticket numbers hit Python's recursion limit after 55 s; it takes 0.3 s. A submodule (a gitlink) is refused and its path is named as written, where `tar` copied its working tree whole. An allow-file error now names the check that failed (unknown keyword, argument count, missing reason) and shows a bad value first.
+- **A `binary` pin in `tools/export-public.allow` can accept scan classes for that one file** (`accept=home-path,e-mail,private-name,commit-id,GH-N,#NN,private-repo-link`); an unknown class is an allow-file error and the acceptance covers no other file.
+- **`okf-export` keeps links to repeated headings.** Repeated headings get GitHub's numbered anchors (`dup`, `dup-1`, and the next free number when a heading is literally `dup-1`); heading anchors are Unicode NFC, so a heading typed in NFD matches an NFC link and the reverse.
+- **`okf-export` no longer copies a file that leaves the vault.** A symlink (or a file under a symlinked folder) whose target is outside the vault is skipped and named in the problems.
+- **`okf-export` reads block quotes.** ATX headings, fences and indented code inside a quote are read as outside it, and a quote nested more than 100 levels stops with a named problem instead of a Python traceback. A setext heading (`===` or `---` underline) inside a block quote is not recognised: a link to one fails with "missing heading" and is never rewritten to an anchor that CommonMark lacks.
+- **`okf-export` keeps code spans in titles**: a title with a backtick span and a closing bracket is escaped outside the span only, and the index link stays one link.
+- **`okf-export` matches names by case and Unicode form** (the Obsidian rule `okf-check` already used): two names that differ only in normalisation are reported as ambiguous in an escaped, readable form.
+- **`okf-check` stops a validator that does not finish.** Every L1 validator run is limited by `OKF_L1_TIMEOUT` (default 120 s; zero or a non-number falls back to the default). When it fires, L1 prints "COULD NOT RUN" with the limit and exits 2, where an 840 KB note once gave exit 0 and PASS. One total budget covers the per-note probes. A validator that stops itself with a signal is reported as a crash, not as a time-out.
+- **`okf-check --help` prints the whole header** and lists exit codes 64, 130 and 143, checked against the README table.
+- **`okf-check` reads the status list from one place**, `STATUS_VALUES` of the vendored validator. A missing, unreadable, duplicated or non-list `STATUS_VALUES` is an error that names it (exit 2), and no longer an empty list that rejects every status.
+- **L3 judges the case of a cited source below the bundle only**, so a source typed as `SRC.txt` for `src.txt` is "not a local file", while `okf-check .` with a `../x.txt` source and a bundle path typed in another case are measured as before.
+- **CI pins `actions/checkout` to v7.0.1 (node24)**, and a test fails when the workflow and `tools/export-public.allow` disagree on the pin.
+
 ## [0.9.38] - 2026-10-20
 
 OKF Knowledge Gate 0.9.38 closes the false passes found by the overnight review of the open backlog: the public-export scan, `okf-verify` results, and `okf-check` link and warning handling.
@@ -770,7 +788,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.38...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.39...HEAD
+[0.9.39]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.38...v0.9.39
 [0.9.38]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.37...v0.9.38
 [0.9.37]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.36...v0.9.37
 [0.9.36]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.35...v0.9.36

@@ -1112,20 +1112,144 @@ rc=$(run "$V" "$TMP/po13h/out")
 { [ "$rc" = 0 ] && grep -qF '    code [[nope]]' "$TMP/po13h/out/t.md" && grep -qF '    code [[gone]]' "$TMP/po13h/out/t.md"; } \
   && ok "S10-PO-13h a 4-space line after a break or a setext heading is code: its link stays as written" \
   || bad "S10-PO-13h code after a break" "rc=$rc $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
-# S10-PO-13i: the block reader matches a line without its line end, so every S10-PO-11/12/13 vault saved with CRLF line
+# S10-PO-14a..e: wrong results found by the triage of 0.9.37, one row each (link, what the export must do with it).
+V="$TMP/po14/vault"; mkdir -p "$TMP/po14/outside"; printf 'SECRET outside the vault\n' > "$TMP/po14/outside/s.md"
+note "$V" h.md "# Dup
+one
+# Dup
+two"
+note "$V" q.md "> # Quoted heading
+> text
+
+- > ## In item quote"
+ln -s ../outside/s.md "$V/leak.md"
+python3 - "$V" <<'PY'
+import sys, unicodedata
+v = sys.argv[1]
+name = unicodedata.normalize('NFD', 'café')   # stored decomposed, as macOS may store it
+open('%s/%s.md' % (v, name), 'w').write('---\ntype: Note\ntitle: "`a]b` thing"\ndescription: d.\ntags: [x]\ngenerated:\n  by: process:fixture\n  at: 2026-01-01\n---\nbody\n')
+PY
+note "$V" u.md "[[h#Dup]] [[h#dup-1]] [[q#Quoted heading]] [[q#In item quote]] [[$(printf 'caf\303\251')]]"
+rc=$(run "$V" "$TMP/po14/out"); U="$TMP/po14/out/u.md"
+miss=""
+for c in 'a|[h > Dup](h.md#dup)' 'a|[h > dup-1](h.md#dup-1)' 'c|[q > Quoted heading](q.md#quoted-heading)' 'c|[q > In item quote](q.md#in-item-quote)' \
+         'e|(cafe%CC%81.md)'; do
+  id=${c%%|*}; want=${c#*|}; alt=${want#*|}; want=${want%%|*}
+  { grep -qF "$want" "$U" || { [ "$alt" != "$want" ] && grep -qF "$alt" "$U"; }; } || miss="$miss 14$id[$want]"
+done
+grep -q 'leak.md' "$TMP/out.txt" && ! grep -q SECRET "$TMP/po14/out/leak.md" 2>/dev/null || miss="$miss 14b[leak shipped: $(grep -c SECRET "$TMP/po14/out/leak.md" 2>/dev/null)]"
+grep -qF '* [`a]b` thing]' "$TMP/po14/out/index.md" || miss="$miss 14d[$(grep -F 'thing' "$TMP/po14/out/index.md")]"
+[ -z "$miss" ] && ok "S10-PO-14 duplicate-heading anchors, quoted headings, a symlink out of the vault refused, a code-span title, an NFC link to an NFD file" \
+  || bad "S10-PO-14 triage rows" "rc=$rc failed:$miss | $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+
+# S10-PO-15a..e (review round 1 of the triage rows). 15a: quotes inside list items nested 1200 and 100000 levels deep
+# (`> - > - ... # Deep`) never crash the export: the note is named, copied unchanged, the run exits 1 with no traceback.
+for depth in 1200 100000; do
+  V="$TMP/po15a$depth/vault"; mkdir -p "$V"
+  python3 - "$V/deep.md" "$depth" <<'PY'
+import sys
+path, depth = sys.argv[1], int(sys.argv[2])
+data = ('---\ntype: Note\ntitle: D\ndescription: Deep.\n---\n' + '> - ' * depth + '# Deep\n').encode()
+assert len(data) < 1048576, len(data)
+open(path, 'wb').write(data)
+PY
+  rc=$(run "$V" "$TMP/po15a$depth/out")
+  { [ "$rc" = 1 ] && grep -q '^deep.md:.*nested deeper than' "$TMP/out.txt" && ! grep -q Traceback "$TMP/out.txt" && [ -f "$TMP/po15a$depth/out/deep.md" ]; } \
+    && ok "S10-PO-15a quotes and list items nested $depth deep: named, copied unchanged, exit 1, no traceback" \
+    || bad "S10-PO-15a nesting $depth" "rc=$rc $(grep -m2 -e deep.md -e Error "$TMP/out.txt" | cut -c1-160 | tr '\n' ' ')"
+done
+# 15b: heading anchors follow github-slugger: a generated anchor already taken gets the next free number.
+V="$TMP/po15b/vault"; note "$V" h.md "# Foo
+# Foo-1
+# Foo
+# Bar
+# Bar
+# Bar-1"
+note "$V" u.md "[[h#foo-2]] [[h#bar-1-1]]"
+rc=$(run "$V" "$TMP/po15b/out")
+{ [ "$rc" = 0 ] && grep -qF '(h.md#foo-2)' "$TMP/po15b/out/u.md" && grep -qF '(h.md#bar-1-1)' "$TMP/po15b/out/u.md"; } \
+  && ok "S10-PO-15b Foo, Foo-1, Foo gives foo-2 and Bar, Bar, Bar-1 gives bar-1-1, as github-slugger" || bad "S10-PO-15b slugger" "rc=$rc $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+# 15c: a heading typed in NFD matches a link typed in NFC (the anchor is made from NFC text).
+V="$TMP/po15c/vault"; note "$V" h.md "$(printf '# Cafe\314\201 menu')"; note "$V" u.md "$(printf '[[h#Caf\303\251 menu]]')"
+rc=$(run "$V" "$TMP/po15c/out")
+{ [ "$rc" = 0 ] && grep -qF "$(printf '(h.md#caf\303\251-menu)')" "$TMP/po15c/out/u.md"; } \
+  && ok "S10-PO-15c an NFD heading matches an NFC link (anchor from NFC text)" || bad "S10-PO-15c NFC heading" "rc=$rc $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+# 15d: inside a block quote no setext underline makes a heading (a shortcut: okf-export never invents an anchor, and a
+# link to such a heading fails loudly). Outside a quote `Kept` / `===` is still a heading.
+V="$TMP/po15d/vault"; note "$V" q1.md "> Title
+==="; note "$V" q2.md "> > a
+> ==="; note "$V" q3.md "> > b
+> ---"; note "$V" q4.md "> Kept
+> ==="; note "$V" q5.md "Kept
+==="
+note "$V" u.md "[[q1#Title]] [[q2#a]] [[q3#b]] [[q4#Kept]] [[q5#Kept]]"
+rc=$(run "$V" "$TMP/po15d/out")
+{ [ "$rc" = 1 ] && [ "$(grep -c 'missing heading \[\[q[1-4]#' "$TMP/out.txt")" = 4 ] && grep -qF '(q5.md#kept)' "$TMP/po15d/out/u.md"; } \
+  && ok "S10-PO-15d no === / --- under a quote makes a heading (a link to one fails loudly); outside a quote it does" \
+  || bad "S10-PO-15d quote underline" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+# 15e: the line for a file that leads outside the vault names it as the vault sees it (its name and its link text), never
+# the host path it resolves to.
+V="$TMP/po14/vault"; rc=$(run "$V" "$TMP/po15e/out")
+{ grep -q '^leak.md' "$TMP/out.txt" && grep -qF '../outside/s.md' "$TMP/out.txt" && ! grep -qF "$TMP" "$TMP/out.txt"; } \
+  && ok "S10-PO-15e the outside-the-vault line names leak.md and its link text, no host path" || bad "S10-PO-15e skip line" "$(grep leak "$TMP/out.txt" | cut -c1-200)"
+
+# 15f: two files whose names differ only in Unicode normalisation (on a disk that keeps both): an ambiguous link names
+# them in an escaped form and says so, instead of two names that look the same.
+V="$TMP/po15f/vault"; mkdir -p "$V"
+python3 - "$V" <<'PY'
+import sys, unicodedata
+for form in ('NFC', 'NFD'):
+    open('%s/%s.md' % (sys.argv[1], unicodedata.normalize(form, 'café')), 'w').write('# c\n')
+PY
+if [ "$(ls "$V" | wc -l | tr -d ' ')" = 2 ]; then
+  note "$V" u.md "$(printf '[[CAF\303\211]]')"   # a case-insensitive link: exact matches none, folded matches both
+  rc=$(run "$V" "$TMP/po15f/out")
+  { [ "$rc" = 1 ] && grep -q 'ambiguous target.*differ only in Unicode normalisation' "$TMP/out.txt" && grep -qF 'caf\xe9.md' "$TMP/out.txt"; } \
+    && ok "S10-PO-15f names that differ only in normalisation are printed escaped, and the message says so" \
+    || bad "S10-PO-15f ambiguous NFC names" "rc=$rc $(grep ambiguous "$TMP/out.txt" | cut -c1-200)"
+else
+  ok "S10-PO-15f SKIPPED: this disk stores NFC and NFD names as one file"
+fi
+
+# 15g: shapes that once gave an anchor CommonMark does not have: a short dash line or a quoted list item before lazy text
+# and a bare underline, an underline after indented code in a nested quote, and lazy lines across quote levels. Each link
+# fails loudly (missing heading), none gets an anchor.
+V="$TMP/po15g/vault"; note "$V" r1.md "> > a
+> --
+b c
+-"; note "$V" r2.md "> - x
+> --
+b c
+-"; note "$V" r3.md "> - x
+> ===
+b c
+-"; note "$V" r4.md "> # H
+> >     code
+> b
+> > ==="; note "$V" r5.md "> > a
+> b
+> > ==="
+note "$V" u.md "[[r1#b c]] [[r2#b c]] [[r3#b c]] [[r4#b]] [[r5#a b]]"
+rc=$(run "$V" "$TMP/po15g/out")
+{ [ "$rc" = 1 ] && [ "$(grep -c 'missing heading \[\[r[1-5]#' "$TMP/out.txt")" = 5 ] && ! grep -qF '.md#' "$TMP/po15g/out/u.md"; } \
+  && ok "S10-PO-15g dash lines, quoted list items, indented code and lazy lines in quotes give no anchor CommonMark lacks" \
+  || bad "S10-PO-15g quote shapes" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300) | $(tail -1 "$TMP/po15g/out/u.md" 2>/dev/null)"
+
+# S10-PO-13i: the block reader matches a line without its line end, so every S10-PO-11/12/13/14 vault saved with CRLF line
 # ends exports to the same report and, CRs aside, the same files as its LF copy.
 crlf_bad=""; crlf_n=0
-for V in "$TMP"/po1[123]*/vault; do
+for V in "$TMP"/po1[12345]*/vault; do
   [ -d "$V" ] || continue; crlf_n=$((crlf_n + 1))
   C="${V%/vault}/crlf"; rm -rf "$C"; cp -R "$V" "$C"
-  for f in $(cd "$C" && find . -name '*.md'); do awk '{ printf "%s\r\n", $0 }' "$V/$f" > "$C/$f"; done
+  # -type f: not a symlink (writing to one would write through to its target)
+  for f in $(cd "$C" && find . -name '*.md' -type f); do awk '{ printf "%s\r\n", $0 }' "$V/$f" > "$C/$f"; done
   rl=$(run "$V" "${V%/vault}/o-lf"); cp "$TMP/out.txt" "$TMP/out-lf.txt"
   rc=$(run "$C" "${V%/vault}/o-crlf")
   diff -r <(cd "${V%/vault}/o-lf" && find . -type f | sort | xargs cat) <(cd "${V%/vault}/o-crlf" && find . -type f | sort | xargs cat | tr -d '\r') >/dev/null \
     && [ "$rl" = "$rc" ] && diff "$TMP/out-lf.txt" <(tr -d '\r' < "$TMP/out.txt") >/dev/null \
     || crlf_bad="$crlf_bad ${V%/vault}:$(diff "$TMP/out-lf.txt" <(tr -d '\r' < "$TMP/out.txt") | grep '^[<>]' | head -1)"
 done
-[ -z "$crlf_bad" ] && [ "$crlf_n" -ge 10 ] && ok "S10-PO-13i all $crlf_n S10-PO-11/12/13 vaults export the same with CRLF line ends" \
+[ -z "$crlf_bad" ] && [ "$crlf_n" -ge 10 ] && ok "S10-PO-13i all $crlf_n S10-PO-11 to 15 vaults export the same with CRLF line ends" \
   || bad "S10-PO-13i CRLF" "$crlf_n vaults converted (10 or more expected);$crlf_bad"
 # S10-PO-13j: the block reader's cost is linear in line length and nesting depth. Timed in memory through the module (no
 # file is written): one marker line opening 8000 nested items then 50 000 lines, and 160 KB single lines of marker runs
@@ -1143,7 +1267,12 @@ shapes = {"8000 nested + 50000 lines": ["- " * 8000 + "x"] + ["line %d" % i for 
           "backticks": ["`" * n], "spaces": [" " * n + "x"], "tabs": ["\t" * n + "x"]}
 slow = []
 for name, body in shapes.items():
-    t = time.perf_counter(); list(mod.body_lines(body + ["after"])); took = time.perf_counter() - t
+    t = time.perf_counter()
+    try:
+        list(mod.body_lines(body + ["after"]))
+    except mod.TooDeep:   # the '>' run: one nested read per level, stopped at the cap
+        pass
+    took = time.perf_counter() - t
     print("%-28s %.3f s" % (name, took))
     if took > 3:
         slow.append("%s %.1f s" % (name, took))

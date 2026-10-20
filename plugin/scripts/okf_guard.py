@@ -22,7 +22,7 @@ def obsidian_path(base, rel):
     """The path below folder `base` that the link path `rel` names by Obsidian's rule, or None.
 
     Each part is the name in its folder spelled exactly so, else the one name equal to it under lower() (okf-export's
-    case rule) after Unicode NFC normalisation (macOS may store a name decomposed; okf-export does not normalise yet).
+    case rule) after Unicode NFC normalisation (macOS may store a name decomposed; okf-export's resolve() uses the same rule).
     Two such names (Notes.md and notes.md on a case-sensitive disk) are ambiguous: None, okf-export does not pick one
     either. A part that matches no name is None too: the verdict comes from the rule, not from the disk, whose own case
     folding is wider (macOS equates straße with STRASSE). The one exception: a part whose folder cannot be listed is
@@ -55,6 +55,36 @@ def obsidian_path(base, rel):
             missing += 1
         stack.append(os.path.join(stack[-1], part))
     return None if missing else stack[-1]
+
+
+def case_exact(p, base=None):
+    """Does every component of `p` appear on disk with the case as written? With `base`, only the part below the folder
+    `p` and `base` share is judged.
+
+    APFS and NTFS are case-INSENSITIVE by default, so `exists()` answers yes
+    for a name that is nowhere on the filesystem: a concept citing `Notes.MD`
+    against a repo holding `notes.md` was reported CONFIRMED. The tool then
+    asserts it verified a path that does not exist as written — and the whole
+    point of the CONFIRMED verdict is that it was checked, not approximated.
+    The citation rule of okf-verify (D-11) and of L3's sources[].resource.
+    `base` is the folder the citation is relative to: how the user typed the bundle path, and the folders above the
+    one the two paths share, are not the citation (`okf-check .` with `../x.txt` judges `x.txt` only).
+    Both paths are made absolute first: a relative path holding `..` would otherwise be looked for in a listing.
+
+    Returns True when we CANNOT tell (unreadable parent): a verdict must never
+    be manufactured out of a failed look. (D-11)
+    """
+    p = os.path.abspath(p)
+    root = os.path.commonpath([p, os.path.abspath(base)]) if base is not None else Path(p).anchor
+    cur, parts = Path(root), Path(os.path.relpath(p, root)).parts
+    for part in (() if parts == (".",) else parts):
+        try:
+            if part not in os.listdir(cur):
+                return False
+        except OSError:
+            return True
+        cur = cur / part
+    return True
 
 
 def _fold(name):

@@ -24,8 +24,6 @@ function okfdate(d,    head, rest, dp) {
   }
   return d
 }
-# okfstatusok: the status values L3 accepts (the OKF lifecycle: stable, draft, deprecated).
-function okfstatusok(v) { return v == "stable" || v == "draft" || v == "deprecated" }
 # The frontmatter state machine, shared so the two scripts cannot drift again.
 # State lives in L3_infm / L3_sa / L3_st. The callers keep their own skip rules and reporting.
 # l3_begin: call on FNR==1. Returns "reserved", "nofm" (no frontmatter) or "open".
@@ -45,6 +43,21 @@ function l3_line(line) {
   return 0
 }
 AWKEOF
+# okfstatusok: the status values L3 accepts: the OKF lifecycle, read from the vendored validator's STATUS_VALUES so that
+# L1 and L3 hold one list (okf-check-l3.test.sh LT-SV1). The house vocabulary (status_values in okf-base.yaml) is L2's.
+# Exactly one `STATUS_VALUES = {...}` line of quoted words, or L3_STATUS_ERR names the cause and the caller stops: a second
+# line or a non-list used to reach awk as broken program text, and the hook read the awk error as "nothing to report".
+L3_STATUS_SRC="$(cd -P "$(dirname "${BASH_SOURCE[0]}")/../vendor" 2>/dev/null && pwd)/okf_validate.py"
+L3_STATUS=$(sed -n 's/^STATUS_VALUES = {\(.*\)}$/\1/p' "$L3_STATUS_SRC" 2>/dev/null | tr -d "\"' ")
+L3_STATUS_ERR=""
+case "$L3_STATUS" in
+  ''|*[![:lower:]_,-]*|,*|*,|*,,*)   # [:lower:], not a-z: a bash range follows the locale's collation and let LIFECYCLE in
+    L3_STATUS_ERR="cannot read the status list (one STATUS_VALUES = {...} line of quoted words) from $L3_STATUS_SRC"
+    L3_STATUS="" ;;
+esac
+L3_AWK_LIB="$L3_AWK_LIB
+function okfstatusok(v) { return v != \"\" && v !~ /,/ && index(\",$L3_STATUS,\", \",\" v \",\") > 0 }
+"
 
 # okf_md_files <root>: print, NUL-separated, the *.md files a bundle holds, by the one rule every walker shares
 # (cases S8-H1, S8-N1, S8-E1). The rule is the vendored validator's, because that file is not ours to edit:

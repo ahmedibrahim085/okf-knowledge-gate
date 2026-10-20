@@ -773,30 +773,6 @@ def check_line(target: str, lines: str, by_name: bool, note_dir: Path, bundle: P
     return v, d, extra
 
 
-def case_exact(p: Path) -> bool:
-    """Does every component of `p` appear on disk with the case as written?
-
-    APFS and NTFS are case-INSENSITIVE by default, so `exists()` answers yes
-    for a name that is nowhere on the filesystem: a concept citing `Notes.MD`
-    against a repo holding `notes.md` was reported CONFIRMED. The tool then
-    asserts it verified a path that does not exist as written — and the whole
-    point of the CONFIRMED verdict is that it was checked, not approximated.
-
-    Returns True when we CANNOT tell (unreadable parent): a verdict must never
-    be manufactured out of a failed look. (D-11)
-    """
-    cur = Path(p.anchor) if p.anchor else Path(".")
-    parts = p.parts[1:] if p.anchor else p.parts
-    for part in parts:
-        try:
-            if part not in os.listdir(cur):
-                return False
-        except OSError:
-            return True
-        cur = cur / part
-    return True
-
-
 _ROOT_FORMS: dict[str, tuple] = {}
 
 
@@ -842,7 +818,7 @@ def check_path(raw: str, bundle: Path, roots: list[Path] | None = None, host_pat
     p = Path(os.path.expanduser(raw))
     if not p.is_absolute():
         p = bundle / raw
-    # `..` and `.` are resolved lexically before anything else: `case_exact` lists directories and `..` is in none.
+    # `..` and `.` are resolved lexically before anything else: `case_exact` (okf_guard) lists directories and `..` is in none.
     p = Path(os.path.normpath(str(p)))
     # A bundle is untrusted input. Probing arbitrary host paths answers "does this key file exist on the runner?" in
     # a CI log, so only paths inside the bundle or a --repo folder are looked up unless --host-paths says otherwise.
@@ -865,7 +841,7 @@ def check_path(raw: str, bundle: Path, roots: list[Path] | None = None, host_pat
         if p.exists():
             # UNRESOLVED, not REFUTED: the file is plainly there under another
             # case, so the claim is not false — it is unverified as written.
-            if not case_exact(p):
+            if not _guard().case_exact(p):
                 return UNRESOLVED, ("only a case-variant of this path exists and the "
                                     "filesystem is case-insensitive — present, but not "
                                     "as written, which is not the same as confirmed")

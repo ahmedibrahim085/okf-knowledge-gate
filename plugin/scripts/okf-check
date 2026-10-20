@@ -29,10 +29,13 @@
 #   1  L1 OKF conformance ERROR      — the bundle is not conformant OKF; or an okf_check house-rule
 #                                      error (deprecated_requires, require_owner, size)
 #   3  L2 house-profile ERROR        — your own rules are broken
-#   2  L0/L2 could not run           — a gate was unable to reach a verdict
+#   2  L0/L1/L2 could not run        — a gate was unable to reach a verdict
 #   6  bundle changed mid-scan       — only with --fail-on-change
 #   4  L3 stale concepts             — only with --fail-stale
 #   0  all gates pass
+#  64  usage error                  — no bundle, an unknown flag, or a path that is not a folder
+# 130  interrupted (INT)            — stopped by Ctrl-C; no verdict
+# 143  terminated (TERM)            — stopped from outside; no verdict
 #
 # `max(rc)` was WRONG and is why this list is ordered. A bundle with a real §11
 # conformance error AND an unusable manifest returned 2 — documented as "could
@@ -56,7 +59,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.38"
+VERSION="0.9.39"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -93,6 +96,7 @@ HERE=$(cd -P "$(dirname "$_self")" && pwd)
 [ -r "$HERE/note-guard-lib.sh" ] || { echo "okf-check: $HERE/note-guard-lib.sh is missing - cannot tell which notes are safe to open; reinstall the plugin" >&2; exit $EXIT_DEP; }
 [ -r "$HERE/l3-lib.sh" ] || { echo "okf-check: $HERE/l3-lib.sh is missing - cannot run L3; reinstall the plugin" >&2; exit $EXIT_DEP; }
 . "$HERE/l3-lib.sh"
+[ -z "$L3_STATUS_ERR" ] || { echo "okf-check: $L3_STATUS_ERR - cannot run L3; reinstall the plugin" >&2; exit $EXIT_DEP; }
 [ -r "$HERE/ignore-lib.sh" ] || { echo "okf-check: $HERE/ignore-lib.sh is missing - cannot read .okfignore; reinstall the plugin" >&2; exit $EXIT_DEP; }
 . "$HERE/ignore-lib.sh"
 # The okf_check rules (successor, owner, duplicates) import their note reader from okf_notes.py inside a try: without the
@@ -162,7 +166,7 @@ for a in "$@"; do
     --yes)         ASSUME_YES=1 ;;
     --latest)      USE_LATEST=1 ;;
     --version)     echo "okf-check $VERSION"; exit 0 ;;
-    -h|--help)     sed -n '2,40p' "$_self"; exit 0 ;;
+    -h|--help)     awk 'NR > 1 && !/^#/ { exit } NR > 1' "$_self"; exit 0 ;;   # the whole header comment: a fixed line window dropped exit 64
     -*)            if [ "${_want_file:-0}" = 1 ] && [ -f "$a" ]; then SCOPED_FILE="$a"; _want_file=0; continue; fi   # a note named -d.md
                    echo "unknown flag: $a" >&2; exit 64 ;;
     *)             if [ "${_want_file:-0}" = 1 ]; then SCOPED_FILE="$a"; _want_file=0; continue; fi
@@ -850,21 +854,52 @@ l1_list_warnings() {
 # One note the vendored validator crashes on (a `status` list, an impossible date: upstream
 # okf-skills#62/#63) used to blank the whole L1 verdict and name nothing (ticket 11).
 # Isolation: run the validator on each note alone, name the ones that die, validate the rest.
+# l1_validate <dir> <outfile>: the vendored validator under the watchdog (okf-limit.py, as okflint). Its cost grows with
+# frontmatter size (a 0.4 MB list took 8 s, 1.0 MB 18 s; a note may hold 5 MB) and a parse cannot be stopped from inside
+# Python. OKF_L1_TIMEOUT seconds, default 120 (L2's default), for ALL of L1: the runs that isolate a crashing note share
+# it (L1_DEADLINE), or N notes could take N times the limit. A run with no budget left is not started: it writes the
+# watchdog's own `timeout` marker and returns 143, so one test (l1_timed_out) covers both.
+L1_LIMIT="${OKF_L1_TIMEOUT:-120}"; case "$L1_LIMIT" in ''|*[!0-9]*|0) L1_LIMIT=120 ;; esac
+L1_DEADLINE=""
+l1_validate() {
+  local left=$(( ${L1_DEADLINE:-$((SECONDS + L1_LIMIT))} - SECONDS ))
+  [ "$left" -ge 1 ] || { : > "$2"; echo timeout > "$2.limit"; return 143; }
+  run_limited "$left" "$2" env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$VENDOR_PY${PYTHONPATH:+:$PYTHONPATH}" \
+    "$PY" "$VALIDATOR" "$1" --json
+}
+# l1_timed_out <status> <outfile>: the budget ran out. The status alone is not enough: a validator that ends itself with
+# TERM exits 143 too, and one may exit with any code; only the watchdog's `timeout` marker says it was the limit.
+l1_timed_out() { [ "$1" -eq 143 ] && grep -q '^timeout' "$2.limit" 2>/dev/null; }
+# l1_stopped <status> <outfile>: the reason the watchdog stopped the validator, or status 1 when it did not.
+l1_stopped() {
+  if l1_timed_out "$1" "$2"; then echo "the validator timed out after $L1_LIMIT s (OKF_L1_TIMEOUT)"
+  elif [ "$1" -eq 137 ] && grep -q '^rss' "$2.limit" 2>/dev/null; then echo "the validator was stopped for memory (OKF_L2_MAX_RSS_MB)"
+  else return 1; fi
+}
 run_conformance() {
   local bundle="$1" out probe="$TMP/l1probe" mirror="$TMP/l1mirror" f rel why ncrash=0 rc k
   local -a crashed_rel=() crashed_why=()
   # `a/b/` and `a/b` must behave the same: find prints one slash, so a trailing one breaks
   # the relative-name strip below.
   while [ "${#bundle}" -gt 1 ] && [ "${bundle%/}" != "$bundle" ]; do bundle=${bundle%/}; done
-  out=$(py_with_vendor "$VALIDATOR" "$bundle" --json 2>/dev/null)
+  L1_DEADLINE=$((SECONDS + L1_LIMIT))
+  l1_validate "$bundle" "$TMP/l1.out"; rc=$?
+  if why=$(l1_stopped "$rc" "$TMP/l1.out"); then say "  L1 conformance   COULD NOT RUN — $why; not a pass"; return $EXIT_DEP; fi
+  out=$(cat "$TMP/l1.out" 2>/dev/null)
   if [ -z "$out" ]; then
     # Pass 1: find the notes the validator dies on, one note per run.
     local -a keep=()
     while IFS= read -r -d '' f; do
       rel=${f#"$bundle"/}
       rm -rf "$probe"; mkdir -p "$probe"; cp "$f" "$probe/note.md" 2>/dev/null || continue
-      if [ -z "$(py_with_vendor "$VALIDATOR" "$probe" --json 2>/dev/null)" ]; then
-        why=$(py_with_vendor "$VALIDATOR" "$probe" --json 2>&1 >/dev/null | tail -1)
+      l1_validate "$probe" "$TMP/l1probe.out"; rc=$?
+      if l1_timed_out "$rc" "$TMP/l1probe.out"; then
+        say "  L1 conformance   COULD NOT RUN — $(l1_stopped "$rc" "$TMP/l1probe.out"), while finding the notes the validator fails on; not a pass"
+        return $EXIT_DEP
+      fi
+      if [ ! -s "$TMP/l1probe.out" ]; then
+        why=$(l1_stopped "$rc" "$TMP/l1probe.out") || why=$(tail -1 "$TMP/l1probe.out.err" 2>/dev/null)
+        [ -n "$why" ] || why="exit status $rc, no message"   # killed by a signal, or silent
         crashed_rel+=("$rel"); crashed_why+=("$why"); ncrash=$((ncrash+1))
       else
         keep+=("$rel")
@@ -895,7 +930,12 @@ run_conformance() {
 
 __l1_core() {
   local bundle="$1" out="${2:-}"
-  [ -n "$out" ] || out=$(py_with_vendor "$VALIDATOR" "$bundle" --json 2>/dev/null)
+  local rc why
+  if [ -z "$out" ]; then
+    l1_validate "$bundle" "$TMP/l1.out"; rc=$?
+    if why=$(l1_stopped "$rc" "$TMP/l1.out"); then say "  L1 conformance   COULD NOT RUN — $why; not a pass"; return $EXIT_DEP; fi
+    out=$(cat "$TMP/l1.out" 2>/dev/null)
+  fi
   [ -n "$out" ] || { say "  L1 conformance   COULD NOT RUN (validator produced no output)"; return $EXIT_DEP; }
   printf '%s' "$out" > "$TMP/l1.json"
   # SHAPE-CHECKED, not just parsed. `d.get("errors",[])` turned any valid JSON
@@ -1675,7 +1715,7 @@ def sev(x):
 # exists (okf-knowledge-gate#1: 2,368 of 2,477 L001 findings on one real bundle). OKF section 6.1 defines markdown links only,
 # so how a wikilink resolves is a house convention, and this one matches Obsidian: a path from the bundle root, or from
 # the note's own folder, with or without .md; each name spelled exactly so, else the one name equal to it under lower()
-# (okf-export's case rule) and NFC (okf-export does not normalise yet), on every disk and decided by that rule, not by
+# (okf-export's case rule) and NFC (okf-export's resolve() reads both names in NFC too), on every disk and decided by that rule, not by
 # the disk's own folding (okf_guard.obsidian_path: [[Sub/S]] names sub/s.md on Linux as on macOS, [[STRASSE]] never
 # names straße.md). An L001 whose target is such a file is dropped and COUNTED, never hidden.
 _root = os.path.realpath(sys.argv[2])
@@ -1979,8 +2019,10 @@ run_derived_stale() {
   # py_with_vendor, unlike the index reconciler: `sources` is nested structure,
   # and hand-rolling a YAML list-of-mappings parser with regexes is how a gate
   # starts quietly disagreeing with the validator standing above it.
-  out=$(OKF_VENDOR_DIR="$ROOT/vendor" py_with_vendor - "$bundle" "${REAL_BUNDLE:-$bundle}" <<'PYEOF'
+  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "${REAL_BUNDLE:-$bundle}" <<'PYEOF'
 import datetime, pathlib, sys
+sys.path.insert(0, __import__("os").environ["OKF_SCRIPTS_DIR"])
+from okf_guard import case_exact
 try:
     import yaml
     # The bounded loader of the vendored validator: a YAML alias bomb in sources[].resource must not expand here either.
@@ -2039,7 +2081,9 @@ for p in sorted(frozen.rglob("*.md")):
             # source without dating it, and guessing would invent staleness.
             continue
         cand = [(bundle / rel).parent / res, bundle / res, pathlib.Path(res)]
-        target = next((c for c in cand if c.is_file()), None)
+        # Case-exact, the citation rule of okf-verify (D-11): on a case-insensitive disk SRC.txt was measured through
+        # src.txt, on Linux it was not. Only the cited part below the folder it shares with the bundle is judged.
+        target = next((c for c in cand if c.is_file() and case_exact(c, bundle)), None)
         if target is None:
             unmeasurable.append((rel, res))
             continue
@@ -2166,7 +2210,7 @@ run_staleness() {
     say "  L3 staleness     PASS   nothing expired"
   fi
   if [ "$n_status" -gt 0 ]; then
-    say "  L3 lifecycle     ${n_status} concept(s) have a status outside draft, stable, deprecated (OKF 5.4; L1 warns about them too)"
+    say "  L3 lifecycle     ${n_status} concept(s) have a status outside ${L3_STATUS//,/, } (OKF 5.4; L1 warns about them too)"
     printf '%s\n' "$report" | grep -E '^ +status ' | sed 's/^ *//' | while IFS= read -r _e; do record lifecycle "$_e"; done
     printf '%s\n' "$report" | grep -E '^ +status ' | say_capped 10 ""
   fi

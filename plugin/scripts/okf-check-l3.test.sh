@@ -82,6 +82,8 @@ expect_exit 2 "LT-05 a crashing L3 awk is a dependency failure, never a PASS" --
 T09P="$TMP/t09plug"; cp -R "$HERE/.." "$T09P"
 mv "$T09P/vendor/okf_validate.py" "$T09P/vendor/real_validator.py"
 cat > "$T09P/vendor/okf_validate.py" <<'PYSTUB'
+# l3-lib.sh reads the spec status list from the validator, so a stub carries it
+STATUS_VALUES = {"draft", "stable", "deprecated"}
 import runpy, sys, pathlib
 args = sys.argv[1:]
 root = pathlib.Path(args[0])
@@ -473,7 +475,7 @@ t0=$(date +%s); env PATH="$T15B:$PATH" "$CHECK" --doctor >/dev/null 2>&1; t1=$(d
   || bad "LT-15b --doctor hung" "took $((t1 - t0))s"
 # LT-16: SIGTERM stops the gate.
 T16="$TMP/t16plug"; cp -R "$T09P" "$T16"
-printf 'import time\ntime.sleep(60)\n' > "$T16/vendor/okf_validate.py"
+printf 'STATUS_VALUES = {"draft", "stable", "deprecated"}\nimport time\ntime.sleep(60)\n' > "$T16/vendor/okf_validate.py"
 ( "$T16/scripts/okf-check" "$T09" >/dev/null 2>&1 & p=$!; sleep 1; kill -TERM $p 2>/dev/null; wait $p; echo $? > "$TMP/t16.rc" )
 [ "$(cat "$TMP/t16.rc")" = "143" ] && ok "LT-16 SIGTERM stops okf-check (exit 143)" \
   || bad "LT-16 SIGTERM did not stop okf-check with 143" "rc=$(cat "$TMP/t16.rc")"
@@ -517,6 +519,112 @@ else
     && ok "S30-CF-L1 three expired notes named with a space, ESC and a non-UTF-8 byte: L3 lists all three (exit 0)" \
     || bad "S30-CF-L1 odd names" "rc=$rc $(grep -c '(stale_after' "$TMP/t29.txt") listed; $(grep -E 'L3|COULD' "$TMP/t29.txt" | cat -v | tr '\n' ' ')"
 fi
+
+# LT-CE1/CE2: L3 derived measures a cited sources[].resource only when it exists with the case as written (the citation
+# rule of okf-verify, D-11). On a case-insensitive disk SRC.txt used to be measured through src.txt, and on Linux it was
+# not: the same bundle got two verdicts.
+CE="$TMP/ce"; mkbundle "$CE"; echo x > "$CE/src.txt"
+_ce_note() { printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nsources:\n  - resource: %s\n    last_modified: "2000-01-01"\n---\nbody\n' "$1" > "$CE/c.md"; }
+_ce_note SRC.txt; "$CHECK" "$CE" >"$TMP/ce1.txt" 2>&1
+{ grep -q 'L3 derived       c.md: SRC.txt is not a local file' "$TMP/ce1.txt" && ! grep -q 'SRC.txt changed' "$TMP/ce1.txt"; } \
+  && ok "LT-CE1 a cited source in another case (SRC.txt, the disk holds src.txt) is not measured" \
+  || bad "LT-CE1 cited source case" "$(grep 'L3 derived' "$TMP/ce1.txt" | head -2 | tr '\n' ' ')"
+_ce_note src.txt; "$CHECK" "$CE" >"$TMP/ce2.txt" 2>&1
+grep -q 'L3 derived       c.md: src.txt changed ' "$TMP/ce2.txt" \
+  && ok "LT-CE2 control: the source cited as written is measured (STALE)" \
+  || bad "LT-CE2 control" "$(grep 'L3 derived' "$TMP/ce2.txt" | head -2 | tr '\n' ' ')"
+# LT-CE3: the case rule judges only the cited part, never how the bundle path was typed. `okf-check .` (the pre-commit
+# form) with a source in the parent folder (`../x.txt`) is measured as on the base release (exit 4 with --fail-stale), and
+# so is the bundle given in another case on a case-insensitive disk.
+CE3="$TMP/ce3"; mkdir -p "$CE3/Repo"; mkbundle "$CE3/Repo/b"; echo x > "$CE3/Repo/x.txt"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nsources:\n  - resource: ../x.txt\n    last_modified: "2000-01-01"\n---\nbody\n' > "$CE3/Repo/b/c.md"
+(cd "$CE3/Repo/b" && "$CHECK" . --fail-stale) >"$TMP/ce3.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 4 ] && grep -q 'L3 derived       c.md: ../x.txt changed ' "$TMP/ce3.txt"; } \
+  && ok "LT-CE3 okf-check . with a ../ source: measured, exit 4 with --fail-stale" \
+  || bad "LT-CE3 okf-check . and a ../ source" "rc=$rc $(grep 'L3 derived' "$TMP/ce3.txt" | head -2 | tr '\n' ' ')"
+if [ -d "$CE3/repo/b" ]; then
+  "$CHECK" "$CE3/repo/b" --fail-stale >"$TMP/ce3b.txt" 2>&1; rc=$?
+  { [ "$rc" -eq 4 ] && grep -q 'L3 derived       c.md: ../x.txt changed ' "$TMP/ce3b.txt"; } \
+    && ok "LT-CE3b the bundle path typed in another case (repo/b for Repo/b): the source is still measured, exit 4" \
+    || bad "LT-CE3b bundle path case" "rc=$rc $(grep 'L3 derived' "$TMP/ce3b.txt" | head -2 | tr '\n' ' ')"
+else
+  skip "LT-CE3b bundle path typed in another case: a case-sensitive disk, repo/b does not exist"
+fi
+# LT-CE4: okf_guard.case_exact, which okf-verify calls too, judges a relative path that climbs (`../x.txt`) from the folder
+# it is relative to: it used to look for `..` in a folder listing and answer False for a file that exists as written.
+_ce4=$(cd "$CE3/Repo/b" && python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); from okf_guard import case_exact
+print(case_exact("../x.txt"), case_exact("../X.TXT"), case_exact("../x.txt", "."))' "$HERE" 2>&1)
+[ "$_ce4" = "True False True" ] && ok "LT-CE4 case_exact: ../x.txt as written is True, ../X.TXT is False, from the folder it is relative to" \
+  || bad "LT-CE4 case_exact and ../" "got '$_ce4' (want 'True False True')"
+
+# LT-SV1: the spec status list has one source, the vendored validator's STATUS_VALUES; L3 (l3-lib.sh) reads it. A copy of
+# the plugin with one more value in the validator must make L3 accept it too.
+SV="$TMP/sv"; mkdir -p "$SV"; cp -R "$HERE/.." "$SV/plugin"
+sed -i.bak 's/^STATUS_VALUES = {"draft", "stable", "deprecated"}$/STATUS_VALUES = {"draft", "stable", "deprecated", "review"}/' \
+  "$SV/plugin/vendor/okf_validate.py"
+_sv=$(bash -c '. "$1/plugin/scripts/l3-lib.sh"; awk "$L3_AWK_LIB"'\''BEGIN { print okfstatusok("review") okfstatusok("stable") okfstatusok("bogus") okfstatusok("") okfstatusok("draft,stable") }'\' _ "$SV" 2>&1)
+{ grep -q '"review"}$' "$SV/plugin/vendor/okf_validate.py" && [ "$_sv" = "11000" ]; } \
+  && ok "LT-SV1 L3 accepts exactly the validator's STATUS_VALUES (one source)" || bad "LT-SV1 status source" "got '$_sv' (want 11000)"
+# LT-SV2: the house copies of the list (status_values in this repository's .okf/okf-base.yaml and the shipped template) equal
+# the spec list. They are separate on purpose (docs/feature-landscape-2026-10-14.md section 5), so this test keeps them
+# from drifting. The planted copy proves the comparison can fail.
+_svdrift() {   # <validator> <yaml>...: prints each list that differs from STATUS_VALUES
+  PYTHONPATH="$HERE/../vendor/pyyaml" python3 - "$@" <<'PY'
+import ast, re, sys, yaml
+src = open(sys.argv[1], encoding="utf-8").read()
+spec = ast.literal_eval(re.search(r"^STATUS_VALUES = (\{.*\})$", src, re.M).group(1))
+def lists(n):
+    if isinstance(n, dict):
+        for k, v in n.items():
+            if k == "status_values": yield v
+            else: yield from lists(v)
+    elif isinstance(n, list):
+        for v in n: yield from lists(v)
+for f in sys.argv[2:]:
+    found = list(lists(yaml.safe_load(open(f, encoding="utf-8"))))
+    if not found: print(f"{f}: no status_values")
+    for v in found:
+        if not isinstance(v, list) or set(v) != spec: print(f"{f}: {v}")
+PY
+}
+# .okf/ is this repository's own bundle and is not in the public export: compared where it exists.
+_svf=("$HERE/../config/okf-base.yaml.template"); [ -f "$HERE/../../.okf/okf-base.yaml" ] && _svf+=("$HERE/../../.okf/okf-base.yaml")
+_d=$(_svdrift "$HERE/../vendor/okf_validate.py" "${_svf[@]}" 2>&1)
+_p=$(_svdrift "$SV/plugin/vendor/okf_validate.py" "$HERE/../config/okf-base.yaml.template" 2>&1)
+{ [ -z "$_d" ] && [ -n "$_p" ]; } && ok "LT-SV2 every status_values copy equals the validator's STATUS_VALUES (a planted drift is caught)" \
+  || bad "LT-SV2 status_values drift" "drift: ${_d:-none}; planted: ${_p:-not caught}"
+# LT-SV3: a status list l3-lib.sh cannot read is named, never an awk error read as "nothing to report". Each case is a copy
+# of the plugin with the validator's STATUS_VALUES line changed: two lines (a), a non-list (b), the file gone (c). okf-check
+# exits 2 naming STATUS_VALUES; the SessionStart hook says the statuses were not checked. Single quotes (d) are a list.
+_sv3() {   # <case> <python that rewrites the validator text in variable s, or "rm">
+  local d="$TMP/sv3$1"; mkdir -p "$d"; cp -R "$HERE/.." "$d/plugin"
+  if [ "$2" = rm ]; then rm -f "$d/plugin/vendor/okf_validate.py"
+  else python3 -c '
+import sys
+p = sys.argv[1]; s = open(p, encoding="utf-8").read()
+exec(sys.argv[2])
+open(p, "w", encoding="utf-8").write(s)' "$d/plugin/vendor/okf_validate.py" "$2"; fi
+  echo "$d"
+}
+SVL="$TMP/sv3lessons"; mkdir -p "$SVL"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: bogus\nstale_after: "2099-01-01"\n---\nbody\n' > "$SVL/l.md"
+miss=""
+for c in a b c; do
+  case "$c" in
+    a) d=$(_sv3 a 's = s.replace("STATUS_VALUES = {", "STATUS_VALUES = {\"x\"}\nSTATUS_VALUES = {", 1)') ;;
+    b) d=$(_sv3 b 's = s.replace("STATUS_VALUES = {\"draft\", \"stable\", \"deprecated\"}", "STATUS_VALUES = {LIFECYCLE}", 1)') ;;
+    c) d=$(_sv3 c rm) ;;
+  esac
+  "$d/plugin/scripts/okf-check" "$STALE" >"$d/out" 2>&1; rc=$?
+  { [ "$rc" -eq 2 ] && grep -q 'STATUS_VALUES' "$d/out"; } || miss="$miss $c:okf-check(rc=$rc $(head -1 "$d/out" | cut -c1-90))"
+  h=$(OKF_BUNDLE_DIR="$SVL" bash "$d/plugin/scripts/lessons-staleness-check.sh" 2>&1)
+  case "$h" in *STATUS_VALUES*"NOT checked"*) ;; *) miss="$miss $c:hook($(printf %s "$h" | head -1 | cut -c1-90))" ;; esac
+done
+d=$(_sv3 d 's = s.replace("STATUS_VALUES = {\"draft\", \"stable\", \"deprecated\"}", "STATUS_VALUES = {'"'"'draft'"'"', '"'"'stable'"'"', '"'"'deprecated'"'"'}", 1)')
+_q=$(bash -c '. "$1/plugin/scripts/l3-lib.sh"; awk "$L3_AWK_LIB"'\''BEGIN { print okfstatusok("stable") okfstatusok("bogus") }'\' _ "$d" 2>&1)
+[ "$_q" = "10" ] || miss="$miss d:single-quotes($_q)"
+[ -z "$miss" ] && ok "LT-SV3 an unreadable STATUS_VALUES stops okf-check (exit 2) and the hook (named); single quotes are read" \
+  || bad "LT-SV3 status list errors" "$miss"
 
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

@@ -2,7 +2,7 @@
 # SessionStart — the READER for the OKF `stale_after` / `status` fields in ~/.claude/lessons/.
 #
 # Frontmatter with no consumer is decoration. This is the consumer: it names lessons whose
-# stale_after horizon has passed, or whose status is not one of stable, draft, deprecated, so the store cannot
+# stale_after horizon has passed, or whose status is not in the OKF lifecycle (STATUS_VALUES), so the store cannot
 # rot silently the way an unread markdown pile does.
 #
 # CONTEXT COST: zero while everything is current — it prints nothing. A fired report is
@@ -34,6 +34,7 @@ _L3LIB="$(cd -P "$(dirname "$_self")" && pwd)/l3-lib.sh"
 # Fail loud, not silent: a hook that cannot parse must say so, or expiries stay hidden.
 [ -r "$_L3LIB" ] || { echo "lessons staleness check — l3-lib.sh missing next to this hook; expiries NOT checked"; exit 0; }
 . "$_L3LIB"
+[ -z "$L3_STATUS_ERR" ] || { echo "lessons staleness check — $L3_STATUS_ERR; statuses and expiries NOT checked"; exit 0; }
 
 # `find` not a bare glob: an empty dir must yield an empty loop, not a shell error.
 # One awk invocation handles every file; string compare is a correct date compare for ISO-8601.
@@ -42,7 +43,7 @@ _L3LIB="$(cd -P "$(dirname "$_self")" && pwd)/l3-lib.sh"
 # pass — "my new entry works now" is how 30 other missing entries stay hidden
 # (lessons/readdir-symlink-dirent-trap.md).
 # -print0, not `| tr '\n' '\0'`: a directory NAME holding a newline split the list and the hook printed nothing at all.
-report=$(okf_md_files "$L" | xargs -0 awk -v today="$TODAY" "$L3_AWK_LIB"'
+report=$(okf_md_files "$L" | xargs -0 awk -v today="$TODAY" -v statuses="${L3_STATUS//,/, }" "$L3_AWK_LIB"'
   { sub(/\r$/, "") }   # CRLF notes (LT-02b)
   FNR == 1 {
     base = FILENAME
@@ -67,7 +68,7 @@ report=$(okf_md_files "$L" | xargs -0 awk -v today="$TODAY" "$L3_AWK_LIB"'
   END {
     if (expired != "") printf "Lessons past their stale_after horizon — re-verify or extend:%s\n", expired
     if (malformed != "") printf "Lessons with a stale_after that is not a date:%s\n", malformed
-    if (nonstd  != "") printf "Lessons with an unknown status (not stable, draft or deprecated):%s\n", nonstd
+    if (nonstd  != "") printf "Lessons with an unknown status (not one of %s):%s\n", statuses, nonstd
     if (missing != "") printf "Lessons missing OKF frontmatter (run the migrate script):%s\n", missing
   }
 ' 2>/dev/null)

@@ -248,11 +248,23 @@ and the brand-new machine this tool targets does not have it.
 | LT-21b | `OKF_L2_TIMEOUT=0` | falls back to the default; never an instant kill | ✅ |
 | LT-21c | a normal run | leaves no timer `sleep` behind | ✅ |
 | LT-21d | okflint ignores TERM | still reported as timed out | ✅ |
+| LT-21e | L1 validator past `OKF_L1_TIMEOUT` (a stub validator that sleeps 30 s, limit 1 s) | `COULD NOT RUN — the validator timed out`, exit 2 | ✅ |
+| LT-21g | the validator ends itself with TERM (exit 143) | COULD NOT RUN, never "timed out" (only the watchdog's marker says so); the row names `exit status 143` | ✅ |
+| LT-21i | the validator exits 124 | COULD NOT RUN, never "timed out" | ✅ |
+| LT-21h | the bundle run fails and each note alone hangs (4 notes, limit 2 s) | one `OKF_L1_TIMEOUT` budget for all of L1: timed out, exit 2, under 10 s (not N × the limit) | ✅ |
+| LT-21f | `OKF_L1_TIMEOUT=0` | falls back to the default; never an instant kill | ✅ |
 | LT-20p | `.okfignore` that excludes nothing | same verdict and exit as no file (also with notes behind a symlinked dir) | ✅ |
 | LT-20q | `**/x.md` | also matches `x.md` at the bundle root | ✅ |
 | LT-20q2 | `/**/x.md` | behaves like `**/x.md` | ✅ |
 | LT-20r | only non-note files excluded | never reports "excludes every note" | ✅ |
-| LT-22 | status vocabulary in the template and in l3-lib | equal as sets | ✅ |
+| LT-22 | status vocabulary in the template and the list l3-lib loads | equal as sets | ✅ |
+| LT-SV1 | the validator's `STATUS_VALUES` gains a value | L3 accepts it too: one list, read by l3-lib | ✅ |
+| LT-SV2 | every `status_values` in the template and `.okf/okf-base.yaml` | equal to `STATUS_VALUES`; a planted drift is caught | ✅ |
+| LT-SV3 | `STATUS_VALUES` on two lines, not a list, or the validator gone | okf-check exit 2 naming `STATUS_VALUES`; the SessionStart hook says what was NOT checked; single quotes are a list | ✅ |
+| LT-CE1 | `sources[].resource: SRC.txt`, the disk holds `src.txt` | not measured (case-exact, as okf-verify D-11), on every disk | ✅ |
+| LT-CE2 | the same source cited as written | measured | ✅ |
+| LT-CE3 | `okf-check .` with a `../x.txt` source; the bundle path typed in another case | measured, exit 4 with `--fail-stale`: only the cited part below the folder it shares with the bundle is judged | ✅ |
+| LT-CE4 | `okf_guard.case_exact("../x.txt")` from the bundle folder (okf-verify calls it too) | True as written, False as `../X.TXT` | ✅ |
 | LT-23 | user-facing env variables | documented in README and SKILL.md | ✅ |
 | LT-24a | okflint crashes on one note of a small bundle | the note is named, the others are checked, exit 2 | ✅ |
 | LT-24b | more notes than `OKF_L2_ISOLATE_MAX` | no rescue: the plain "crashed" report | ✅ |
@@ -853,6 +865,7 @@ reverse of the untraceable-✅ problem, and equally a drift.
 | R-8 | same-named concepts in different directories | distinguishable in the report | ✅ |
 | R-9 | two bundle arguments | error, not a silent choice of one | ✅ |
 | R-10 | `--help` | documents `--fail-on-change` and exit 6 | ✅ |
+| R-10b | `--help` | the whole header: every exit code of the README table and the script (64, 130, 143 included) and the usage lines | ✅ |
 
 ---
 

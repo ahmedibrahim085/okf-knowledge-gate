@@ -698,6 +698,16 @@ RG2="$TMP/rg2"; mkbundle "$RG2"
   && ok "R-10 --help documents --fail-on-change" || bad "R-10 --help documents --fail-on-change" "absent"
 "$CHECK" --help 2>&1 | grep -qE '^#?\s*6\s' \
   && ok "R-10 --help documents exit code 6" || bad "R-10 --help documents exit 6" "EXIT CODES block stops at 5"
+# R-10b: --help is the script's whole header comment, and its EXIT CODES block lists every code the README table names and
+# every `exit N` / EXIT_*=N the script holds. A fixed window (lines 2-40) left out exit 64 and the usage lines.
+hlp=$("$CHECK" --help 2>&1); miss=""
+for c in $( { sed -n 's/^| \([0-9][0-9]*\) |.*/\1/p' "$HERE/../../README.md"
+              grep -o -E 'exit [0-9]+|EXIT_[A-Z]+=[0-9]+' "$CHECK" | sed 's/.*[ =]//'; } | sort -un); do
+  printf '%s\n' "$hlp" | grep -qE "^# +$c " || miss="$miss $c"
+done
+printf '%s\n' "$hlp" | grep -q -- '--conserve <ref>' || miss="$miss usage-lines"
+[ -z "$miss" ] && ok "R-10b --help lists every exit code (README table and script) and the whole usage block" \
+  || bad "R-10b --help exit codes" "missing:$miss"
 
 # === ULTRA-REVIEW REGRESSION FINDINGS (2026-07-31) ==========================
 section "ULTRA-REVIEW REGRESSION FINDINGS (2026-07-31)"
@@ -863,6 +873,8 @@ G9="$TMP/g9"; mkbundle "$G9"
 G9P="$TMP/g9plugin"; mkdir -p "$G9P"
 cp -R "$HERE/../"* "$G9P/" 2>/dev/null
 cat > "$G9P/vendor/okf_validate.py" <<'PY'
+# l3-lib.sh reads the spec status list from the validator, so a stub carries it
+STATUS_VALUES = {"draft", "stable", "deprecated"}
 import sys
 print('{"ok": true}')          # valid JSON, wrong SHAPE: no errors/warnings key
 sys.exit(0)
@@ -876,6 +888,8 @@ chmod +x "$G9P/scripts/okf-check"
 # guard: the same stubbed tree with a WELL-shaped report must still reach a verdict,
 # or G-9 could pass merely because the copied tree is broken.
 cat > "$G9P/vendor/okf_validate.py" <<'PY'
+# l3-lib.sh reads the spec status list from the validator, so a stub carries it
+STATUS_VALUES = {"draft", "stable", "deprecated"}
 import sys
 print('{"errors": [], "warnings": [], "counts": {"concepts": 1}}')
 sys.exit(0)
@@ -1022,6 +1036,8 @@ chmod +x "$V1P/scripts/okf-check"
 V1B="$TMP/v1b"; mkbundle "$V1B"
 shape_case() { # <label> <json-for-errors> <expected-exit>
   cat > "$V1P/vendor/okf_validate.py" <<PY
+# l3-lib.sh reads the spec status list from the validator, so a stub carries it
+STATUS_VALUES = {"draft", "stable", "deprecated"}
 import sys
 print('{"errors": $2, "warnings": [], "counts": {"concepts": 7}}')
 sys.exit(0)
@@ -1036,6 +1052,8 @@ shape_case 'V-2 a non-empty `errors` string must not become N fabricated errors'
 shape_case 'V-3 an `errors` object must not be read as a list of errors' '{"count":5}' 2
 # guard: a well-shaped report in the same stubbed tree must still reach a verdict
 cat > "$V1P/vendor/okf_validate.py" <<'PY'
+# l3-lib.sh reads the spec status list from the validator, so a stub carries it
+STATUS_VALUES = {"draft", "stable", "deprecated"}
 import sys
 print('{"errors": [], "warnings": [], "counts": {"concepts": 1}}')
 sys.exit(0)
@@ -1518,6 +1536,59 @@ trap '' TERM; sleep 8
 STUB
 env PATH="$H21/bin:$PATH" OKF_L2_TIMEOUT=2 "$CHECK" "$H21/b" >"$TMP/h21t.txt" 2>&1
 grep -q "timed out after 2 s" "$TMP/h21t.txt" && ok "LT-21d an okflint that ignores TERM is reported as timed out" || bad "LT-21d ignores TERM" "$(grep -n L2 "$TMP/h21t.txt" | head -2)"
+# LT-21e: L1 has a time limit too (OKF_L1_TIMEOUT). The vendored validator's cost grows with frontmatter size (a 0.4 MB
+# list took 8 s, 1.0 MB 18 s) and a note may be up to 5 MB. A run past the limit is a named COULD NOT RUN, exit 2.
+# A stub validator in a copy of the plugin, not a big note: an 840 KB note took 1.7 to 3.5 s, too close to a 1 s limit
+# on a fast machine. The stub replaces only the validator's command-line entry; the layers that import it are unchanged.
+L1P="$TMP/l1plug"; cp -R "$HERE/.." "$L1P"
+_l1stub() {   # <python run as the validator's __main__>
+  python3 -c '
+import sys
+src = open(sys.argv[1], encoding="utf-8").read()
+tail = "if __name__ == \"__main__\":\n    raise SystemExit(main())\n"
+assert src.endswith(tail), "the validator entry point moved: update _l1stub"
+open(sys.argv[2], "w", encoding="utf-8").write(src[:-len(tail)] + "if __name__ == \"__main__\":\n" + sys.argv[3])
+' "$HERE/../vendor/okf_validate.py" "$L1P/vendor/okf_validate.py" "$1"
+}
+_l1stub '    import time; time.sleep(30)
+'
+t0=$(date +%s); OKF_L1_TIMEOUT=1 "$L1P/scripts/okf-check" "$H21/b" >"$TMP/l1t.txt" 2>&1; rc=$?; dt=$(( $(date +%s) - t0 ))
+{ [ "$rc" -eq 2 ] && grep -q 'L1 conformance   COULD NOT RUN — the validator timed out after 1 s (OKF_L1_TIMEOUT)' "$TMP/l1t.txt" \
+  && [ "$dt" -lt 25 ]; } \
+  && ok "LT-21e L1 past OKF_L1_TIMEOUT is a named COULD NOT RUN, exit 2 (a validator that sleeps 30 s; ${dt}s)" \
+  || bad "LT-21e L1 time limit" "rc=$rc ${dt}s $(grep -E 'L1' "$TMP/l1t.txt" | head -2 | tr '\n' ' ')"
+# LT-21g: a validator that stops itself with TERM (exit 143) is a crash, not a time-out: only the watchdog's own marker
+# says "timed out".
+_l1stub '    import os, signal; os.kill(os.getpid(), signal.SIGTERM)
+'
+OKF_L1_TIMEOUT=30 "$L1P/scripts/okf-check" "$H21/b" >"$TMP/l1g.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 2 ] && grep -q 'L1 conformance   COULD NOT RUN' "$TMP/l1g.txt" && ! grep -q 'timed out' "$TMP/l1g.txt" \
+  && grep -q 'c.md: exit status 143, no message' "$TMP/l1g.txt"; } \
+  && ok "LT-21g a validator that ends itself with TERM is not reported as timed out, and its row names exit 143 (exit 2)" \
+  || bad "LT-21g TERM is not a time-out" "rc=$rc $(grep -E 'L1|timed out|c.md' "$TMP/l1g.txt" | head -3 | tr '\n' ' ')"
+# LT-21i: nor is any exit status of the validator's own (here 124, the status timeout(1) uses): only the marker counts.
+_l1stub '    raise SystemExit(124)
+'
+OKF_L1_TIMEOUT=30 "$L1P/scripts/okf-check" "$H21/b" >"$TMP/l1i.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 2 ] && grep -q 'L1 conformance   COULD NOT RUN' "$TMP/l1i.txt" && ! grep -q 'timed out' "$TMP/l1i.txt"; } \
+  && ok "LT-21i a validator that exits 124 is not reported as timed out (exit 2)" \
+  || bad "LT-21i exit 124 is not a time-out" "rc=$rc $(grep -E 'L1|timed out' "$TMP/l1i.txt" | head -3 | tr '\n' ' ')"
+# LT-21h: one budget for all of L1. When the bundle run fails, each note is run alone to name the one it crashes on; the
+# limit used to apply to each of those runs, so N notes could take N times OKF_L1_TIMEOUT. The stub fails at once on the
+# bundle (more than one note) and hangs on a single note.
+_l1stub '    import os, sys, time
+    if len([f for f in os.listdir(sys.argv[1]) if f.endswith(".md")]) > 1: sys.exit(1)
+    time.sleep(30)
+'
+L1H="$TMP/l1h"; mkbundle "$L1H"; for n in d e f; do cp "$L1H/c.md" "$L1H/$n.md"; done
+t0=$(date +%s); OKF_L1_TIMEOUT=2 "$L1P/scripts/okf-check" "$L1H" >"$TMP/l1h.txt" 2>&1; rc=$?; dt=$(( $(date +%s) - t0 ))
+{ [ "$rc" -eq 2 ] && grep -q 'L1 conformance   COULD NOT RUN — the validator timed out after 2 s (OKF_L1_TIMEOUT)' "$TMP/l1h.txt" \
+  && ! grep -q 'crashed on' "$TMP/l1h.txt" && [ "$dt" -lt 10 ]; } \
+  && ok "LT-21h isolating the notes shares the one OKF_L1_TIMEOUT budget (4 notes, ${dt}s, under 10 s; 6 runs of 2 s took 16 s)" \
+  || bad "LT-21h one L1 budget" "rc=$rc ${dt}s $(grep -E 'L1|crashed|timed out' "$TMP/l1h.txt" | head -4 | tr '\n' ' ')"
+OKF_L1_TIMEOUT=0 "$CHECK" "$H21/b" >"$TMP/l1z.txt" 2>&1
+grep -q 'L1 conformance *PASS' "$TMP/l1z.txt" && ok "LT-21f OKF_L1_TIMEOUT=0 falls back to the default, not instant kill" \
+  || bad "LT-21f OKF_L1_TIMEOUT=0" "$(grep L1 "$TMP/l1z.txt" | head -1)"
 pkill -f '^sleep 8$' 2>/dev/null
 
 # LT-20p: an ignore file that excludes nothing changes nothing, even when every note is
@@ -1545,12 +1616,13 @@ JN="$TMP/jn"; mkdir -p "$JN/b"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' 
 { [ "$rc" = "0" ] && ! grep -q "excludes every note" "$TMP/jn.txt"; } && ok "LT-20r excluding only a non-note file is not 'every note' (exit $rc)" || bad "LT-20r non-note exclusion" "rc=$rc $(grep -n IGNORE "$TMP/jn.txt" | head -1)"
 # LT-22: the status vocabulary exists twice; the copies must stay equal.
 tpl=$(sed -n 's/.*status_values: \[\(.*\)\].*/\1/p' "$HERE/../config/okf-base.yaml.template" | head -1 | tr -d ' ' | tr ',' '\n' | sort | tr '\n' ' ')
-lib=$(sed -n 's/^function okfstatusok.*{ return \(.*\) }$/\1/p' "$HERE/l3-lib.sh" | grep -o '"[a-z]*"' | tr -d '"' | sort | tr '\n' ' ')
+# l3-lib.sh reads its list from the vendored validator (okf-check-l3.test.sh LT-SV1): compare the list it loaded.
+lib=$(bash -c '. "$1/l3-lib.sh"; printf %s "$L3_STATUS"' _ "$HERE" | tr ',' '\n' | sort | tr '\n' ' ')
 { [ -n "$tpl" ] && [ "$tpl" = "$lib" ]; } && ok "LT-22 status values in okf-base.yaml.template equal l3-lib.sh ($lib)" || bad "LT-22 status parity" "template=[$tpl] l3-lib=[$lib]"
 # LT-23: every user-facing environment variable is documented in README and in the skill.
 # "The skill" is SKILL.md plus the reference files it links (0.9.0 moved the maintainer detail into
 # skills/okf/references/, one level deep, as Anthropic's skill guidance asks); the variables did not go away.
-miss=""; for v in OKF_L2_TIMEOUT OKF_L2_ISOLATE_MAX OKF_INSTALL_TIMEOUT OKF_DOC_DIRS_FILE OKF_SEARCH_BIN OKF_AUTO_INSTALL; do
+miss=""; for v in OKF_L1_TIMEOUT OKF_L2_TIMEOUT OKF_L2_ISOLATE_MAX OKF_INSTALL_TIMEOUT OKF_DOC_DIRS_FILE OKF_SEARCH_BIN OKF_AUTO_INSTALL; do
   grep -q "$v" "$HERE/../../README.md" 2>/dev/null || miss="$miss README:$v"
   grep -rq "$v" "$HERE/../skills/okf" 2>/dev/null || miss="$miss SKILL:$v"
 done
@@ -3016,7 +3088,7 @@ EOF
 # is the link target's parent, as the OS reads it, and `..` after a folder that is not there is dropped, as realpath
 # drops it. An earlier fix walked `..` by name and lost the first case.
 D="$TMP/cf-h2"; mkdir -p "$D/d/e"; note29 "$D/d/z.md" Z stable; note29 "$D/new.md" New stable; ln -s d/e "$D/lnk"
-got=$(OKF_D="$D" PYTHONPATH="$HERE:$HERE/../vendor" "$REALPY" -c '
+got=$(OKF_D="$D" PYTHONPATH="$HERE:$HERE/../vendor/pyyaml:$HERE/../vendor" "$REALPY" -c '
 import os
 from okf_notes import resolve
 r = os.path.realpath(os.environ["OKF_D"])
