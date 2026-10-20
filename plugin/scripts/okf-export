@@ -14,6 +14,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import bisect
 import datetime
 import functools
 import os
@@ -49,10 +50,32 @@ LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
 ITEM_CONTENT = re.compile(r"^( {0,3}(?:[-*+]|\d{1,9}[.)]))( *)(.?)")
 
 
-def item_content_indent(line: str) -> int:
-    m = ITEM_CONTENT.match(line.expandtabs(4))
-    marker, spaces, rest = len(m.group(1)), len(m.group(2)), m.group(3)
-    return marker + spaces if rest and 1 <= spaces <= 4 else marker + 1
+# The same two patterns matched at an offset into a line (re.match(text, pos)): a marker line is read by walking it once.
+LIST_AT = re.compile(LIST_ITEM.pattern[1:])
+ITEM_AT = re.compile(ITEM_CONTENT.pattern[1:])
+
+
+def break_tail(text: str):
+    """(start, char): a thematic break can only be a line's tail made of one of - * _ and spaces; this is where that run
+    starts, so a check from any later offset costs no scan of the line again."""
+    tail = text.rstrip(" \t")
+    ch = tail[-1:]
+    j = len(tail)
+    if ch and ch in "-*_":
+        while j and tail[j - 1] in (ch, " ", "\t"):
+            j -= 1
+    return j, ch
+
+
+def break_at(text: str, pos: int, tail) -> bool:
+    """THEMATIC.match(text[pos:]) without the slice: up to 3 spaces, then 3 or more of one break character and spaces."""
+    j, ch = tail
+    if pos < j or not ch or ch not in "-*_":
+        return False
+    q = pos
+    while q < len(text) and text[q] == " " and q - pos < 4:
+        q += 1
+    return q - pos <= 3 and text[q:q + 1] == ch and text.count(ch, q) >= 3
 
 
 def indent_width(line: str) -> int:
@@ -105,79 +128,120 @@ def dedent(line: str, cols: int) -> str:
     return wide[min(cols, indent_width(line)):]
 
 
-class ListItems:
-    """The open list items, read the way CommonMark 0.31.2 reads them (5.2 List items): one tracker, so the heading
-    finder and the code reader agree on where a list ends."""
-
-    def __init__(self):
-        self.indents = []    # content indents of the open items, outer first
-        self.empty = False   # the innermost item has no text yet: a blank line ends it
-        self.para = False    # a paragraph is open above: only then may a line at the margin continue it (lazily)
-
-    def step(self, line: str) -> bool:
-        """Read one line outside a fence (a fence's opening line included); True while a list is open after it. The
-        caller sets `para` False when the line turns out to be code (a fence, indented code inside an item)."""
-        if not line.strip():
-            if self.empty:
-                self.indents.pop()
-                self.empty = False
-            self.para = False
-            return bool(self.indents)
-        w, brk = indent_width(line), THEMATIC.match(line)
-        item = LIST_ITEM.match(line) and not brk   # `- - -` is a thematic break, not an item
-        inside = bool(self.indents) and w >= self.indents[-1]
-        underline = self.para and inside and SETEXT.match(dedent(line, self.indents[-1]))   # a setext heading in the item
-        block = brk or FENCE.match(line) or ATX.match(line)
-        # A marker, a block that cannot continue a paragraph, or any line with no paragraph open above closes the items
-        # it is indented below; under an open paragraph any other line is a continuation, lazy or not.
-        if not underline and (item or block or not self.para):
-            while self.indents and w < self.indents[-1]:
-                self.indents.pop()
-        self.empty = False
-        if item:
-            self.indents.append(item_content_indent(line))
-            self.empty = not ITEM_CONTENT.match(line.expandtabs(4)).group(3)
-            self.para = not self.empty
-        else:
-            self.para = not (underline or block)
-        return bool(self.indents)
+# HTML block starts (CommonMark 0.31.2, 4.6), each with the line that ends it; None: a blank line ends it. The last kind,
+# a lone complete tag, cannot interrupt a paragraph.
+HTML_TAGS = ("address|article|aside|base|basefont|blockquote|body|caption|center|col|colgroup|dd|details|dialog|dir|div|"
+             "dl|dt|fieldset|figcaption|figure|footer|form|frame|frameset|h1|h2|h3|h4|h5|h6|head|header|hr|html|iframe|"
+             "legend|li|link|main|menu|menuitem|nav|noframes|ol|optgroup|option|p|param|search|section|summary|table|"
+             "tbody|td|tfoot|th|thead|title|tr|track|ul")
+HTML_BLOCKS = [
+    (re.compile(r"^ {0,3}<(?:script|pre|style|textarea)(?:[ \t>]|$)", re.I), re.compile(r"</(?:script|pre|style|textarea)>", re.I)),
+    (re.compile(r"^ {0,3}<!--"), re.compile(r"-->")),
+    (re.compile(r"^ {0,3}<\?"), re.compile(r"\?>")),
+    (re.compile(r"^ {0,3}<![A-Za-z]"), re.compile(r">")),
+    (re.compile(r"^ {0,3}<!\[CDATA\["), re.compile(r"\]\]>")),
+    (re.compile(rf"^ {{0,3}}</?(?:{HTML_TAGS})(?:[ \t>]|/>|$)", re.I), None),
+]
+HTML_TAG_LINE = re.compile(r"^ {0,3}(?:<[A-Za-z][A-Za-z0-9-]*(?:\s+[A-Za-z_:][\w.:-]*(?:\s*=\s*(?:[^\s\"'=<>`]+|'[^']*'|\"[^\"]*\"))?)*"
+                           r"\s*/?>|</[A-Za-z][A-Za-z0-9-]*\s*>)\s*$")
+# A link reference definition (4.7) on one line: it is no paragraph and cannot interrupt one.
+LINK_DEF = re.compile(r"^ {0,3}\[(?:[^\]\\]|\\.)+\]:")
 
 
 def body_lines(lines: list[str]):
-    """Yield (index, line, in_code, in_list) for each body line; in_code is True inside a fence, fence lines included,
-    and on the lines of an indented code block; in_list is True while a list item is open (ListItems). A fence or an
-    indented code block inside a list item is read relative to the item's content. A blank line is never code: it
-    holds no link, and the log reader counts it."""
-    fence, fence_at = "", 0   # the open fence and the content indent it sits at (0: not in an item)
-    indented = False   # inside an indented code block
-    can_open = True    # no paragraph line just above, so an indented line opens a code block
-    items, in_list = ListItems(), False
+    """Yield (index, line, in_code, heading) for each body line. in_code is True inside a fence, fence lines included,
+    and on the lines of an indented code block; heading is the text of a heading that ends on this line (ATX, or the
+    underline of a setext heading), else None. Blocks are read the way CommonMark 0.31.2 reads them, inside list items
+    too (5.2): each line is matched against the content of the item it sits in, a marker line's own content included.
+    A blank line is never code: it holds no link, and the log reader counts it.
+
+    SHORTCUT: block quotes (`>`) are not tracked: a heading inside one is not found, and a quote's lines read as text.
+    A second kind of container needs a stack of quotes and items; track it if notes with quoted headings show up."""
+    items = []             # content indents of the open list items, outer first
+    empty = False          # the innermost item has no content yet: a blank line ends it
+    para = []              # the lines of the open paragraph, as its item sees them (setext heading text)
+    fence, fence_at = "", 0   # the open fence and the content indent it sits at
+    html, html_at = False, 0  # an open HTML block: its end pattern (None: a blank line), the content indent
+    code = False           # inside an indented code block
     for i in range(frontmatter_len(lines), len(lines)):
-        line = lines[i]
-        if fence and line.strip() and indent_width(line) < fence_at:
-            fence = ""   # the item ends and its fence with it (CommonMark 4.5: a container's end closes the fence)
+        raw = lines[i]
+        line = raw.rstrip("\r\n")   # matched without its line end: `$` in SETEXT and THEMATIC must see a CRLF line too
+        w = indent_width(line)
+        if (fence or html is not False) and line.strip() and w < (fence_at if fence else html_at):
+            fence, html = "", False   # the item ends and its fence or HTML block with it
         if fence:
             m = FENCE.match(dedent(line, fence_at))
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
                 fence = ""
-            yield i, line, True, in_list
+            yield i, raw, True, None
             continue
-        in_list = items.step(line)
-        at = items.indents[-1] if in_list and not LIST_ITEM.match(line) and indent_width(line) >= items.indents[-1] else 0
-        text = dedent(line, at)
-        m = FENCE.match(text)
+        if html is not False:
+            if html is None and not line.strip():
+                html = False   # a blank line ends it; the blank line is read below
+            else:
+                if html is not None and html.search(line):
+                    html = False
+                yield i, raw, False, None
+                continue
         if not line.strip():
-            can_open = True
-            yield i, line, False, in_list
-        elif INDENTED.match(text) and (indented or can_open):
-            indented, items.para = True, False
-            yield i, line, True, in_list
+            if empty:
+                items.pop()
+            empty, para = False, []
+            yield i, raw, False, None
+            continue
+        depth = bisect.bisect_right(items, w)   # the items this line's indent keeps it inside (items only grow)
+        text = dedent(line, items[depth - 1] if depth else 0)
+        if para and depth == len(items) and SETEXT.match(text):
+            heading = " ".join(x.strip() for x in para)
+            para = []
+            yield i, raw, False, heading
+            continue
+        brk = THEMATIC.match(text)
+        item = LIST_ITEM.match(text) and not brk   # `- - -` is a thematic break, not an item
+        starts = [h for h in HTML_BLOCKS if h[0].match(text)]
+        interrupts = item or brk or FENCE.match(text) or ATX.match(text) or starts
+        if para and not interrupts:
+            para.append(text)   # a paragraph goes on, lazily too: at the margin under an item's paragraph
+            yield i, raw, False, None
+            continue
+        del items[depth:]   # the line is outside the deeper items: they end
+        empty, para = False, []
+        if code and not INDENTED.match(text):
+            code = False
+        at = items[-1] if items else 0
+        pos, tail = 0, item and break_tail(text)   # text has no tabs: dedent expanded them
+        while item:   # a marker line: open the item, then read its own content as the item's first line
+            g = ITEM_AT.match(text, pos)
+            marker, spaces, rest = len(g.group(1)), len(g.group(2)), g.group(3)
+            width = marker + spaces if rest and 1 <= spaces <= 4 else marker + 1   # the content indent (ITEM_CONTENT)
+            pos += width
+            at = (items[-1] if items else 0) + width
+            items.append(at)
+            if not rest:
+                empty = True
+                break
+            item = LIST_AT.match(text, pos) and not break_at(text, pos, tail)
+        text = text[pos:]   # one slice per line: the cost stays linear in its length
+        heading, in_code = None, False
+        starts = [h for h in HTML_BLOCKS if h[0].match(text)]   # again: a marker line's content may start one
+        m = ATX.match(text)
+        f = FENCE.match(text)
+        if empty:
+            pass
+        elif code or INDENTED.match(text):
+            code = in_code = True
         elif m:
-            fence, fence_at, indented, can_open, items.para = m.group(1), at, False, True, False
-            yield i, line, True, in_list
+            heading = m.group(1)
+        elif f:
+            fence, fence_at, in_code = f.group(1), at, True
+        elif THEMATIC.match(text) or LINK_DEF.match(text):
+            pass
+        elif starts or HTML_TAG_LINE.match(text):
+            end = starts[0][1] if starts else None
+            html, html_at = (False if end is not None and end.search(text[text.index("<") + 1:]) else end), at
         else:
-            indented, can_open = False, bool(ATX.match(line))
-            yield i, line, False, in_list
+            para = [text]
+        yield i, raw, in_code, heading
 
 
 def read_text(path: Path) -> str:
@@ -193,22 +257,7 @@ def heading_slugs(path: Path) -> set[str]:
         lines = [l.rstrip("\r\n") for l in split_lines(read_text(path).lstrip("\ufeff"))]   # a BOM is not part of the first heading line
     except UnicodeDecodeError:
         return set()   # the target is reported on its own as not valid UTF-8; a heading in it cannot be found
-    found, para = set(), []   # para: the paragraph lines above, the text of a setext heading
-    for _, line, code, in_list in body_lines(lines):
-        m = None if code else ATX.match(line)
-        if m:
-            found.add(slug(m.group(1)))   # inside a list item too: an item holds any block (CommonMark 5.2)
-            para = []
-        elif code or not line.strip() or in_list:
-            para = []   # a list item's text and its continuation lines are not a paragraph: `---` after them is a break
-        elif para and SETEXT.match(line):
-            found.add(slug(" ".join(x.strip() for x in para)))
-            para = []
-        elif THEMATIC.match(line):
-            para = []   # `***`, or `---` with no paragraph above: a break, never heading text (review 0.9.35)
-        else:
-            para.append(line)
-    return found
+    return {slug(h) for _, _, _, h in body_lines(lines) if h is not None}
 
 
 # Spec 9 log input, read from a vault log.md: a level-2 heading (`## 2026-05-22`) whose lines are that day's entries,

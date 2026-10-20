@@ -1049,6 +1049,109 @@ rc=$(run "$V" "$TMP/po12d/out")
 { [ "$rc" = 0 ] && grep -qF '    code [[nope]]' "$TMP/po12d/out/t.md"; } \
   && ok "S10-PO-12d after a list ends by indent, a 4-space line is code: [[nope]] stays as written" \
   || bad "S10-PO-12d code after the list" "rc=$rc $(head -2 "$TMP/out.txt")"
+# S10-PO-13a..g: blocks inside a list item, read relative to the item's content as CommonMark 0.31.2 reads them (5.2
+# List items, 4.6 HTML blocks, 4.7 Link reference definitions): each leaves no paragraph open, so a line at the margin
+# after it ends the list; headings inside an item, ATX or setext, also on the marker line, are headings.
+V="$TMP/po13/vault"
+note "$V" a.md "- a
+  <div>
+  x
+  </div>
+P
+---"                                   # 13a: a closed HTML block in the item
+note "$V" b.md "- a
+
+  [x]: /y
+P
+---"                                   # 13b: a link reference definition in the item
+note "$V" c.md "- a
+
+  1. x
+     # Deep
+  t
+P
+---"                                   # 13c: an ATX heading 5 spaces in, at the nested item's content (P is lazy text)
+note "$V" d.md "- \`\`\`
+  # no
+  [[u]]
+  \`\`\`
+P
+---"                                   # 13d: a fence on the marker line
+note "$V" e.md "- a
+  <div>
+P
+---"                                   # 13e: an HTML block that never closes ends with its item
+note "$V" f.md "- a
+
+  Inner
+  ---"                                 # 13f: a setext heading inside the item
+note "$V" g.md "- # Marker
+1. # One
+2. # Two"                              # 13g: ATX headings on the marker line
+note "$V" u.md "[[a#P]] [[b#P]] [[c#Deep]] [[d#P]] [[e#P]] [[f#Inner]] [[g#Marker]] [[g#One]] [[g#Two]] [[c#P]] [[d#no]]"
+rc=$(run "$V" "$TMP/po13/out"); U="$TMP/po13/out/u.md"
+for c in 'a#P|a > P](a.md#p)' 'b#P|b > P](b.md#p)' 'c#Deep|c > Deep](c.md#deep)' 'd#P|d > P](d.md#p)' 'e#P|e > P](e.md#p)' \
+         'f#Inner|f > Inner](f.md#inner)' 'g#Marker|g > Marker](g.md#marker)' 'g#One|g > One](g.md#one)' 'g#Two|g > Two](g.md#two)'; do
+  link=${c%%|*}; id=S10-PO-13${link%%#*}
+  { grep -qF "[${c#*|}" "$U" && ! grep -qF "missing heading [[$link]]" "$TMP/out.txt"; } \
+    && ok "$id [[$link]] resolves: [${c#*|}" || bad "$id [[$link]]" "rc=$rc $(grep -F "[[$link]]" "$TMP/out.txt" | head -1)"
+done
+{ [ "$rc" = 1 ] && grep -qF 'missing heading [[c#P]]' "$TMP/out.txt" && grep -qF 'missing heading [[d#no]]' "$TMP/out.txt" \
+    && grep -qF '  [[u]]' "$TMP/po13/out/d.md"; } \
+  && ok "S10-PO-13c/d lazy text P and a # line inside a fence are no headings; a link inside the marker-line fence stays as written" \
+  || bad "S10-PO-13c/d no false heading" "rc=$rc $(grep -F -e '[[c#P]]' -e '[[d#no]]' "$TMP/out.txt" | tr '\n' ' ') $(grep -F 'u' "$TMP/po13/out/d.md" | tr '\n' ' ')"
+# S10-PO-13h: after a thematic break or a setext heading no paragraph is open, so a 4-space line opens an indented code
+# block (CommonMark 4.4) and its link stays as written.
+V="$TMP/po13h/vault"; note "$V" t.md "***
+    code [[nope]]
+
+Title
+=====
+    code [[gone]]"
+rc=$(run "$V" "$TMP/po13h/out")
+{ [ "$rc" = 0 ] && grep -qF '    code [[nope]]' "$TMP/po13h/out/t.md" && grep -qF '    code [[gone]]' "$TMP/po13h/out/t.md"; } \
+  && ok "S10-PO-13h a 4-space line after a break or a setext heading is code: its link stays as written" \
+  || bad "S10-PO-13h code after a break" "rc=$rc $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+# S10-PO-13i: the block reader matches a line without its line end, so every S10-PO-11/12/13 vault saved with CRLF line
+# ends exports to the same report and, CRs aside, the same files as its LF copy.
+crlf_bad=""; crlf_n=0
+for V in "$TMP"/po1[123]*/vault; do
+  [ -d "$V" ] || continue; crlf_n=$((crlf_n + 1))
+  C="${V%/vault}/crlf"; rm -rf "$C"; cp -R "$V" "$C"
+  for f in $(cd "$C" && find . -name '*.md'); do awk '{ printf "%s\r\n", $0 }' "$V/$f" > "$C/$f"; done
+  rl=$(run "$V" "${V%/vault}/o-lf"); cp "$TMP/out.txt" "$TMP/out-lf.txt"
+  rc=$(run "$C" "${V%/vault}/o-crlf")
+  diff -r <(cd "${V%/vault}/o-lf" && find . -type f | sort | xargs cat) <(cd "${V%/vault}/o-crlf" && find . -type f | sort | xargs cat | tr -d '\r') >/dev/null \
+    && [ "$rl" = "$rc" ] && diff "$TMP/out-lf.txt" <(tr -d '\r' < "$TMP/out.txt") >/dev/null \
+    || crlf_bad="$crlf_bad ${V%/vault}:$(diff "$TMP/out-lf.txt" <(tr -d '\r' < "$TMP/out.txt") | grep '^[<>]' | head -1)"
+done
+[ -z "$crlf_bad" ] && [ "$crlf_n" -ge 10 ] && ok "S10-PO-13i all $crlf_n S10-PO-11/12/13 vaults export the same with CRLF line ends" \
+  || bad "S10-PO-13i CRLF" "$crlf_n vaults converted (10 or more expected);$crlf_bad"
+# S10-PO-13j: the block reader's cost is linear in line length and nesting depth. Timed in memory through the module (no
+# file is written): one marker line opening 8000 nested items then 50 000 lines, and 160 KB single lines of marker runs
+# (`- - - ... x`, `* * * ... x`, `1. 1. ... x`, markers then a break) and of `>`, `#`, backticks, spaces, tabs. A linear
+# reader takes milliseconds; the quadratic ones took 5 s to over 30 s. The limit, 3 s per shape, allows a slow runner.
+"$REALPY" - "$EXPORT" >"$TMP/out.txt" 2>&1 <<'PY'
+import importlib.machinery, importlib.util, sys, time
+loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
+loader.exec_module(mod)
+n = 160 * 1024
+shapes = {"8000 nested + 50000 lines": ["- " * 8000 + "x"] + ["line %d" % i for i in range(50000)],
+          "'- ' run": ["- " * (n // 2) + "x"], "'* ' run": ["* " * (n // 2) + "x"], "'1. ' run": ["1. " * (n // 3) + "x"],
+          "markers then a break": ["- " * (n // 4) + "* " * (n // 4)], "'>' run": [">" * n], "'#' run": ["#" * n],
+          "backticks": ["`" * n], "spaces": [" " * n + "x"], "tabs": ["\t" * n + "x"]}
+slow = []
+for name, body in shapes.items():
+    t = time.perf_counter(); list(mod.body_lines(body + ["after"])); took = time.perf_counter() - t
+    print("%-28s %.3f s" % (name, took))
+    if took > 3:
+        slow.append("%s %.1f s" % (name, took))
+sys.exit(1 if slow else 0)
+PY
+rc=$?
+[ "$rc" = 0 ] && ok "S10-PO-13j deep nesting and 160 KB marker, quote, hash, backtick, space and tab lines each read in under 3 s" \
+  || bad "S10-PO-13j linear cost" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt")"
 
 echo
 echo "  $PASS passed, $FAIL failed"

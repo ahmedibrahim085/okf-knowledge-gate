@@ -9,6 +9,17 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.37] - 2026-10-20
+
+OKF Knowledge Gate 0.9.37 finishes the CommonMark list work in `okf-export` and corrects one step of the release recipe.
+
+### Fixed
+- **`okf-export` reads the blocks inside a list item the way CommonMark does.** One block reader now covers headings, links and code in list items: a setext heading inside an item, an ATX heading on the list marker's line or indented four or more spaces in a nested item, a fenced block on the marker's line, an HTML block and a link reference definition inside an item. A link to such a heading resolves instead of giving a false `missing heading` line, and a `# no` line inside a code fence is no longer read as a heading. Against the CommonMark reference parser the 44-case check dropped from 5 differences to 0; the export of this repository's `.okf`, `docs` and `.scratch` folders is byte for byte the same as before. Headings inside block quotes are still not found (a separate kind of container, stated in the code). The cost of reading a line stays in proportion to its length, also for a 160 KB line of nested markers, and a test pins it.
+- **`okf-export` handles Windows line endings in list items.** A file with CRLF line ends gives the same report as the same file with LF.
+
+### Changed
+- README, Release step 7: `claude plugin update okf@ahmedmaged-okf` does bring the installed plugin to a newer working copy (observed 0.9.35 to 0.9.36: "updated ... Restart to apply changes"); it only says there is nothing to update when the working copy equals the installed version.
+
 ## [0.9.36] - 2026-10-20
 
 OKF Knowledge Gate 0.9.36 makes `okf-export` follow CommonMark for lists, and closes the findings of the first macOS run of 0.9.35 and the open items of our own release tooling.
@@ -741,7 +752,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.36...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.37...HEAD
+[0.9.37]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.36...v0.9.37
 [0.9.36]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.35...v0.9.36
 [0.9.35]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.34...v0.9.35
 [0.9.34]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.33...v0.9.34

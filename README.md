@@ -388,7 +388,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.36
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.37
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -404,7 +404,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.36
+    rev: v0.9.37
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -558,13 +558,14 @@ fix. A change is reviewed on two axes (standards and spec) before it is released
    awk '/^## \[x.y.z\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md \
      | gh release create vx.y.z -R ahmedibrahim085/okf-knowledge-gate --title "okf x.y.z" --notes-file -
    ```
-7. Bring the installed plugin to the new version. `okf@ahmedmaged-okf` is read from the working copy (a directory
-   marketplace), so no uninstall or reinstall is needed: fast-forward the working copy that the marketplace points at
-   (`git merge --ff-only origin/main`, it stays on `main`), then check `claude plugin list --json`: the `okf` entry shows
-   the new `version` and `folderVersion`. `claude plugin update okf@ahmedmaged-okf` only says "okf is read from its
-   folder ... nothing to update". A running session loads the plugin when it starts: restart it, or run `/reload-plugins`,
-   and prove the loaded version with `okf-check --version`. `plugin.test.sh` P-10 reads the same `claude plugin list --json`
-   and compares the installed copy with the source tree.
+7. Bring the installed plugin to the new version. `okf@ahmedmaged-okf` comes from a directory marketplace, so no
+   uninstall or reinstall is needed: fast-forward the working copy that the marketplace points at
+   (`git merge --ff-only origin/main`, it stays on `main`), then run `claude plugin update okf@ahmedmaged-okf`. It copies
+   the new version into the plugin cache and says "updated from x to y ... Restart to apply changes" (observed on
+   0.9.35 to 0.9.36; with the working copy still at the installed version it says there is nothing to update). Check
+   `claude plugin list --json`: the `okf` entry shows the new `version` and `folderVersion`. A running session loads the
+   plugin when it starts: restart it, or run `/reload-plugins`, and prove the loaded version with `okf-check --version`.
+   `plugin.test.sh` P-10 reads the same `claude plugin list --json` and compares the installed copy with the source tree.
 
 ## License
 
