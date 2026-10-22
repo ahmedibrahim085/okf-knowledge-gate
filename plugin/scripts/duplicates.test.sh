@@ -151,5 +151,38 @@ else
     || bad "S25-DU-E3 bucket cut" "rc=$rc el=${el}s limit=${lim}s cut_in=$cut"
 fi
 
+# S36-ON-DU: three notes with one title, named with a space, an ESC byte and a byte that is not UTF-8, are three pairs, with
+# and without a .okfignore (the keep list was decoded with errors="replace", so with an .okfignore the odd-named note was
+# dropped from every pair: 0.9.40), and the folder-default owner reaches each of them. --json shows the byte as \xff.
+# A disk that refuses the name (APFS) skips the case.
+U8=$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.utf-?8$' | head -1)
+B="$TMP/on-du"; mkbundle "$B"; rm "$B/c.md"
+sed 's/^  name: CHANGE ME/  name: T/' "$HERE/../config/okf-base.yaml.template" > "$B/okf-base.yaml"
+printf 'okf_check:\n  require_owner: true\n  owners:\n    "*.md": team:docs\n' >> "$B/okf-base.yaml"
+for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do
+  printf -- '---\ntype: Lesson\ntitle: Same\ndescription: Item %s\nstatus: stable\nstale_after: "2099-01-01"\n---\nbody\n' "$(printf '%s' "$n" | LC_ALL=C tr -c 'a-z' x)" 2>/dev/null > "$B/$n.md"
+done
+if [ "$(find "$B" -name '*.md' | wc -l | tr -d ' ')" -ne 5 ]; then
+  skip "S36-ON-DU this disk refuses a note name that is not UTF-8 (run on Linux)"
+elif [ -z "$U8" ]; then
+  skip "S36-ON-DU no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  for LOC in C "$U8"; do
+    for IGN in none okfignore; do
+      [ "$IGN" = okfignore ] && printf 'zzz.md\n' > "$B/.okfignore"
+      export LC_ALL="$LOC"
+      rc=$(run "$B" --duplicates); nt=$(LC_ALL=C grep -a -c 'title 1.00' "$TMP/out.txt"); hd=$(LC_ALL=C grep -a -c '3 candidate pair(s)' "$TMP/out.txt")
+      rcj=$(runjson "$B" --duplicates); got=$(jget 'sorted({s["rel"] for x in d["duplicates"] for s in (x["a"], x["b"])})'); ow=$(jget 'sorted({s["owner"] for x in d["duplicates"] for s in (x["a"], x["b"])})')
+      np=$(jget 'len(d["duplicates"])')
+      unset LC_ALL
+      { [ "$rc" = 0 ] && [ "$rcj" = 0 ] && [ "$nt" = 3 ] && [ "$hd" = 1 ] && [ "$np" = 3 ] && [ "$ow" = '["team:docs"]' ] \
+        && [ "$got" = '["a b.md", "e\\x1bx.md", "n\\xffu.md"]' ]; } \
+        && ok "S36-ON-DU under LC_ALL=$LOC ($IGN) --duplicates pairs all three odd-named notes: 3 pairs in the text and --json, owner team:docs on each" \
+        || bad "S36-ON-DU odd names under $LOC ($IGN)" "rc=$rc/$rcj text=$nt/$hd pairs=$np owners=$ow notes=$got"
+    done
+    rm -f "$B/.okfignore"
+  done
+fi
+
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

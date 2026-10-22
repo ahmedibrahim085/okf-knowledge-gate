@@ -22,7 +22,7 @@ import unicodedata
 
 sys.dont_write_bytecode = True   # a direct run must not leave scripts/__pycache__ in the installed plugin (plugin.test.sh Z-2)
 sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
-from okf_notes import meta, read_note, refusal, resolve  # noqa: E402
+from okf_notes import meta, read_note, refusal, resolve, shown  # noqa: E402
 from okf_validate import load_frontmatter  # noqa: E402
 
 bundle, as_json = sys.argv[1], sys.argv[3] == "1"
@@ -60,12 +60,12 @@ def norm(s):
 # The effective owners okf-check computed (the note's key, else the folder default); absent when the option is off.
 owners = {}
 if os.environ.get("OKF_OWNERS_TSV") and os.path.isfile(os.environ["OKF_OWNERS_TSV"]):
-    owners = dict(l.rstrip("\n").split("\t", 1) for l in open(os.environ["OKF_OWNERS_TSV"], encoding="utf-8") if "\t" in l)
+    owners = dict(l.rstrip("\n").split("\t", 1) for l in open(os.environ["OKF_OWNERS_TSV"], encoding="utf-8", errors="surrogateescape") if "\t" in l)
 real = os.path.realpath(bundle)
 # .okfignore: okf-check passes the notes it keeps (NUL-separated, relative); an ignored note is never compared.
 keep = None
 if os.environ.get("OKF_KEEP_LIST"):
-    keep = {x for x in open(os.environ["OKF_KEEP_LIST"], encoding="utf-8", errors="replace").read().split("\0") if x}
+    keep = {x for x in open(os.environ["OKF_KEEP_LIST"], encoding="utf-8", errors="surrogateescape").read().split("\0") if x}
 
 # One entry per real path: a symlink alias is the same note as its target, so a third note that duplicates it is
 # one pair. The real file wins over an alias whatever the walk order (LT-56r).
@@ -83,7 +83,7 @@ for p in sorted(root.rglob("*.md")):
         by_real[r] = p
 
 for line in refused:
-    print("okf-duplicates: " + line, file=sys.stderr)
+    print("okf-duplicates: " + shown(line), file=sys.stderr)
 
 notes, cut_in, short_bodies = [], None, 0
 to_read = sorted(by_real.values())
@@ -181,7 +181,7 @@ if with_body and not cut:
             cut, cut_in = True, "body"
 
 if as_json:
-    side = lambda n: {k: n[k] for k in ("rel", "status", "at", "owner")}
+    side = lambda n: {"rel": shown(n["rel"]), **{k: n[k] for k in ("status", "at", "owner")}}
     print(json.dumps({"bundle": bundle, "exit": 0, "complete": not cut, "cut_in": cut_in, "notes_read": len(notes),
                       "notes_total": len(to_read), "body_short": short_bodies, "compared": compared, "pairs_total": total,
                       "duplicates": [{"signal": x["signal"], "score": x["score"], "a": side(x["a"]), "b": side(x["b"])}
@@ -205,6 +205,6 @@ if not pairs:
     print("  Duplicates       no candidate duplicates" + (" among the pairs compared" if cut else ""))
 else:
     print("  Duplicates       %d candidate pair(s) (advisory: deprecate one of each, or keep both)" % len(pairs))
-    side = lambda n: "%s [%s, %s, owner %s]" % (n["rel"], n["status"], n["at"], n["owner"])
+    side = lambda n: "%s [%s, %s, owner %s]" % (shown(n["rel"]), n["status"], n["at"], n["owner"])
     for x in pairs:
         print("                   %s %.2f  %s  ~  %s" % (x["signal"], x["score"], side(x["a"]), side(x["b"])))

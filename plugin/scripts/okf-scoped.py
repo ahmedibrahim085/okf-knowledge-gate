@@ -50,7 +50,7 @@ def main(argv: list) -> int:
     # .okfignore: okf-check passes the notes it keeps (NUL-separated, relative); the full run links against only those.
     keep = None
     if os.environ.get("OKF_KEEP_LIST"):
-        keep = {x for x in open(os.environ["OKF_KEEP_LIST"], encoding="utf-8", errors="replace").read().split("\0") if x}
+        keep = {x for x in open(os.environ["OKF_KEEP_LIST"], encoding="utf-8", errors="surrogateescape").read().split("\0") if x}
     # refusal(): a sibling that is a device or over the cap is never read for its links
     v.check_links(bundle, sorted(p for p in bundle.rglob("*.md") if p.is_file() and refusal(p) is None
                                  and (keep is None or str(p.relative_to(bundle)) in keep)), report)

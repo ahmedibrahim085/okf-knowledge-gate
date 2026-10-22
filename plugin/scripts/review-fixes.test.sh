@@ -44,6 +44,58 @@ r3=$(run "$B"); c3=$(grep -c 'only looks like' "$TMP/out.txt"); nm=$(grep -c 'ne
   && ok "S26-RF-N1 human:<Cyrillic id>, a Cyrillic name and the ASCII Human: are not called lookalikes (Human: stays an L1 near-miss)" \
   || bad "S26-RF-N1 no false lookalike" "counts=$c1,$c2,$c3 near-miss=$nm rc=$r1,$r2,$r3"
 
+# Spec row IV-1 (cases S32-IV-*).
+# S32-IV-H1: an invisible character INSIDE the prefix is a lookalike too. Format characters (Cf: zero-width space,
+# joiner and non-joiner, soft hyphen, word joiner, BOM) and combining marks (Mn) render as nothing or sit on the letter, so the
+# claim reads as `human:` while no tool does. Each one is a Trust warning, and a failure under --strict-trust.
+for cp in 200b 200c 200d 00ad 2060 feff 0307 0301; do
+  vnote "$B/v.md" "hu\\u${cp}man:dana"
+  rc=$(run "$B" --strict-trust)
+  { [ "$rc" = 1 ] && grep -q 'only looks like `human:`' "$TMP/out.txt"; } \
+    && ok "S32-IV-H1 U+${cp} inside human: is named as a lookalike and fails --strict-trust (exit 1)" \
+    || bad "S32-IV-H1 U+${cp} inside human:" "rc=$rc $(grep -n -A2 'Trust' "$TMP/out.txt" | head -3 | tr '\n' '|')"
+done
+# S32-IV-H2: the same in front of the prefix and inside process:.
+vnote "$B/v.md" '\u200bhuman:dana'; rc=$(run "$B" --strict-trust)
+{ [ "$rc" = 1 ] && grep -q 'only looks like `human:`' "$TMP/out.txt"; } && ok "S32-IV-H2 a zero-width space before human: is named" \
+  || bad "S32-IV-H2 leading U+200B" "rc=$rc"
+vnote "$B/v.md" 'pro\u00adcess:dana'; rc=$(run "$B" --strict-trust)
+{ [ "$rc" = 1 ] && grep -q 'only looks like `process:`' "$TMP/out.txt"; } && ok "S32-IV-H2b a soft hyphen inside process: is named" \
+  || bad "S32-IV-H2b U+00AD in process:" "rc=$rc"
+# S32-IV-H3: a precomposed letter with a mark on it (h with a dot below, U+1E25) is the same spelling, decomposed first.
+vnote "$B/v.md" '\u1e25uman:dana'; rc=$(run "$B" --strict-trust)
+{ [ "$rc" = 1 ] && grep -q 'only looks like `human:`' "$TMP/out.txt"; } && ok "S32-IV-H3 a precomposed h with a dot below spells human: and is named" \
+  || bad "S32-IV-H3 precomposed h" "rc=$rc"
+# S32-IV-H4: the warning names the invisible code point(s), because the actor is printed with them in it and reads as `human:`.
+vnote "$B/v.md" 'hu\u200b\u00adman:dana'; rc=$(run "$B")
+{ grep -q 'only looks like `human:`.*U+00AD, U+200B' "$TMP/out.txt"; } && ok "S32-IV-H4 the warning names the hidden code points (U+00AD, U+200B)" \
+  || bad "S32-IV-H4 code points named" "$(grep -n 'only looks like' "$TMP/out.txt" | head -2 | cut -c1-200 | tr '\n' '|')"
+# S32-IV-H4b: the code points are listed in numeric order, not as text (U+1D17A sorts before U+200B as text, after it as a number).
+vnote "$B/v.md" 'hu\u200b\U0001d17aman:dana'; rc=$(run "$B")
+{ grep -q 'only looks like `human:`.*U+200B, U+1D17A' "$TMP/out.txt"; } && ok "S32-IV-H4b the hidden code points are listed in numeric order (U+200B, U+1D17A)" \
+  || bad "S32-IV-H4b numeric order" "$(grep -n 'only looks like' "$TMP/out.txt" | head -2 | cut -c1-200 | tr '\n' '|')"
+# S32-IV-H5: blanks and fillers are the same spelling: a no-break or ideographic space, a braille blank, the hangul fillers
+# render as a gap or as nothing, an enclosing mark sits on the letter, and the line, paragraph and next-line separators
+# (U+2028, U+2029, U+0085) break the line inside the prefix. Each one is named, with its code point.
+for cp in 00a0 3000 2800 3164 ffa0 115f 20dd 2028 2029 0085; do
+  vnote "$B/v.md" "hu\\u${cp}man:dana"
+  rc=$(run "$B" --strict-trust)
+  { [ "$rc" = 1 ] && grep -qi "only looks like \`human:\`.*U+${cp}" "$TMP/out.txt"; } \
+    && ok "S32-IV-H5 U+${cp} inside human: is named with its code point and fails --strict-trust (exit 1)" \
+    || bad "S32-IV-H5 U+${cp} inside human:" "rc=$rc $(grep -n 'Trust' "$TMP/out.txt" | head -2 | cut -c1-160 | tr '\n' '|')"
+done
+# S32-IV-N2: names with ordinary spaces and the real prefix are not lookalikes (the blanks only matter inside the spelling).
+for who in 'human:Dana Lee' 'human:José Pérez' 'Дана Ли' 'process:build bot'; do
+  vnote "$B/v.md" "$who"; run "$B" >/dev/null; c=$(grep -c 'only looks like' "$TMP/out.txt")
+  [ "$c" = 0 ] && ok "S32-IV-N2 '$who' is not called a lookalike" || bad "S32-IV-N2 '$who'" "lookalike-lines=$c"
+done
+# S32-IV-N1: the real prefix, and an invisible character AFTER it (in the id), are not lookalikes.
+# (An agent-generated note keeps the plain human: advisory, so --strict-trust exits 1 for the plain id as well.)
+vnote "$B/v.md" 'human:dana'; plain=$(run "$B" --strict-trust)
+vnote "$B/v.md" 'human:da\u200bna'; rc=$(run "$B" --strict-trust); c=$(grep -c 'only looks like' "$TMP/out.txt")
+{ [ "$c" = 0 ] && [ "$rc" = "$plain" ]; } && ok "S32-IV-N1 an invisible character in the id after human: is not a lookalike (same verdict as the plain id)" \
+  || bad "S32-IV-N1 id after the prefix" "rc=$rc plain=$plain lookalike-lines=$c"
+
 # S26-RF-H3 (review 0.9.35): capital lookalikes are named too: Cyrillic En (U+041D) and Greek Eta (U+0397) for H.
 vnote "$B/v.md" '\u041dUMAN:dana'
 rc=$(run "$B"); c1=$(grep -c 'only looks like `human:`' "$TMP/out.txt")
@@ -77,6 +129,17 @@ sed -i.bak 's/^        if look:$/        if False:/' "$CP2/scripts/okf-trust.py"
   && [ "$rc2" = 5 ] && grep -q 'NOT FIRED  lookalike human: -> named' "$TMP/st2.txt"; } \
   && ok "S26-RF-E3 --selftest fires the Config and lookalike probes; with the rule disabled it reports NOT FIRED and exits 5" \
   || bad "S26-RF-E3 selftest probes" "rc=$rc rc2=$rc2 $(grep -n 'Config\|lookalike\|SELFTEST' "$TMP/st.txt" "$TMP/st2.txt" | tr '\n' '|')"
+
+# S32-IV-E1: --selftest also probes an invisible character inside human:. With the hidden-character categories emptied
+# in the copy, that probe reports NOT FIRED and exits 5 while the Cyrillic lookalike probe still fires.
+CP3="$TMP/plugin3"; cp -R "$HERE/.." "$CP3"
+sed -i.bak 's/^HIDDEN_CATEGORIES = .*/HIDDEN_CATEGORIES = ()/' "$CP3/scripts/okf-trust.py"
+"$CP3/scripts/okf-check" --selftest >"$TMP/st3.txt" 2>&1; rc3=$?
+{ grep -q 'FIRED      invisible character in human: -> named' "$TMP/st.txt" \
+  && [ "$rc3" = 5 ] && grep -q 'NOT FIRED  invisible character in human: -> named' "$TMP/st3.txt" \
+  && grep -q 'FIRED      lookalike human: -> named' "$TMP/st3.txt"; } \
+  && ok "S32-IV-E1 --selftest fires the invisible-character probe; with the hidden-character drop emptied it reports NOT FIRED and exits 5" \
+  || bad "S32-IV-E1 selftest probe" "rc3=$rc3 $(grep -n 'invisible\|SELFTEST' "$TMP/st.txt" "$TMP/st3.txt" | tr '\n' '|')"
 
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

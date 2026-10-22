@@ -152,5 +152,20 @@ else
   skip "S27-GR-L1 the real okf-memory was not run (OKF_TEST_MEMORY_BIN is not set)" "OKF_TEST_MEMORY_BIN=/path/to/okf bash plugin/scripts/graph.test.sh"
 fi
 
+# S36-ON-GR: a name in okf-memory's report that holds a control character (an ESC, as \u001b in its JSON) or a byte that is not
+# UTF-8 reaches neither the terminal nor --json raw: both spell it \x1b and \xff, as every other layer does (the report was read
+# with errors="replace", so the byte was U+FFFD, and the ESC went to the terminal and into l2_graph as it was). The stub's report
+# stands in for okf-memory, so this runs on every disk.
+B="$TMP/on-gr"; mkb "$B" "$ON"
+printf '{"broken_links":[{"source_concept":"e\\u001bx.md","target_href":"gone.md"}],"orphans":["n\377u"]}\n' > "$TMP/on-gr.json"
+rc=$(PATH="$TMP/bin:$PATH" STUB_REPORT="$TMP/on-gr.json" run "$B")
+rawesc=$(LC_ALL=C grep -a -c "$(printf '\033')" "$TMP/out.txt"); rawff=$(LC_ALL=C grep -a -c "$(printf '\377')" "$TMP/out.txt")
+PATH="$TMP/bin:$PATH" STUB_REPORT="$TMP/on-gr.json" "$CHECK" --json "$B" > "$TMP/out.json" 2>/dev/null
+rawjson=$(LC_ALL=C grep -a -c 'u001b\|ufffd\|udc' "$TMP/out.json")
+{ [ "$rawesc" = 0 ] && [ "$rawff" = 0 ] && [ "$rawjson" = 0 ] && grep -aqF 'broken link: e\x1bx.md -> gone.md' "$TMP/out.txt" && grep -aqF 'orphan: n\xffu' "$TMP/out.txt" \
+  && [ "$(jget 'd.get("l2_graph")')" = '{"broken_links": ["e\\x1bx.md -> gone.md"], "orphans": ["n\\xffu"]}' ]; } \
+  && ok "S36-ON-GR an ESC and a non-UTF-8 byte in okf-memory's names are \\x1b and \\xff in the text and in l2_graph, never raw" \
+  || bad "S36-ON-GR names in the graph report" "raw ESC=$rawesc raw 0xff=$rawff raw in json=$rawjson l2_graph=$(jget 'd.get("l2_graph")')"
+
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

@@ -32,6 +32,7 @@ import json
 import re
 import unicodedata
 import sys
+from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import unquote
@@ -169,7 +170,9 @@ def _duplicate_keys(root) -> list[str]:
         if isinstance(node, yaml.MappingNode):
             keys = [k.value for k, _ in node.value
                     if isinstance(k, yaml.ScalarNode) and k.tag != "tag:yaml.org,2002:merge"]
-            dups.extend(k for k in dict.fromkeys(keys) if keys.count(k) > 1)
+            # Counter, not keys.count(k) per key: that was O(n^2) (60,000 keys = 40 s; the layers that re-read the note paid it again).
+            counts = Counter(keys)
+            dups.extend(k for k in dict.fromkeys(keys) if counts[k] > 1)
         stack.extend(_children(node))
     return dups
 
@@ -422,8 +425,8 @@ def check_window(window, where: str, rel: str, report: Report) -> None:
                              f"is not an ISO 8601 datetime (a bare date is tolerated)")
 
 
-def strip_code(body: str) -> str:
-    """The body with fenced blocks and inline code spans removed."""
+def strip_fences(body: str) -> list[str]:
+    """The lines of the body outside fenced blocks."""
     kept: list[str] = []
     fence = ""
     for line in body.splitlines():
@@ -437,7 +440,12 @@ def strip_code(body: str) -> str:
             fence = m.group(1)
             continue
         kept.append(line)
-    return CODE_SPAN.sub("", "\n".join(kept))
+    return kept
+
+
+def strip_code(body: str) -> str:
+    """The body with fenced blocks and inline code spans removed."""
+    return CODE_SPAN.sub("", "\n".join(strip_fences(body)))
 
 
 def check_sources(meta: dict, body: str, rel: str, report: Report) -> None:
@@ -520,7 +528,8 @@ def check_log(path: Path, rel: str, report: Report) -> None:
     raw, _ = split_frontmatter(text)
     if raw is not None:
         report.warn(rel, "§9 log.md should contain no frontmatter")
-    for line in text.splitlines():
+    # strip_fences: a `## ` line inside a fenced block is code (a shell comment), not a date heading.
+    for line in strip_fences(text):
         if line.startswith("## "):
             heading = line[3:].strip()
             if not ISO_DATE.match(heading):

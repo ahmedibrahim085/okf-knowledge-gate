@@ -132,5 +132,74 @@ B="$TMP/e8"; repo "$B"; note "$B/a.md" "Alpha line one."; gitc "$B" add -A; gitc
 rc=$(run "$B" --conserve HEAD~1)
 grep -Eq '0 declared' "$TMP/out.txt" && ok "S23-CS-E8 OKF-Deleted in the body of a message is not a declaration" || bad "S23-CS-E8 trailer only" "rc=$rc $(grep Conserve "$TMP/out.txt")"
 
+# S36-ON-CS: a line cut from each of three notes named with a space, an ESC byte and a byte that is not UTF-8 is LOST, and
+# --fail-lost exits 1, under the C locale and a UTF-8 one (git's list of changed notes was decoded with errors="replace",
+# so the odd-named note was never diffed and "0 line(s) removed" passed: 0.9.40). --json shows the byte as \xff. A disk
+# that refuses the name (APFS) skips the case.
+U8=$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.utf-?8$' | head -1)
+B="$TMP/on-cs"; mkbundle "$B"
+_on_note() { printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nKept line.\n%s\n' "$2" 2>/dev/null > "$1"; }
+i=0; for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do i=$((i+1)); _on_note "$B/$n.md" "Cut line of note $i."; done   # one line per note: a line found in another note would be MOVED
+if [ "$(find "$B" -name '*.md' | wc -l | tr -d ' ')" -ne 6 ]; then
+  skip "S36-ON-CS this disk refuses a note name that is not UTF-8 (run on Linux)"
+elif [ -z "$U8" ]; then
+  skip "S36-ON-CS no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  git init -q "$B"; gitc "$B" add -A; gitc "$B" commit -qm base
+  for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do _on_note "$B/$n.md" ""; done
+  for LOC in C "$U8"; do
+    export LC_ALL="$LOC"
+    rc=$(run "$B" --conserve HEAD --fail-lost); nt=$(LC_ALL=C grep -a -c 'LOST     .*:14  Cut line of note [123]\.' "$TMP/out.txt"); hd=$(LC_ALL=C grep -a -c 'Conserve  *FAIL  *3 line(s) removed: 0 MOVED, 0 CHANGED, 3 LOST' "$TMP/out.txt")
+    rcj=$(runjson "$B" --conserve HEAD --fail-lost); got=$(jget 'sorted(e["note"] for e in d["lost"])')
+    unset LC_ALL
+    { [ "$rc" = 1 ] && [ "$rcj" = 1 ] && [ "$nt" = 3 ] && [ "$hd" = 1 ] && [ "$got" = '["a b.md", "e\\x1bx.md", "n\\xffu.md"]' ]; } \
+      && ok "S36-ON-CS under LC_ALL=$LOC --conserve names a LOST line in each odd-named note, in the text and --json (--fail-lost exit 1)" \
+      || bad "S36-ON-CS odd names under $LOC" "rc=$rc/$rcj text=$nt head=$hd lost[]=$got $(grep -a 'Conserve' "$TMP/out.txt" | head -1 | cat -v)"
+  done
+fi
+
+# S36-ON-CS2: only the odd-named note is edited and a line of it is cut: --fail-lost exits 1 (it read "0 line(s) removed" and
+# exited 0). The other two notes are untouched.
+if [ -d "$B/.git" ]; then
+  gitc "$B" add -A; gitc "$B" commit -qm cut
+  i=0; for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do i=$((i+1)); _on_note "$B/$n.md" "Cut line of note $i."; done   # one line per note: a line found in another note would be MOVED
+  gitc "$B" add -A; gitc "$B" commit -qm restore
+  _on_note "$B/n$(printf '\377')u.md" ""
+  for LOC in C "$U8"; do
+    rc=$(LC_ALL="$LOC" run "$B" --conserve HEAD --fail-lost); hd=$(LC_ALL=C grep -a -c 'Conserve  *FAIL  *1 line(s) removed: 0 MOVED, 0 CHANGED, 1 LOST' "$TMP/out.txt")
+    { [ "$rc" = 1 ] && [ "$hd" = 1 ]; } \
+      && ok "S36-ON-CS2 under LC_ALL=$LOC a line cut from the odd-named note alone is LOST (--fail-lost exit 1)" \
+      || bad "S36-ON-CS2 one odd-named note under $LOC" "rc=$rc head=$hd $(grep -a 'Conserve' "$TMP/out.txt" | head -1 | cat -v)"
+  done
+else
+  skip "S36-ON-CS2 no repository: S36-ON-CS was skipped (a disk that refuses a note name that is not UTF-8, or no UTF-8 locale)"
+fi
+
+# S36-ON-CS3: --deleted FILE declares an odd-named note by name (a note named with a byte that is not UTF-8) and a line whose
+# text holds such a byte (`line:`): both lists are read as the diff is, so each cut is `declared`, not LOST (the file was
+# decoded with errors="replace", so the odd name never matched the note and the cut was a false FAIL). The name is decoded
+# as a name, the line as text; a name that is not in the file stays LOST.
+B3="$TMP/on-cs3"; mkbundle "$B3"
+ON3="n$(printf '\377')u.md"; BYTE_LINE="Text with a $(printf '\377') byte."
+_on_note "$B3/$ON3" "Cut line of the odd-named note." 2>/dev/null
+_on_note "$B3/plain.md" "$BYTE_LINE"
+_on_note "$B3/other.md" "Cut line of the other note."
+if [ ! -f "$B3/$ON3" ]; then
+  skip "S36-ON-CS3 this disk refuses a note name that is not UTF-8 (run on Linux)"
+elif [ -z "$U8" ]; then
+  skip "S36-ON-CS3 no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  git init -q "$B3"; gitc "$B3" add -A; gitc "$B3" commit -qm base
+  _on_note "$B3/$ON3" ""; _on_note "$B3/plain.md" ""; _on_note "$B3/other.md" ""
+  printf '%s\nline: %s\n' "$ON3" "$BYTE_LINE" > "$TMP/on-cs3.del"
+  for LOC in C "$U8"; do
+    rc=$(LC_ALL="$LOC" run "$B3" --conserve HEAD --fail-lost --deleted "$TMP/on-cs3.del")
+    hd=$(LC_ALL=C grep -a -c 'Conserve  *FAIL  *3 line(s) removed: 0 MOVED, 0 CHANGED, 1 LOST, 2 declared' "$TMP/out.txt"); lt=$(LC_ALL=C grep -a -c 'LOST     other.md:14  Cut line of the other note.' "$TMP/out.txt")
+    { [ "$rc" = 1 ] && [ "$hd" = 1 ] && [ "$lt" = 1 ]; } \
+      && ok "S36-ON-CS3 under LC_ALL=$LOC --deleted declares an odd-named note by name and a line holding a non-UTF-8 byte; the undeclared cut stays LOST (exit 1)" \
+      || bad "S36-ON-CS3 declared odd name under $LOC" "rc=$rc head=$hd lost-line=$lt $(grep -a 'Conserve' "$TMP/out.txt" | head -1 | cat -v)"
+  done
+fi
+
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

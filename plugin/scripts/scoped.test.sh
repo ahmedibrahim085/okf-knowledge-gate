@@ -154,6 +154,27 @@ r4=$(run "$B" --file "$NL/$(printf 'n\nl').md")
   && ok "SC-12 a dash-leading relative note name is read as a note (exit 0); a newline in the name is refused (64)" \
   || bad "SC-12 odd names" "dash rc=$r3; newline rc=$r4 out: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
 
+# S36-ON-SC: with a .okfignore that excludes a note, --file on a note named with a byte that is not UTF-8 still checks it
+# (the keep list was decoded with errors="replace", so the note matched nothing and its broken link went unreported: 0.9.40).
+# A disk that refuses the name (APFS) skips the case.
+U8=$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.utf-?8$' | head -1)
+O="$TMP/on-sc"; mkdir -p "$O"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$O/index.md"
+clean "$O/ign.md"; printf 'ign.md\n' > "$O/.okfignore"
+N="n$(printf '\377')u.md"
+clean "$O/$N" 2>/dev/null; printf 'See [m](nowhere.md).\n' 2>/dev/null >> "$O/$N"
+if [ ! -f "$O/$N" ]; then
+  printf '  SKIP  %s\n' "S36-ON-SC this disk refuses a note name that is not UTF-8 (run on Linux)"
+elif [ -z "$U8" ]; then
+  printf '  SKIP  %s\n' "S36-ON-SC no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  for LOC in C "$U8"; do
+    LC_ALL="$LOC" "$CHECK" "$O" --file "$O/$N" >"$TMP/out.txt" 2>&1; rc=$?
+    n=$(LC_ALL=C grep -a -c 'L1 warning: .*nowhere.md' "$TMP/out.txt")
+    [ "$n" = 1 ] && ok "S36-ON-SC under LC_ALL=$LOC --file on a non-UTF-8-named note reports its broken link with a .okfignore present (exit $rc)" \
+      || bad "S36-ON-SC odd name with .okfignore under $LOC" "rc=$rc $(head -2 "$TMP/out.txt" | cat -v | tr '\n' '|')"
+  done
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

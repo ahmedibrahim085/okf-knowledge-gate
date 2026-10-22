@@ -458,5 +458,31 @@ B="$TMP/j2"; mkb "$B"; mknote "$B/n.md" 10
 rc=$(runjson "$B"); has=$(jget '"sizes" in d')
 { [ "$rc" = 0 ] && [ "$has" = false ]; } && ok "S16-SB-J2 no size option, no sizes key in --json" || bad "S16-SB-J2 sizes absent" "rc=$rc has=$has"
 
+# S36-ON-SZ: notes named with a space, an ESC byte and a byte that is not UTF-8 are each measured: Size lists all three
+# in the text and in --json sizes[] and errors[], under the C locale and a UTF-8 one (a name decoded with errors="replace"
+# no longer matched the file, so the note was skipped and Size passed over it: 0.9.40). The byte shows as \xff in both. A
+# disk that refuses the name (APFS) skips the case.
+U8=$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.utf-?8$' | head -1)
+B="$TMP/on-sz"; mkb "$B" "$(size_cfg 100)"
+for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do
+  { printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n'; head -c 300 /dev/zero | tr '\0' x; } 2>/dev/null > "$B/$n.md"
+done
+if [ "$(find "$B" -name '*.md' | wc -l | tr -d ' ')" -ne 6 ]; then
+  skip "S36-ON-SZ this disk refuses a note name that is not UTF-8 (run on Linux)"
+elif [ -z "$U8" ]; then
+  skip "S36-ON-SZ no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  for LOC in C "$U8"; do
+    export LC_ALL="$LOC"
+    rc=$(run "$B"); nt=$(LC_ALL=C grep -a -c 'body is 300 characters' "$TMP/out.txt"); sz=$(LC_ALL=C grep -a -c 'Size  *FAIL  *3 note(s) over' "$TMP/out.txt")
+    rcj=$(runjson "$B"); got=$(jget '[s["note"] for s in d["sizes"] if s["body_chars"] == 300]'); ne=$(jget 'len([e for e in d["errors"] if "body is 300" in e])')
+    unset LC_ALL
+    { [ "$rc" = 1 ] && [ "$rcj" = 1 ] && [ "$nt" = 3 ] && [ "$sz" = 1 ] && [ "$ne" = 3 ] \
+      && [ "$got" = '["a b.md", "e\\x1bx.md", "n\\xffu.md"]' ]; } \
+      && ok "S36-ON-SZ under LC_ALL=$LOC Size measures all three odd-named notes: 3 lines in the text, sizes[] and errors[] (exit 1)" \
+      || bad "S36-ON-SZ odd names under $LOC" "rc=$rc/$rcj text=$nt size-line=$sz errors[]=$ne sizes[]=$got"
+  done
+fi
+
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

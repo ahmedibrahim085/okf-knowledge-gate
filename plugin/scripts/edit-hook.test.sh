@@ -293,6 +293,63 @@ len=$(tr -d '\n' < "$TMP/err.txt" | "$REALPY" -c 'import sys; print(len(sys.stdi
   && ok "SH-13b with a long bundle path the line is ${len} characters (limit $max) and still says (+1 more" \
   || bad "SH-13b bounded line" "rc=$rc len=$len max=$max $(cut -c1-120 "$TMP/err.txt")"
 
+# --- S32-HD (spec row HD-1): `okf-check --doctor` says plainly when a switched-on hook cannot run ----------------------------------------------
+# The hook is fail-open: with config/edit-hook.json gone or unreadable it exits 0 without a word on every edit, so the user who
+# switched it on sees no check and no reason. --doctor is the one place that can say so; it stays advisory (exit 0).
+doctor() { "$1/okf-check" "$2" --doctor >"$TMP/doc.txt" 2>&1; printf '%s' "$?"; }
+HD="$TMP/hd"; bundle "$HD/on" 'okf_check:
+  edit_hook: true'; mkdir -p "$HD/on/sub"
+rc=$(doctor "$HERE" "$HD/on")
+{ [ "$rc" = 0 ] && grep -Eq '^  edit hook +ON \(.*okf-base.yaml\); config OK' "$TMP/doc.txt"; } \
+  && ok "S32-HD-H1 edit_hook: true and a readable config: --doctor says the hook is ON and its config is OK" \
+  || bad "S32-HD-H1 doctor, config readable" "rc=$rc $(grep -n 'edit hook' "$TMP/doc.txt" | head -2 | tr '\n' '|')"
+CPD="$TMP/plugin-doc"; cp -R "$HERE/.." "$CPD"; rm "$CPD/config/edit-hook.json"
+rc=$(doctor "$CPD/scripts" "$HD/on")
+{ [ "$rc" = 0 ] && grep -Eq '^  edit hook +ON \(.*okf-base.yaml\) but CANNOT RUN: .*edit-hook.json' "$TMP/doc.txt" \
+  && grep -q 'stays silent' "$TMP/doc.txt"; } \
+  && ok "S32-HD-N1 edit_hook: true and config/edit-hook.json missing: --doctor says CANNOT RUN, names the file and that the hook stays silent (exit 0)" \
+  || bad "S32-HD-N1 doctor, config missing" "rc=$rc $(grep -n -A1 'edit hook' "$TMP/doc.txt" | head -3 | tr '\n' '|')"
+badnote "$HD/on/bad.md"
+"$REALPY" -c 'import json,sys; print(json.dumps({"tool_name":"Edit","tool_input":{"file_path":sys.argv[1]}}))' "$HD/on/bad.md" \
+  | boxed 30 "$REALPY" "$CPD/scripts/okf-edit-hook.py" >"$TMP/out.txt" 2>"$TMP/err.txt"; hrc=$?
+silent "$hrc" && ok "S32-HD-N1b the same plugin copy: the hook itself still exits 0 with no output (fail-open is unchanged)" \
+  || bad "S32-HD-N1b fail-open unchanged" "rc=$hrc err: $(head -2 "$TMP/err.txt" | tr '\n' '|')"
+printf '{ not json' > "$CPD/config/edit-hook.json"
+rc=$(doctor "$CPD/scripts" "$HD/on")
+{ [ "$rc" = 0 ] && grep -Eq 'but CANNOT RUN: .*edit-hook.json' "$TMP/doc.txt"; } \
+  && ok "S32-HD-N2 a config that is not JSON: CANNOT RUN" || bad "S32-HD-N2 doctor, config not JSON" "rc=$rc $(grep -n 'edit hook' "$TMP/doc.txt" | head -2 | tr '\n' '|')"
+printf '{"timeout_seconds": 4}' > "$CPD/config/edit-hook.json"
+rc=$(doctor "$CPD/scripts" "$HD/on")
+{ [ "$rc" = 0 ] && grep -Eq 'but CANNOT RUN: .*edit-hook.json' "$TMP/doc.txt"; } \
+  && ok "S32-HD-N3 a config without max_seconds and max_line_chars: CANNOT RUN" || bad "S32-HD-N3 doctor, config keys missing" "rc=$rc $(grep -n 'edit hook' "$TMP/doc.txt" | head -2 | tr '\n' '|')"
+bundle "$HD/off" ''
+rc=$(doctor "$CPD/scripts" "$HD/off")
+{ [ "$rc" = 0 ] && ! grep -q 'edit hook' "$TMP/doc.txt"; } \
+  && ok "S32-HD-N4 hook off (no key): --doctor adds no edit-hook line, even with the config missing" || bad "S32-HD-N4 doctor, hook off" "rc=$rc $(grep -n 'edit hook' "$TMP/doc.txt" | head -2 | tr '\n' '|')"
+rc=$(doctor "$HERE" "$HD/on/sub")
+HDP=$(cd -P "$HD/on" && pwd)   # the hook resolves links (macOS /var is /private/var)
+{ [ "$rc" = 0 ] && grep -Fq "($HDP/okf-base.yaml)" "$TMP/doc.txt"; } \
+  && ok "S32-HD-E1 from a folder below the bundle, --doctor names the okf-base.yaml that switches the hook on" \
+  || bad "S32-HD-E1 doctor, nearest manifest" "rc=$rc $(grep -n 'edit hook' "$TMP/doc.txt" | head -2 | tr '\n' '|')"
+cp "$HERE/../config/edit-hook.json" "$CPD/config/edit-hook.json"
+# S32-HD-N5: a bad okf_check block reads as "hook off" (the hook is fail-open), so --doctor has to say so: the user who wrote
+# edit_hook: true sees no check and no reason otherwise. The full run reports the block; the hook itself stays silent.
+bundle "$HD/bad" 'okf_check: {edit_hook: true, bogus_key: 1}'; badnote "$HD/bad/bad.md"
+rc=$(doctor "$HERE" "$HD/bad")
+HDB=$(cd -P "$HD/bad" && pwd)
+{ [ "$rc" = 0 ] && grep -Eq "^  edit hook +OFF: $HDB/okf-base.yaml okf_check block is invalid \(.*bogus_key.*\); the hook reads it as off" "$TMP/doc.txt"; } \
+  && ok "S32-HD-N5 an invalid okf_check block: --doctor prints 'edit hook OFF: <okf-base.yaml> okf_check block is invalid (...)', exit 0" \
+  || bad "S32-HD-N5 doctor, invalid block" "rc=$rc $(grep -n 'edit hook' "$TMP/doc.txt" | head -2 | cut -c1-240 | tr '\n' '|')"
+rc=$(fire "$HD/bad/bad.md")
+silent "$rc" && ok "S32-HD-N5b the same bundle: the hook itself still exits 0 with no output (fail-open is unchanged)" \
+  || bad "S32-HD-N5b fail-open unchanged" "rc=$rc err: $(head -2 "$TMP/err.txt" | tr '\n' '|')"
+OKF_EDIT_HOOK=1 "$CPD/scripts/okf-check" "$HD/off" --doctor >"$TMP/doc.txt" 2>&1; rc=$?
+rm "$CPD/config/edit-hook.json"; OKF_EDIT_HOOK=1 "$CPD/scripts/okf-check" "$HD/off" --doctor >"$TMP/doc2.txt" 2>&1
+{ [ "$rc" = 0 ] && grep -Eq '^  edit hook +ON \(OKF_EDIT_HOOK=1\); config OK' "$TMP/doc.txt" \
+  && grep -Eq '^  edit hook +ON \(OKF_EDIT_HOOK=1\) but CANNOT RUN' "$TMP/doc2.txt"; } \
+  && ok "S32-HD-E2 OKF_EDIT_HOOK=1 switches it on without the key: --doctor reports it, with the config and without" \
+  || bad "S32-HD-E2 doctor, env switch" "rc=$rc $(grep -h 'edit hook' "$TMP/doc.txt" "$TMP/doc2.txt" | head -2 | tr '\n' '|')"
+
 echo
 if [ "$SKIPPED" -gt 0 ]; then
   echo "  $PASS passed, $FAIL failed, $SKIPPED SKIPPED — coverage did not run in full"

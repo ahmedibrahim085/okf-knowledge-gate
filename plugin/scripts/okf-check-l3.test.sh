@@ -224,27 +224,31 @@ REAL
   out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf-real")
   printf '%s' "$out" | grep -q "alpha-note, alpha-note-two, alpha-three" \
     && ok "LT-19g real okf output (captured) parses to the three closest ids" || bad "LT-19g real output" "out=$(printf '%s' "$out" | head -c 240)"
-  # LT-19h: a hung binary's child process is not left behind.
-  cat > "$T19/bin/okf-fork" <<'FORK'
+  # LT-19h: a hung binary's child process is not left behind. The children sleep through a symlink inside this
+  # test's own temp folder, so the counts below match only THIS run's sleepers: `pgrep -f 'sleep 37'` also matched the sleeper of
+  # another copy of this suite (another worktree or session on the same machine), which failed LT-19h and LT-19i in both copies,
+  # and `pkill -f` killed the other copy's sleeper.
+  ln -s "$(command -v sleep)" "$T19/bin/okfsleep"
+  cat > "$T19/bin/okf-fork" <<FORK
 #!/bin/sh
-sleep 37 &
+"$T19/bin/okfsleep" 37 &
 wait
 FORK
   chmod +x "$T19/bin/okf-fork"
   g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf-fork" >/dev/null
   sleep 1
-  cat > "$T19/bin/okf-grand" <<'GRAND'
+  cat > "$T19/bin/okf-grand" <<GRAND
 #!/bin/sh
-sh -c 'sleep 38; :' &
+sh -c '"$T19/bin/okfsleep" 38; :' &
 wait
 GRAND
   chmod +x "$T19/bin/okf-grand"
   g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf-grand" >/dev/null
   sleep 1
-  _gleft=$(pgrep -f 'sleep 38' | wc -l | tr -d ' '); pkill -f 'sleep 38' 2>/dev/null
+  _gleft=$(pgrep -f "$T19/bin/okfsleep 38" | wc -l | tr -d ' '); pkill -f "$T19/bin/okfsleep 38" 2>/dev/null
   [ "$_gleft" = "0" ] && ok "LT-19i no orphan GRANDCHILD is left either" || bad "LT-19i grandchild" "$_gleft process(es) left"
-  _left=$(pgrep -f 'sleep 37' | wc -l | tr -d ' ')
-  pkill -f 'sleep 37' 2>/dev/null
+  _left=$(pgrep -f "$T19/bin/okfsleep 37" | wc -l | tr -d ' ')
+  pkill -f "$T19/bin/okfsleep 37" 2>/dev/null
   [ "$_left" = "0" ] && ok "LT-19h no orphan child is left after a hung search binary is killed" || bad "LT-19h orphan" "$_left process(es) left"
 else
   skip "LT-19 guard closest notes — guard or jq absent" "install jq"
@@ -575,6 +579,32 @@ else
     || bad "S30-CF-L1w L1 warnings under $U8" "rc=$rc $nw warning line(s) of 3; $(LC_ALL=C grep -a -c 'binary file matches' "$TMP/t31u.txt") 'binary file matches'"
 fi
 
+# S36-ON-L3: L3 derived staleness measures three notes named with a space, an ESC byte and a byte that is not UTF-8 that
+# cite a moved source, with and without a .okfignore (the keep list was decoded with errors="replace", so with an
+# .okfignore the odd-named note matched nothing and was never compared: 0.9.40). Under the C locale and a UTF-8 one. A disk
+# that refuses the name (APFS) skips the case.
+B="$TMP/on-l3"; mkbundle "$B"; echo x > "$B/src.txt"; cp "$B/c.md" "$B/skip.md"   # skip.md: what the .okfignore excludes (an ignore file that excludes nothing changes nothing)
+for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nsources:\n  - resource: src.txt\n    last_modified: "2000-01-01"\n---\nbody\n' 2>/dev/null > "$B/$n.md"
+done
+if [ "$(find "$B" -name '*.md' | wc -l | tr -d ' ')" -ne 7 ]; then
+  skip "S36-ON-L3 this disk refuses a note name that is not UTF-8 (run on Linux)"
+elif [ -z "$U8" ]; then
+  skip "S36-ON-L3 no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  for LOC in C "$U8"; do
+    for IGN in none okfignore; do
+      [ "$IGN" = okfignore ] && printf 'skip.md\n' > "$B/.okfignore"
+      LC_ALL="$LOC" "$CHECK" "$B" --fail-stale >"$TMP/on-l3.txt" 2>&1; rc=$?
+      n=$(LC_ALL=C grep -a -c 'L3 derived .*src.txt changed' "$TMP/on-l3.txt")
+      { [ "$rc" -eq 4 ] && [ "$n" -eq 3 ]; } \
+        && ok "S36-ON-L3 under LC_ALL=$LOC ($IGN) L3 derived lists all three odd-named notes with a moved source (exit 4)" \
+        || bad "S36-ON-L3 odd names under $LOC ($IGN)" "rc=$rc $n of 3 listed; $(LC_ALL=C grep -a 'L3 derived\|COULD' "$TMP/on-l3.txt" | cat -v | head -4 | tr '\n' ' ')"
+    done
+    rm -f "$B/.okfignore"
+  done
+fi
+
 # LT-CE1/CE2: L3 derived measures a cited sources[].resource only when it exists with the case as written (the citation
 # rule of okf-verify, D-11). On a case-insensitive disk SRC.txt used to be measured through src.txt, and on Linux it was
 # not: the same bundle got two verdicts.
@@ -611,6 +641,279 @@ _ce4=$(cd "$CE3/Repo/b" && python3 -c 'import sys; sys.path.insert(0, sys.argv[1
 print(case_exact("../x.txt"), case_exact("../X.TXT"), case_exact("../x.txt", "."))' "$HERE" 2>&1)
 [ "$_ce4" = "True False True" ] && ok "LT-CE4 case_exact: ../x.txt as written is True, ../X.TXT is False, from the folder it is relative to" \
   || bad "LT-CE4 case_exact and ../" "got '$_ce4' (want 'True False True')"
+# LT-CE5: the spelling of a symlink's TARGET is part of the citation too. `l.txt -> SRC.TXT` with the file src.txt was
+# measured on a case-insensitive disk (the link resolves) and "not a local file" on Linux (it dangles): two verdicts for
+# one bundle. The verdict must be the Linux one on every disk. Linux alone cannot go red here (the link dangles there);
+# the macOS run is the one that does.
+CE5="$TMP/ce5"; mkbundle "$CE5"; mkdir -p "$CE5/sub" "$TMP/ce5out"; echo x > "$CE5/src.txt"; echo x > "$CE5/sub/f.txt"; echo x > "$TMP/ce5out/real.txt"
+ln -s SRC.TXT "$CE5/l.txt"; ln -s src.txt "$CE5/ok.txt"; ln -s SUB "$CE5/dl"; ln -s sub "$CE5/dok"; ln -s "$TMP/CE5OUT/real.txt" "$CE5/out.txt"
+ln -s "$TMP/ce5out/real.txt" "$CE5/outok.txt"
+# `el` is a link to a folder outside the bundle and the link `e` inside it climbs with `..`: the kernel climbs from the
+# folder's REAL place ($TMP), so `el/e` is $TMP/ce5x.txt. Climbing by the spelling (`$CE5/x`) found no such file and
+# refused a valid path, on every disk.
+mkdir -p "$TMP/ce5el"; echo x > "$TMP/ce5x.txt"; ln -s ../ce5x.txt "$TMP/ce5el/e"; ln -s ../ce5el "$CE5/el"
+_ce5_note() { printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nsources:\n  - resource: %s\n    last_modified: "2000-01-01"\n---\nbody\n' "$1" > "$CE5/c.md"; "$CHECK" "$CE5" >"$TMP/ce5.txt" 2>&1; }
+for _r in l.txt dl/f.txt out.txt; do   # a file link, a folder link in the middle of the path, a link to an absolute target outside the bundle
+  _ce5_note "$_r"
+  { grep -q "L3 derived       c.md: $_r is a link whose target is missing or spelled in another case" "$TMP/ce5.txt" && ! grep -q "$_r changed" "$TMP/ce5.txt"; } \
+    && ok "LT-CE5 a source whose link target is spelled in another case ($_r) is not measured" \
+    || bad "LT-CE5 link target case ($_r)" "$(grep 'L3 derived' "$TMP/ce5.txt" | head -2 | tr '\n' ' ')"
+done
+for _r in dok/nothere.txt dok/F.TXT; do   # a correct link (dok -> sub) with a wrong or missing name below it: the plain line, the link is not the cause
+  _ce5_note "$_r"
+  { grep -q "L3 derived       c.md: $_r is not a local file" "$TMP/ce5.txt" && ! grep -q "is a link whose target" "$TMP/ce5.txt"; } \
+    && ok "LT-CE5 a wrong name below a correct link ($_r) gets the plain 'is not a local file' line" \
+    || bad "LT-CE5 plain line ($_r)" "$(grep 'L3 derived' "$TMP/ce5.txt" | head -2 | tr '\n' ' ')"
+done
+for _r in ok.txt dok/f.txt outok.txt el/e; do   # controls: the same links with the target spelled as on disk are measured, also through a linked folder that climbs with ..
+  _ce5_note "$_r"
+  grep -q "L3 derived       c.md: $_r changed " "$TMP/ce5.txt" \
+    && ok "LT-CE5 control: a link whose target is spelled as on disk ($_r) is measured (STALE)" \
+    || bad "LT-CE5 control ($_r)" "$(grep 'L3 derived' "$TMP/ce5.txt" | head -2 | tr '\n' ' ')"
+done
+
+# LT-CE6: case_exact over a table of spellings (relative and absolute, `..`, outside the bundle, wrong case above and
+# below it, links to a file or a folder, chains, dangling, loops, a link above the bundle, NFC/NFD, trailing slash, `.`).
+# T: True on every disk. F: False on every disk. I: False where the disk ignores case (the link target is spelled in another
+# case there; on a case-sensitive disk the link dangles and is not judged). {R} is the temp root, {B} the bundle in it;
+# a path without a leading `/` is relative to the bundle folder. Each row was run on macOS and on Debian.
+cat > "$TMP/ce6.py" <<'PY'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+from okf_guard import case_exact
+root = os.path.realpath(sys.argv[2]); os.makedirs(root + "/Repo/b/sub/Deep"); os.makedirs(root + "/Repo/out"); os.makedirs(root + "/elsewhere")
+B = root + "/Repo/b"
+for f in ("/Repo/b/src.txt", "/Repo/b/sub/f.txt", "/Repo/b/sub/Deep/g.txt", "/Repo/x.txt", "/Repo/out/real.txt", "/Repo/x2.txt", "/Repo/b/caf\u00e9.txt"):
+    open(root + f, "w").close()
+for target, name in (("src.txt", "ln_ok"), ("SRC.TXT", "ln_badcase"), ("sub", "dl_ok"), ("SUB", "dl_bad"), ("nothere.txt", "dangling"),
+                     ("loop2", "loop1"), ("loop1", "loop2"), ("../x.txt", "up_ok"), ("../X.TXT", "up_bad"),
+                     (root + "/Repo/out/real.txt", "abs_out_ok"), (root + "/Repo/OUT/real.txt", "abs_out_bad"),
+                     ("ln_badcase", "chain_bad"), ("ln_ok", "chain_ok"), ("sub/Deep", "dl_deep_ok"), ("sub/deep", "dl_deep_bad"),
+                     (".", "self_dot"), ("../../elsewhere", "el"), ("../../elsewhere", "elBAD"), ("../../ELSEWHERE", "el_badtarget")):
+    os.symlink(target, B + "/" + name)
+os.symlink("../Repo/x2.txt", root + "/elsewhere/e")   # climbs from the folder's REAL place
+os.symlink(B, root + "/BundleLink"); os.symlink(root + "/repo/b", root + "/BundleLinkBad")
+# A link whose text climbs with `..`, in a bundle reached through a link or typed in another case: only the spelling below
+# the bundle is judged, so the answer is the same however the bundle path is typed (depth 1, 2 and 3, a chain, a bad case).
+TB = root + "/Top/Repo/b"; os.makedirs(TB + "/sub/Deep/Dd"); open(TB + "/src.txt", "w").close(); open(root + "/Top/Repo/x.txt", "w").close()
+for target, name in (("../src.txt", "sub/up"), ("../../src.txt", "sub/Deep/u"), ("../../../src.txt", "sub/Deep/Dd/u3"), ("../x.txt", "up2"),
+                     ("../sub/up", "sub/c"), ("sub/c", "c2"), ("../SRC.TXT", "sub/upbad")):
+    os.symlink(target, TB + "/" + name)
+os.symlink(root + "/Top", root + "/L2"); os.symlink(root + "/Top/repo/b", root + "/LB2")
+ci = os.path.exists(root + "/rEPO")
+ROWS = [
+    ('{R}/Repo/b/src.txt', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/SRC.TXT', '{R}/Repo/b', 'F'),
+    ('{R}/Repo/b/sub/f.txt', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/Sub/f.txt', '{R}/Repo/b', 'F'),
+    ('{R}/Repo/b/sub/Deep/g.txt', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/sub/deep/g.txt', '{R}/Repo/b', 'F'),
+    ('{R}/Repo/b/./src.txt', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/sub/../src.txt', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/sub/../SRC.txt', '{R}/Repo/b', 'F'),
+    ('{R}/Repo/b/sub/', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/sub/Deep/', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/sub/DEEP/', '{R}/Repo/b', 'F'),
+    ('{R}/Repo/b/../x.txt', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/../X.TXT', '{R}/Repo/b', 'F'),
+    ('{R}/Repo/b/../../Repo/x.txt', '{R}/Repo/b', 'T'),
+    ('{R}/REPO/b/src.txt', '{R}/Repo/b', 'F'),
+    ('{R}/Repo/b/src.txt', None, 'T'),
+    ('{R}/REPO/b/src.txt', None, 'F'),
+    ('{R}/Repo/out/real.txt', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/OUT/real.txt', '{R}/Repo/b', 'F'),
+    ('{R}/Repo/out/real.txt', None, 'T'),
+    ('/etc/hosts', '{R}/Repo/b', 'T'),
+    ('/ETC/hosts', '{R}/Repo/b', 'F'),
+    ('/etc/hosts', None, 'T'),
+    ('/Etc/Hosts', None, 'F'),
+    ('{R}/Repo/b/caf\xe9.txt', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/cafe\u0301.txt', '{R}/Repo/b', 'F'),
+    ('{R}/Repo/b/CAF\xc9.txt', '{R}/Repo/b', 'F'),
+    ('{R}/Repo/b/dangling', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/loop1', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/nothere.txt', '{R}/Repo/b', 'F'),
+    ('{R}/Repo/b/dl_ok/f.txt', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/dl_deep_ok/g.txt', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/self_dot/src.txt', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/self_dot/self_dot/src.txt', '{R}/Repo/b', 'T'),
+    ('{R}/BundleLink/src.txt', '{R}/Repo/b', 'T'),
+    ('{R}/BundleLink/src.txt', None, 'T'),
+    ('{R}/BundleLinkBad/src.txt', None, 'I'),
+    ('{R}/BundleLinkBad/src.txt', '{R}/BundleLinkBad', 'T'),
+    ('{R}/Repo/b/ln_ok', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/ln_badcase', '{R}/Repo/b', 'I'),
+    ('{R}/Repo/b/dl_bad/f.txt', '{R}/Repo/b', 'I'),
+    ('{R}/Repo/b/dl_ok/f.txt', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/up_ok', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/up_bad', '{R}/Repo/b', 'I'),
+    ('{R}/Repo/b/abs_out_ok', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/abs_out_bad', '{R}/Repo/b', 'I'),
+    ('{R}/Repo/b/chain_ok', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/chain_bad', '{R}/Repo/b', 'I'),
+    ('{R}/Repo/b/el/e', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/el/e', None, 'T'),
+    ('{R}/Repo/b/elBAD/e', '{R}/Repo/b', 'T'),
+    ('{R}/Repo/b/el_badtarget/e', '{R}/Repo/b', 'I'),
+    ('{R}/Repo/b/dl_deep_bad/g.txt', '{R}/Repo/b', 'I'),
+    ('{R}/Repo/b/ln_badcase', None, 'I'),
+    ('src.txt', None, 'T'),
+    ('SRC.TXT', None, 'F'),
+    ('./src.txt', None, 'T'),
+    ('../x.txt', None, 'T'),
+    ('../X.TXT', None, 'F'),
+    ('../x.txt', '.', 'T'),
+    ('sub/../src.txt', None, 'T'),
+    ('ln_ok', None, 'T'),
+    ('ln_badcase', None, 'I'),
+    ('ln_badcase', '.', 'I'),
+]
+for typed in ("{R}/L2/REPO/b", "{R}/L2/Repo/b", "{R}/Top/REPO/b", "{R}/LB2"):
+    for c in ("src.txt", "sub/up", "sub/Deep/u", "sub/Deep/Dd/u3", "up2", "sub/c", "c2"):
+        ROWS.append((typed + "/" + c, typed, "T"))
+    ROWS.append((typed + "/sub/upbad", typed, "I"))
+os.chdir(B); bad = 0
+for path, base, want in ROWS:
+    path = path.replace("{R}", root).replace("{B}", B); base = base.replace("{R}", root).replace("{B}", B) if base else None
+    exp = {"T": True, "F": False, "I": not ci}[want]
+    got = case_exact(path, base)
+    if got != exp:
+        bad += 1; print("BAD", path.replace(root, "{R}"), base and base.replace(root, "{R}"), "want", exp, "got", got)
+print("rows", len(ROWS), "bad", bad)
+PY
+_ce6=$(python3 "$TMP/ce6.py" "$HERE" "$TMP/ce6" 2>&1)
+[ "$_ce6" = "rows 97 bad 0" ] && ok "LT-CE6 case_exact gives the expected answer for 97 spellings (relative, absolute, .., outside, links, loops, NFC/NFD)" \
+  || bad "LT-CE6 case_exact table" "$(printf '%s' "$_ce6" | head -5 | tr '\n' ' ')"
+
+# LT-CE7: a seeded differential. Random trees: a bundle below 1 to 3 real folders; random links in it (file and folder links,
+# chains, `..`, absolute texts, one name in another case); the bundle path typed exactly, in another case, below a link,
+# below a link in another case, and as a link whose text is in another case. For each cited spelling that exists,
+# `case_exact` must equal the reference: would a case-SENSITIVE disk resolve it exactly as written, judging only below the
+# bundle (walk the names component by component with os.listdir and exact match, `..` from the real place, links by their
+# text)? On a case-sensitive disk the answer is True wherever the path exists; on macOS the in-another-case rows are the
+# ones that can differ. OKF_CE_TREES sets the number of trees (300 here: about half a minute on macOS; 5,000 for a full proof).
+cat > "$TMP/ce7.py" <<'PY'
+import os, random, shutil, sys
+sys.path.insert(0, sys.argv[1])
+from okf_guard import case_exact
+root = os.path.realpath(sys.argv[2]); trees = int(sys.argv[3]); per_variant = 8
+rng = random.Random(20261022)
+J = os.path.join
+listed = {}
+
+def ls(d):
+    # Folders above the test root do not change during the run: list them once (a temp folder can hold thousands of entries).
+    if d == root or d.startswith(root + "/"):
+        return os.listdir(d)
+    if d not in listed:
+        listed[d] = os.listdir(d)
+    return listed[d]
+
+def resolve(start, parts, depth=0):
+    """The reference: walk `parts` from the real folder `start` the way a case-SENSITIVE disk does. Every name must be in
+    the listing exactly as written, `..` climbs from the real place, a link is followed by its text. None: a loop."""
+    cur = start
+    for name in parts:
+        if name in ("", "."):
+            continue
+        if name == "..":
+            cur = os.path.dirname(cur); continue
+        if depth > 20:
+            return None
+        if name not in ls(cur):
+            return False
+        nxt = J(cur, name)
+        if os.path.islink(nxt):
+            text = os.readlink(nxt)
+            r = resolve("/" if text.startswith("/") else cur, text.split("/"), depth + 1)
+            if not r:
+                return r
+            cur = r[1]
+        else:
+            cur = nxt
+    return True, cur
+
+def under(a, b): return a == b or b.startswith(a + "/")
+n = dict(samples=0, other_case=0, no_base=0, bad=0)
+
+def note(kind, p, want, got):
+    n["bad"] += 1
+    if n["bad"] <= 10:
+        print("MISMATCH", kind, p.replace(root, "<R>"), "want", want, "got", got)
+
+for i in range(trees):
+    # Folder listings are cached per run, and each tree adds folders under the shared root: drop the cache per tree.
+    sys.modules["okf_guard"]._listing.cache_clear(); sys.modules["okf_guard"]._names.cache_clear()
+    T = J(root, f"t{i}"); os.makedirs(T)
+    anc = rng.sample(["Top", "Repo", "Mid"], rng.randint(1, 3))     # real folders from the temp root to the bundle
+    dirs = [T]
+    for a in anc: dirs.append(J(dirs[-1], a))
+    B = J(dirs[-1], "b"); os.makedirs(J(B, "sub/Deep/Dd"))
+    for k, P in enumerate(dirs[1:], 1):
+        os.makedirs(J(P, "Side")); open(J(P, f"x{k}.txt"), "w").close(); open(J(P, "Side", "s.txt"), "w").close()
+    files = ["src.txt", "sub/f.txt", "sub/Deep/g.txt", "sub/Deep/Dd/h.txt"]
+    for f in files: open(J(B, f), "w").close()
+    # random links inside the bundle: file links, folder links, chains, `..`, absolute texts, one segment in another case
+    targets = [(J(B, f), None) for f in files] + [(J(B, "sub"), "f.txt"), (J(dirs[-1], "Side"), "s.txt"), (J(dirs[1], "x1.txt"), None)]
+    links = []                                             # (path below the bundle, physical path, a file inside it or None)
+    for k in range(rng.randint(3, 7)):
+        reld = rng.choice(["", "sub", "sub/Deep", "sub/Deep/Dd"]); d = J(B, reld) if reld else B
+        tgt, inner = rng.choice(targets + [(l[1], l[2]) for l in links])
+        text = os.path.relpath(tgt, d) if rng.random() < 0.5 else tgt
+        if rng.random() < 0.35:                            # never a name at or above the bundle: those are the typed part
+            segs, cur, cand = text.split("/"), (d if text[0] != "/" else "/"), []
+            for j, s in enumerate(segs):
+                if s == "..": cur = os.path.dirname(cur)
+                elif s not in ("", "."):
+                    cur = J(cur, s)
+                    if not under(cur, B) and not os.path.islink(cur) or j == len(segs) - 1: cand.append(j)
+            if cand:
+                j = rng.choice(cand); segs[j] = segs[j].swapcase(); text = "/".join(segs)
+        os.symlink(text, J(d, f"k{k}"))
+        links.append(((reld + "/" if reld else "") + f"k{k}", J(d, f"k{k}"), inner))
+    # the bundle path as typed: exact, in another case, below a link, below a link in another case, and as a link
+    flip = lambda names: [s.swapcase() if rng.random() < 0.6 else s for s in names]
+    j = rng.randint(0, len(anc) - 1)
+    os.symlink(dirs[j + 1] if rng.random() < 0.5 else os.path.relpath(dirs[j + 1], T), J(T, "L"))
+    btext = (B if rng.random() < 0.5 else os.path.relpath(B, T)).split("/")
+    os.symlink("/".join(s.swapcase() if (s in anc and rng.random() < 0.6) else s for s in btext), J(T, "LB"))
+    for typed, climbs in ((B, True), (J(T, *flip(anc), "b"), True), (J(T, "L", *anc[j + 1:], "b"), True),
+                          (J(T, "L", *flip(anc[j + 1:]), "b"), True), (J(T, "LB"), False)):
+        if not os.path.isdir(typed):
+            continue                                       # a case-sensitive disk does not know this spelling
+        rels = list(files) + [l[0] for l in links] + [f"{l[0]}/{l[2]}" for l in links if l[2]]
+        rels = [r for r in rels] + ["./" + r for r in rels] + ["sub/../" + r for r in rels] + \
+               ["/".join(r.split("/")[:-1] + [r.split("/")[-1].swapcase()]) for r in rels]
+        rng.shuffle(rels); rels = rels[:per_variant]
+        if climbs:                                         # `..` out of the bundle, over real folders only (the path is cut lexically)
+            names = typed.split("/")
+            for up in range(1, len(anc) + 1):
+                if os.path.islink("/".join(names[:len(names) - up + 1])): break
+                rels += [f"{'/'.join(['..'] * up)}/x{len(anc) + 1 - up}.txt", f"{'/'.join(['..'] * up)}/Side/s.txt"]
+        for rel in rels:
+            p = typed + "/" + rel
+            if not os.path.exists(p):
+                continue
+            want = resolve(os.path.realpath(typed), rel.split("/"))
+            if want is None:
+                continue
+            got = case_exact(p, typed); n["samples"] += 1; n["other_case"] += (not want)
+            if got != bool(want): note("below the bundle", p, bool(want), got)
+            if ".." not in rel.split("/") and rng.random() < 0.02:   # no base: every name is judged (okf-verify); `..` is cut before that call
+                w0 = resolve("/", p.split("/"))
+                if w0 is not None:
+                    n["no_base"] += 1
+                    g0 = case_exact(p)
+                    if g0 != bool(w0): note("no base", p, bool(w0), g0)
+    shutil.rmtree(T)
+print("trees", trees, "samples", n["samples"], "in-another-case", n["other_case"], "no-base", n["no_base"], "mismatches", n["bad"])
+sys.exit(1 if n["bad"] else 0)
+PY
+mkdir -p "$TMP/ce7"
+_ce7=$(python3 "$TMP/ce7.py" "$HERE" "$TMP/ce7" "${OKF_CE_TREES:-300}" 2>&1); _ce7rc=$?
+{ [ "$_ce7rc" -eq 0 ] && printf '%s' "$_ce7" | grep -q ' mismatches 0$'; } \
+  && ok "LT-CE7 case_exact equals the case-sensitive reference on random trees: $(printf '%s' "$_ce7" | tail -1)" \
+  || bad "LT-CE7 differential" "rc=$_ce7rc $(printf '%s' "$_ce7" | head -6 | tr '\n' ' ')"
 
 # LT-SV1: the spec status list has one source, the vendored validator's STATUS_VALUES; L3 (l3-lib.sh) reads it. A copy of
 # the plugin with one more value in the validator must make L3 accept it too.

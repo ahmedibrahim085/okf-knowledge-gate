@@ -10,12 +10,49 @@ import errno
 import functools
 import json
 import os
+import re
 import stat
 import sys
 import unicodedata
 from pathlib import Path
 
 SCHEMA = Path(__file__).resolve().parent.parent / "config" / "okf-check-block.json"
+# Controls (C0, DEL, C1), the bidi controls that reorder the text around a name on a terminal (U+061C, U+200E, U+200F, U+202A to
+# U+202E, U+2066 to U+2069), and what surrogateescape makes of a byte that is not UTF-8.
+_UNSAFE = re.compile("[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\udc80-\udcff]")
+_BAD_BYTE = re.compile("[\udc80-\udcff]")
+
+
+def _spell(m):
+    c = ord(m.group())
+    if 0xDC80 <= c <= 0xDCFF:
+        c -= 0xDC00   # the byte surrogateescape kept
+    return "\\x%02x" % c if c < 0x100 else "\\u%04x" % c
+
+
+def shown(name, controls=True):
+    """`name` as a report prints it: a byte that is not UTF-8, a control character (ESC, CR, TAB, the C1 set) and a bidi control
+    are spelled \\xNN (\\uNNNN above U+00FF).
+
+    A name read from disk (Path.rglob, argv, a NUL list) is a str whose undecodable bytes are lone surrogates
+    (surrogateescape): printed to a pipe they are the raw byte, and in --json an unreadable \\udcNN. The same name decoded
+    with errors="replace" is U+FFFD and no longer opens the file: decode names with surrogateescape, show them with this.
+    A control character in a name would reach the terminal as an escape sequence, and a bidi override would reorder what
+    follows it, so the text never carries one. Apply it to the name or the text field, never to a whole formatted line (its
+    line breaks and indent are layout, not name).
+    `controls=False` spells only the bytes that are not UTF-8: for content that is not a name (--json keeps a control
+    character in a quoted claim as its JSON escape), where a lone surrogate would be invalid JSON text.
+    Any other lone surrogate in a message is left as it was.
+    """
+    return (_UNSAFE if controls else _BAD_BYTE).sub(_spell, name)
+
+
+def show_main():
+    """stdin to stdout, each line through shown() (okf-check's say() sends a line here when it holds a byte that is not UTF-8
+    or a control character); the line breaks themselves stay."""
+    text = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+    sys.stdout.buffer.write("\n".join(shown(line) for line in text.split("\n")).encode("utf-8"))
+    return 0
 
 
 def obsidian_path(base, rel):
@@ -57,7 +94,7 @@ def obsidian_path(base, rel):
     return None if missing else stack[-1]
 
 
-def case_exact(p, base=None):
+def case_exact(p, base=None, follow=True):
     """Does every component of `p` appear on disk with the case as written? With `base`, only the part below the folder
     `p` and `base` share is judged.
 
@@ -71,6 +108,8 @@ def case_exact(p, base=None):
     one the two paths share, are not the citation (`okf-check .` with `../x.txt` judges `x.txt` only).
     Both paths are made absolute first: a relative path holding `..` would otherwise be looked for in a listing.
 
+    A component that is a symlink is followed: its target is judged too (`follow=False`: only the names as written).
+
     Returns True when we CANNOT tell (unreadable parent): a verdict must never
     be manufactured out of a failed look. (D-11)
     """
@@ -79,17 +118,40 @@ def case_exact(p, base=None):
     cur, parts = Path(root), Path(os.path.relpath(p, root)).parts
     for part in (() if parts == (".",) else parts):
         try:
-            if part not in os.listdir(cur):
+            if part not in _listing(str(cur)):
                 return False
         except OSError:
             return True
         cur = cur / part
+        if follow and os.path.islink(cur):
+            # The target's spelling is part of the citation too: `l.txt -> SRC.TXT` resolves on a case-insensitive disk
+            # and dangles on Linux. The target is judged like a cited path (below `base`). A `..` in the link text climbs
+            # from the folder's REAL place, which is not where its spelling leads when the folder is itself a link; the
+            # path is then spelled in real names, so `base` is too (else the typed spelling above the bundle is judged).
+            # A link that dangles or loops is not judged.
+            try:
+                text = os.readlink(cur)
+                folder, tbase = os.path.dirname(cur), base
+                if ".." in Path(text).parts:
+                    folder, tbase = os.path.realpath(folder), os.path.realpath(base) if base is not None else None
+                target = os.path.join(folder, text)
+                judge = os.path.samefile(target, cur)
+            except OSError:
+                judge = False
+            if judge and not case_exact(target, tbase):
+                return False
     return True
 
 
 def _fold(name):
     # lower(), as okf-export and Obsidian: casefold() would also match ß to ss.
     return unicodedata.normalize("NFC", name).lower()
+
+
+@functools.lru_cache(maxsize=4096)
+def _listing(folder):
+    # One listing per folder and run: 10,000 citations into one folder of 10,000 notes listed it 10,000 times.
+    return frozenset(os.listdir(folder))
 
 
 @functools.lru_cache(maxsize=4096)
@@ -273,6 +335,9 @@ if __name__ == "__main__":
         sys.exit(freeze_main(sys.argv[2], sys.argv[3], int(sys.argv[4])))
     if len(sys.argv) == 4 and sys.argv[1] in ("read", "lines") and sys.argv[3].isdigit():
         sys.exit(read_main(sys.argv[2], int(sys.argv[3]), trim=sys.argv[1] == "lines"))
+    if len(sys.argv) == 2 and sys.argv[1] == "show":
+        sys.exit(show_main())
     sys.stderr.write("usage: okf_guard.py freeze <src root> <dst root> <cap bytes>  (records on stdin)\n"
-                     "       okf_guard.py read|lines <file> <cap bytes>\n")
+                     "       okf_guard.py read|lines <file> <cap bytes>\n"
+                     "       okf_guard.py show  (text on stdin, controls and non-UTF-8 bytes spelled \\xNN)\n")
     sys.exit(64)

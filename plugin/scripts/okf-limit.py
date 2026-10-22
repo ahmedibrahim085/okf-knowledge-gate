@@ -17,6 +17,8 @@ Stops the command, and writes the reason to <outfile>.limit, when:
     in a session of its own) is outside killpg and is not reached: okflint starts none, and nothing here can reach it.
 Otherwise it exits with the command's status (128 + n for a signal n). No `ps` and no /proc: the memory limit is off and
 the marker says `nomem` once; the time limit still holds.
+However it ends, <outfile>.ms holds the command's elapsed time in whole milliseconds, for a caller that keeps one budget over
+several commands (okf-check's run_layer).
 """
 import os
 import select
@@ -118,7 +120,7 @@ def main():
         os.setsid()
     except OSError:
         pass
-    for stale in (out + ".limit",):
+    for stale in (out + ".limit", out + ".ms"):
         try:
             os.unlink(stale)
         except OSError:
@@ -130,6 +132,7 @@ def main():
             se.write(("okf-limit: cannot run %s: %s\n" % (cmd[0], exc)).encode())
             return 127
     goodbye, watcher = start_watcher(child.pid)
+    t0 = time.monotonic()
     reason = []
 
     def bye(signum, _frame):   # okf-check was told to stop, or Ctrl-C: nothing may outlive it
@@ -147,6 +150,11 @@ def main():
     try:
         return supervise(child, parent, secs, cap, out, mark)
     finally:
+        try:
+            with open(out + ".ms", "w") as fh:
+                fh.write("%d\n" % ((time.monotonic() - t0) * 1000))
+        except OSError:   # the caller then counts its own clock
+            pass
         try:
             os.write(goodbye, b"x")   # the watcher stands down: the command is already stopped
             os.close(goodbye)

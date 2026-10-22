@@ -316,5 +316,172 @@ B="$TMP/r7"; mkbundle "$B"; printf 'okf_check:\n  verify:\n    generated: ["  re
 rc=$(runjson "$B"); got=$(warns)
 { [ "$rc" = 0 ] && [ "$got" = '[["registers/r.md:1", "CONFIRMED", null, true]]' ]; } && ok "S21-LC-R7 a padded generated glob matches" || bad "S21-LC-R7 trim" "rc=$rc got=$got"
 
+section "spaced paths (0.9.41)"
+# An unpinned citation of a file with a space in its name was cut at the first space: `my w.md:10` was read as `w.md:10`, and the
+# words before the space were never looked at. Pinned citations got the rule in 0.9.29 (RV-27).
+# linedet: [claim, verdict, detail] of every line claim.
+linedet() { "$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps([[r["claim"], r["verdict"], r["detail"]] for r in d["results"] if r["kind"] == "line"]))' "$TMP/out.json"; }
+# dets <expr over g, the list of [claim, verdict, detail]>: one python expression on linedet's output.
+dets() { linedet | "$REALPY" -c 'import json,sys; g=json.load(sys.stdin); print(eval(sys.argv[1]))' "$1"; }
+
+# S21-LC-SP1 (negative, false pass): `my w.md` (3 lines) next to `w.md` (20 lines): `my w.md:10` can name either. It was CONFIRMED against w.md.
+B="$TMP/sp1"; mkbundle "$B"; lines "$B/my w.md" 3; lines "$B/w.md" 20; note "$B/a.md" "Read my w.md:10 first."
+rc=$(runjson "$B"); got=$(dets '[g[0][1], "ambiguous" in g[0][2] and "my w.md or w.md" in g[0][2]]')
+{ [ "$rc" = 0 ] && [ "$got" = "['UNRESOLVED', True]" ]; } \
+  && ok "S21-LC-SP1 'my w.md:10' with both my w.md and w.md present is UNRESOLVED naming both files, never CONFIRMED against w.md" || bad "S21-LC-SP1 spaced vs bare" "rc=$rc got=$got $(linedet)"
+
+# S21-LC-SP2 (happy): only `my w.md` (20 lines): line 10 is CONFIRMED and the claim names the file; line 30 is REFUTED against it.
+B="$TMP/sp2"; mkbundle "$B"; lines "$B/my w.md" 20; note "$B/a.md" "Read my w.md:10 and my w.md:30."
+rc=$(runjson "$B"); got=$(dets '[[x[0], x[1]] for x in g]'); det=$(dets 'g[1][2]')
+{ [ "$rc" = 1 ] && [ "$got" = "[['my w.md:10', 'CONFIRMED'], ['my w.md:30', 'REFUTED']]" ] && [ "$det" = "my w.md has 20 lines, line 30 is past the end" ]; } \
+  && ok "S21-LC-SP2 a citation of a file with a space is checked against that file (CONFIRMED, REFUTED naming 'my w.md')" || bad "S21-LC-SP2 spaced happy" "rc=$rc got=$got det=$det"
+
+# S21-LC-SP3 (edge, the reporter's example, verbatim): `docs/Handbook for agents.md` (20 lines) and `AGENTS.md` (3 lines).
+# It was REFUTED against AGENTS.md on a case-insensitive disk and UNRESOLVED against `agents.md` on a case-sensitive one.
+B="$TMP/sp3"; mkbundle "$B"; lines "$B/docs/Handbook for agents.md" 20; lines "$B/AGENTS.md" 3; note "$B/a.md" 'See `docs/Handbook for agents.md:10`.'
+rc=$(runjson "$B"); got=$(dets '[[x[0], x[1]] for x in g]')
+{ [ "$rc" = 0 ] && [ "$got" = "[['docs/Handbook for agents.md:10', 'CONFIRMED']]" ]; } \
+  && ok "S21-LC-SP3 the issue's 'docs/Handbook for agents.md:10' is CONFIRMED against that file, not REFUTED against AGENTS.md" || bad "S21-LC-SP3 issue example" "rc=$rc got=$got"
+
+# S21-LC-SP4 (edge): the short form `Handbook for agents:10` names a note by its file name. With `agents.md` next to it the name is
+# ambiguous (UNRESOLVED, not REFUTED against agents.md); alone, the spaced note is the one checked.
+B="$TMP/sp4"; mkbundle "$B"; lines "$B/Handbook for agents.md" 20; lines "$B/agents.md" 2; note "$B/a.md" "See Handbook for agents:10."
+rc=$(runjson "$B"); got=$(dets '[g[0][1], "ambiguous" in g[0][2]]')
+B2="$TMP/sp4b"; mkbundle "$B2"; lines "$B2/Handbook for agents.md" 20; note "$B2/a.md" "See Handbook for agents:10."
+rc2=$(runjson "$B2"); got2=$(dets '[[x[0], x[1]] for x in g]')
+{ [ "$rc" = 0 ] && [ "$got" = "['UNRESOLVED', True]" ] && [ "$rc2" = 0 ] && [ "$got2" = "[['Handbook for agents.md:10', 'CONFIRMED']]" ]; } \
+  && ok "S21-LC-SP4 the short form 'Handbook for agents:10' is UNRESOLVED next to agents.md, CONFIRMED against the spaced note alone" || bad "S21-LC-SP4 short form" "rc=$rc got=$got rc2=$rc2 got2=$got2"
+
+# S21-LC-SP5 (quoted): `my w.md`:10 -- the quotes say where the name starts, so nothing is cut and nothing is guessed. It was no claim at all.
+B="$TMP/sp5"; mkbundle "$B"; lines "$B/w.md" 20; note "$B/a.md" 'See `my w.md`:10, "my w.md":11 and '"'my w.md':12."
+rc=$(runjson "$B"); got=$(dets '[[x[0], x[1]] for x in g]')
+B2="$TMP/sp5b"; mkbundle "$B2"; lines "$B2/my w.md" 20; lines "$B2/w.md" 3; note "$B2/a.md" 'See `my w.md`:10, "my w.md":11 and '"'my w.md':12."
+rc2=$(runjson "$B2"); got2=$(dets '[[x[0], x[1]] for x in g]')
+{ [ "$rc" = 0 ] && [ "$got" = "[['my w.md:10', 'UNRESOLVED'], ['my w.md:11', 'UNRESOLVED'], ['my w.md:12', 'UNRESOLVED']]" ] \
+  && [ "$rc2" = 0 ] && [ "$got2" = "[['my w.md:10', 'CONFIRMED'], ['my w.md:11', 'CONFIRMED'], ['my w.md:12', 'CONFIRMED']]" ]; } \
+  && ok "S21-LC-SP5 a quoted 'my w.md':N (backtick, double, single) is a claim: UNRESOLVED beside only w.md, CONFIRMED against my w.md" || bad "S21-LC-SP5 quoted" "rc=$rc got=$got rc2=$rc2 got2=$got2"
+
+# S21-LC-SP6 (edge): a folder with a space, `my dir/w.md`, and a root `w.md`. It was UNRESOLVED ('dir/w.md' not found).
+B="$TMP/sp6"; mkbundle "$B"; lines "$B/my dir/w.md" 20; lines "$B/w.md" 3; note "$B/a.md" "Read my dir/w.md:10."
+rc=$(runjson "$B"); got=$(dets '[[x[0], x[1]] for x in g]')
+{ [ "$rc" = 0 ] && [ "$got" = "[['my dir/w.md:10', 'CONFIRMED']]" ]; } \
+  && ok "S21-LC-SP6 'my dir/w.md:10' is checked against the file in the folder with a space" || bad "S21-LC-SP6 spaced folder" "rc=$rc got=$got"
+
+# S21-LC-SP7 (negative): two spaced files of that name (a/my w.md, b/my w.md) and a bare w.md: still ambiguous, never a verdict on w.md.
+B="$TMP/sp7"; mkbundle "$B"; lines "$B/a/my w.md" 20; lines "$B/b/my w.md" 20; lines "$B/w.md" 3; note "$B/n/a.md" "Read my w.md:10."
+rc=$(runjson "$B"); got=$(dets '[g[0][1], "ambiguous" in g[0][2]]')
+{ [ "$rc" = 0 ] && [ "$got" = "['UNRESOLVED', True]" ]; } \
+  && ok "S21-LC-SP7 two files named 'my w.md' plus w.md: UNRESOLVED (ambiguous), no verdict on w.md" || bad "S21-LC-SP7 two spaced files" "rc=$rc got=$got"
+
+# S21-LC-SP8 (edge): the name is the writer's own text, not its words rejoined with one space: `my  w.md` (two spaces), `my<TAB>w.md` and
+# `my<NBSP>w.md` are files of that exact name. They were read as `my w.md`, which is no file, so the claim was CONFIRMED against w.md.
+for sep in '  ' $'\t' $'\xc2\xa0'; do
+  B="$TMP/sp8"; rm -rf "$B"; mkbundle "$B"; lines "$B/my${sep}w.md" 3; lines "$B/w.md" 20; note "$B/a.md" "Read my${sep}w.md:10 first."
+  rc=$(runjson "$B"); got=$(dets '[g[0][1], "ambiguous" in g[0][2], g[0][0].startswith("my"), len(g)]')
+  B2="$TMP/sp8b"; rm -rf "$B2"; mkbundle "$B2"; lines "$B2/my${sep}w.md" 20; note "$B2/a.md" "Read my${sep}w.md:10 first."
+  rc2=$(runjson "$B2"); got2=$(dets '[g[0][1], g[0][2].startswith("my"), g[0][0].startswith("my")]')
+  { [ "$rc" = 0 ] && [ "$got" = "['UNRESOLVED', True, True, 1]" ] && [ "$rc2" = 0 ] && [ "$got2" = "['CONFIRMED', True, True]" ]; } \
+    && ok "S21-LC-SP8 a name with $(printf '%s' "$sep" | od -An -c | tr -s ' ' | tr -d '\n') between its words is that file: UNRESOLVED beside w.md, CONFIRMED alone" || bad "S21-LC-SP8 whitespace" "rc=$rc got=$got rc2=$rc2 got2=$got2"
+done
+
+# S21-LC-SP9 (edge): a name soft-wrapped over two lines (markdown renders the line break as a space) is tried as written and with the
+# break read as one space; a blank line or a code block ends the paragraph, so the words before it are not part of the name.
+B="$TMP/sp9"; mkbundle "$B"; lines "$B/my w.md" 3; lines "$B/w.md" 20; note "$B/a.md" $'Read my\nw.md:10 first.'
+rc=$(runjson "$B"); got=$(dets '[g[0][1], "ambiguous" in g[0][2], g[0][0].startswith("my")]')
+B2="$TMP/sp9b"; mkbundle "$B2"; lines "$B2/my w.md" 20; note "$B2/a.md" $'Read my\nw.md:10 first.'
+rc2=$(runjson "$B2"); got2=$(dets '[g[0][1], g[0][2].startswith("my w.md has")]')
+B3="$TMP/sp9c"; mkbundle "$B3"; lines "$B3/my w.md" 3; lines "$B3/w.md" 20; note "$B3/a.md" $'Read my\n\nw.md:10 and again my\n```\ncode\n```\nw.md:11.'
+rc3=$(runjson "$B3"); got3=$(dets '[[x[0], x[1]] for x in g]')
+{ [ "$rc" = 0 ] && [ "$got" = "['UNRESOLVED', True, True]" ] && [ "$rc2" = 0 ] && [ "$got2" = "['CONFIRMED', True]" ] \
+  && [ "$rc3" = 0 ] && [ "$got3" = "[['w.md:10', 'CONFIRMED'], ['w.md:11', 'CONFIRMED']]" ]; } \
+  && ok "S21-LC-SP9 a soft-wrapped name is found; a blank line or a code block ends the words that may belong to it" || bad "S21-LC-SP9 soft wrap" "rc=$rc got=$got rc2=$rc2 got2=$got2 rc3=$rc3 got3=$got3"
+
+# S21-LC-SP10 (edge): any number of words before the cut may belong to the name, not only the last three.
+for n in 5 12; do
+  nm=$("$REALPY" -c 'import sys; print(" ".join("w%d" % i for i in range(int(sys.argv[1]) - 1)) + " five")' "$n")
+  B="$TMP/sp10"; rm -rf "$B"; mkbundle "$B"; lines "$B/$nm.md" 3; lines "$B/five.md" 20; note "$B/a.md" "Read $nm.md:10 now."
+  rc=$(runjson "$B"); got=$(dets '[g[0][1], "ambiguous" in g[0][2]]')
+  B2="$TMP/sp10b"; rm -rf "$B2"; mkbundle "$B2"; lines "$B2/$nm.md" 20; note "$B2/a.md" "Read $nm.md:10 now."
+  rc2=$(runjson "$B2"); got2=$(dets '[g[0][1], g[0][0] == "'"$nm"'.md:10"]')
+  { [ "$rc" = 0 ] && [ "$got" = "['UNRESOLVED', True]" ] && [ "$rc2" = 0 ] && [ "$got2" = "['CONFIRMED', True]" ]; } \
+    && ok "S21-LC-SP10 a name of $n words is found (UNRESOLVED beside five.md, CONFIRMED alone)" || bad "S21-LC-SP10 $n words" "rc=$rc got=$got rc2=$rc2 got2=$got2"
+done
+
+# S21-LC-SP11 (edge): the quoted SHORT form, `"Handbook for agents":10` and `Handbook for agents`:11, is a claim when a note of that name exists
+# (as the unquoted short form is), and prose in quotes that names no note is not. It was no claim, silently.
+B="$TMP/sp11"; mkbundle "$B"; lines "$B/Handbook for agents.md" 20; lines "$B/agents.md" 2; note "$B/a.md" 'See "Handbook for agents":10, `Handbook for agents`:11 and "Nothing here":3.'
+rc=$(runjson "$B"); got=$(dets '[[x[0], x[1]] for x in g]')
+{ [ "$rc" = 0 ] && [ "$got" = "[['Handbook for agents:10', 'CONFIRMED'], ['Handbook for agents:11', 'CONFIRMED']]" ]; } \
+  && ok "S21-LC-SP11 a quoted short form that names a note is a claim (never cut to agents.md); one that names no note is not" || bad "S21-LC-SP11 quoted short form" "rc=$rc got=$got"
+
+# S21-LC-SP12 (edge): a quoted name with a non-ASCII letter is a claim, as the unquoted form is.
+B="$TMP/sp12"; mkbundle "$B"; lines "$B/café notes.md" 20; lines "$B/notes.md" 3; note "$B/a.md" 'See `café notes.md`:10 and café notes.md:11.'
+rc=$(runjson "$B"); got=$(dets '[[x[0], x[1]] for x in g]')
+{ [ "$rc" = 0 ] && [ "$got" = "[['café notes.md:10', 'CONFIRMED'], ['café notes.md:11', 'UNRESOLVED']]" ]; } \
+  && ok "S21-LC-SP12 \`café notes.md\`:10 is a claim (CONFIRMED against that file); unquoted beside notes.md it is ambiguous" || bad "S21-LC-SP12 unicode quoted" "rc=$rc got=$got"
+
+# S21-LC-SP13 (edge): two citations that differ only by the words before them are two claims with two names: the ambiguous one names the
+# spaced form, so the report does not print `w.md:10` twice with different verdicts.
+B="$TMP/sp13"; mkbundle "$B"; lines "$B/my w.md" 3; lines "$B/w.md" 20; note "$B/a.md" "my w.md:10 and w.md:10"
+rc=$(runjson "$B"); got=$(dets '[[x[0], x[1]] for x in g]')
+{ [ "$rc" = 0 ] && [ "$got" = "[['my w.md:10', 'UNRESOLVED'], ['w.md:10', 'CONFIRMED']]" ]; } \
+  && ok "S21-LC-SP13 the ambiguous citation's claim names the spaced form (my w.md:10), the bare one keeps w.md:10" || bad "S21-LC-SP13 claim text" "rc=$rc got=$got"
+
+# S21-LC-SP14 (edge): only a LINE BREAK is read as a space. `my  w.md` (two spaces), `my<TAB>w.md` and `my<NBSP>w.md` with only `my w.md` on
+# disk name no file, so the claim is not checked against `my w.md` (it was CONFIRMED) and `w.md` is absent.
+for sep in '  ' $'\t' $'\xc2\xa0'; do
+  B="$TMP/sp14"; rm -rf "$B"; mkbundle "$B"; lines "$B/my w.md" 20; note "$B/a.md" "Read my${sep}w.md:15."
+  rc=$(runjson "$B"); got=$(dets '[[x[0], x[1]] for x in g]')
+  { [ "$rc" = 0 ] && [ "$got" = "[['w.md:15', 'UNRESOLVED']]" ]; } \
+    && ok "S21-LC-SP14 'my${sep}w.md:15' ($(printf '%s' "$sep" | od -An -c | tr -s ' ' | tr -d '\n')) with only 'my w.md' on disk is not checked against it" || bad "S21-LC-SP14 whitespace not collapsed" "rc=$rc got=$got"
+done
+# ... and the writer's spelling decides: `a  b.md` and `a b.md` are two files, each cited by its own spelling.
+B="$TMP/sp14b"; mkbundle "$B"; lines "$B/a b.md" 20; lines "$B/a  b.md" 20; note "$B/a.md" "See a  b.md:15 and a b.md:16."
+rc=$(runjson "$B"); got=$(dets '[[x[0], x[1]] for x in g]')
+{ [ "$rc" = 0 ] && [ "$got" = "[['a  b.md:15', 'CONFIRMED'], ['a b.md:16', 'CONFIRMED']]" ]; } \
+  && ok "S21-LC-SP14 'a  b.md' and 'a b.md' are two files, each CONFIRMED under the claim as written" || bad "S21-LC-SP14 two spellings" "rc=$rc got=$got"
+
+# S21-LC-SP15 (edge): prose before a citation is read as part of the name when a file of that name exists: that is the design (RV-27). With
+# `old notes w.md` beside `w.md`, 'I read the old notes w.md:15' is ambiguous.
+B="$TMP/sp15"; mkbundle "$B"; lines "$B/old notes w.md" 3; lines "$B/w.md" 20; note "$B/a.md" "I read the old notes w.md:15"
+rc=$(runjson "$B"); got=$(dets '[g[0][0], g[0][1], "ambiguous" in g[0][2]]')
+{ [ "$rc" = 0 ] && [ "$got" = "['old notes w.md:15', 'UNRESOLVED', True]" ]; } \
+  && ok "S21-LC-SP15 prose that spells an existing file name makes the citation ambiguous (UNRESOLVED), by design" || bad "S21-LC-SP15 prose before the citation" "rc=$rc got=$got"
+
+# S21-LC-SP16..19 (edge): the repositories' file names come from `git ls-files` (not the ignored ones). When git cannot answer, the folder is walked
+# (.git skipped) up to OKF_VERIFY_WALK_LIMIT entries; past it a citation with words before it is UNRESOLVED and the detail names the limit, as it
+# cannot be ruled out that those words spell a file there. A citation with no word before it is unaffected.
+git_shim() { # <dir> <fail|hang>: a git that fails or hangs on ls-files and is the real git otherwise
+  mkdir -p "$1"; printf '#!/bin/sh\ncase " $* " in *" ls-files "*) %s;; esac\nexec "%s" "$@"\n' "$([ "$2" = hang ] && echo 'exec sleep 30' || echo 'echo boom >&2; exit 128')" "$(command -v git)" > "$1/git"; chmod +x "$1/git"
+}
+R="$TMP/sp16r"; mkdir -p "$R/big"; git init -q "$R"; lines "$R/my w.md" 20; printf 'big/\n' > "$R/.gitignore"
+i=1; while [ "$i" -le 50 ]; do : > "$R/big/f$i.md"; i=$((i + 1)); done
+B="$TMP/sp16"; mkbundle "$B"; note "$B/a.md" $'Read my w.md:10.\n\nw.md:11.'
+git_shim "$TMP/shim-fail" fail; git_shim "$TMP/shim-hang" hang
+out_real=$( (export OKF_VERIFY_WALK_LIMIT=20; runjson "$B" --repo "$R"; dets '[[x[0].split("/")[-1], x[1]] for x in g]') )
+out_fail=$( (export OKF_VERIFY_WALK_LIMIT=20; PATH="$TMP/shim-fail:$PATH"; runjson "$B" --repo "$R"; dets '[[x[0].split("/")[-1], x[1], "20 entries" in x[2]] for x in g]') )
+{ [ "$out_real" = "0[['my w.md:10', 'CONFIRMED'], ['w.md:11', 'UNRESOLVED']]" ]; } \
+  && ok "S21-LC-SP16 with git answering, an ignored folder of 50 files is not listed: 'my w.md:10' is CONFIRMED against the repository's file" || bad "S21-LC-SP16 ignored folder" "got=$out_real"
+{ [ "$out_fail" = "0[['w.md:10', 'UNRESOLVED', True], ['w.md:11', 'UNRESOLVED', False]]" ]; } \
+  && ok "S21-LC-SP17 git failing, the walk passes 20 entries: the citation with words before it is UNRESOLVED naming the limit; the one without is not changed" || bad "S21-LC-SP17 walk past the limit" "got=$out_fail"
+# git failing or hanging (15 s) with the folder under the limit: the walk gives the same answer as git (and does not count .git)
+R2="$TMP/sp18r"; git init -q "$R2"; lines "$R2/my w.md" 20; B2="$TMP/sp18"; mkbundle "$B2"; note "$B2/a.md" "Read my w.md:10."
+for mode in fail hang; do
+  out=$( (export OKF_VERIFY_WALK_LIMIT=20; PATH="$TMP/shim-$mode:$PATH"; runjson "$B2" --repo "$R2"; dets '[[x[0].split("/")[-1], x[1]] for x in g]') )
+  [ "$out" = "0[['my w.md:10', 'CONFIRMED']]" ] \
+    && ok "S21-LC-SP18 git $([ "$mode" = hang ] && echo hanging || echo failing) on ls-files: the walk (.git skipped, 20-entry limit) finds 'my w.md'" || bad "S21-LC-SP18 walk, git $mode" "got=$out"
+done
+
+# S21-LC-CV1 (edge): a case-variant bare name is not the file. `spec.md:10` beside `Spec.md` (3 lines) was REFUTED against Spec.md on a
+# case-insensitive disk (is_file() is case-blind there) and UNRESOLVED on a case-sensitive one: one bundle, two verdicts.
+B="$TMP/cv1"; mkbundle "$B"; lines "$B/Spec.md" 3; note "$B/a.md" "See spec.md:10 and Spec.md:10."
+if [ -e "$B/SPEC.MD" ]; then
+  rc=$(runjson "$B"); got=$(dets '[[x[0], x[1]] for x in g]')
+  { [ "$rc" = 1 ] && [ "$got" = "[['spec.md:10', 'UNRESOLVED'], ['Spec.md:10', 'REFUTED']]" ]; } \
+    && ok "S21-LC-CV1 a case-variant name is UNRESOLVED on a case-insensitive disk, as on a case-sensitive one" || bad "S21-LC-CV1 case variant" "rc=$rc got=$got"
+else
+  skip "S21-LC-CV1 -- filesystem is case-sensitive, the defect cannot occur (skip, not a pass)"
+fi
+
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

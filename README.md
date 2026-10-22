@@ -67,7 +67,11 @@ Also shipped:
 - An opt-in PostToolUse hook (`okf-edit-hook.py`) that checks each note Claude writes or edits inside a bundle
   (`okf-check --file`, L1 and Trust) and gives Claude one warning line on an L1 error or a Trust warning. Off until
   `edit_hook: true` or `OKF_EDIT_HOOK=1`; time-boxed and silent on any failure. It is registered for every install
-  (`hooks/hooks.json`); while off it only reads the event and exits.
+  (`hooks/hooks.json`); while off it only reads the event and exits. The bundle is the nearest folder above the edited
+  note that holds an `okf-base.yaml`, so a manifest above the project (for example in `$HOME`) with `edit_hook: true`
+  switches it on for every note below it; that is by design, because the hook runs only the plugin's own code.
+  `okf-check --doctor` says whether the hook is on for the current folder (or the bundle you name), which file switched
+  it on, and whether its config (`config/edit-hook.json`) is readable: the hook stays silent when it is not.
 - A skill, `okf`, so an agent knows how to run the gate and read its result.
 
 ## Install
@@ -105,7 +109,7 @@ okf-check <bundle>                 # all layers
 okf-check <bundle> --fail-stale    # staleness blocks (exit 4)
 okf-check <bundle> --strict-trust  # unauthenticated human verification and near-miss actors block (exit 1)
 okf-check <bundle> --fail-on-change   # exit 6 if the bundle changes during the scan
-okf-check <bundle> --json          # machine-readable summary (`l2_findings[]` lists house-rule errors; `l2_advisories[]` the advisories behind `l2_warnings`, as `RULE file — message`, cut at 200 with a count; `warnings[]` also lists the `okf_check.size` warnings; `misplaced_keys[]` appears only when an `okf_check` option sits at the top level of `okf-base.yaml`; `sizes[]` only when `okf_check.size` is set, `facts[]` only when `okf_check.facts` is)
+okf-check <bundle> --json          # machine-readable summary (`layers_not_run[]` names each layer that printed `COULD NOT RUN`, `[]` when none; `l2_findings[]` lists house-rule errors; `l2_advisories[]` the advisories behind `l2_warnings`, as `RULE file — message`, cut at 200 with a count; `warnings[]` also lists the `okf_check.size` warnings; `misplaced_keys[]` appears only when an `okf_check` option sits at the top level of `okf-base.yaml`; `sizes[]` only when `okf_check.size` is set, `facts[]` only when `okf_check.facts` is)
 okf-check <bundle> --duplicates    # list candidate duplicate notes (a report, always exit 0)
 okf-check <bundle> --duplicates-body   # the same, plus notes whose bodies are similar
 okf-check <bundle> --facts [NAME]  # every statement of the declared facts (a dry run, always exit 0)
@@ -376,6 +380,7 @@ body, since every such stub is the same single shingle; the report counts those 
 | Variable | Default | Effect |
 |---|---|---|
 | `OKF_L1_TIMEOUT` | 120 | Seconds L1's validator may run in all (the runs that find a note it crashes on share them); its cost grows with frontmatter size. Past it L1 is `COULD NOT RUN — the validator timed out` (exit 2). `0` or a non-number means the default. |
+| `OKF_LAYER_TIMEOUT` | 300 | Seconds the Python layers (Trust, Successor, Owner, Size, derived L3, `--duplicates` and the scoped `--file` check) may run in all: ONE budget for the lot, counted in real milliseconds, as `OKF_L1_TIMEOUT` is for L1. Four of them parse every note's frontmatter (3.6 to 7.7 s per MB, linear), and a parse cannot be stopped from inside Python. Past it the layer is `COULD NOT RUN` naming the limit (exit 2, and `layers_not_run` in `--json`); a layer with no time left is not started. Rule for the value: 4 layers x the parse time of your largest notes, plus the rest: one 4.5 MB note took 16 s per layer on a fast Mac and 35 s on a slower one, so the default fits a note at the 5 MB cap; raise it for several such notes. Size parses no YAML but reads every note whole (54 to 74 ms for 4.5 MB), so it shares the budget. `0` or a non-number means the default; `1` is refused (exit 64): below 2 seconds the same bundle gets different verdicts from run to run. |
 | `OKF_L2_TIMEOUT` | 120 | Seconds before a hung `okflint` is cut off in L2 (exit 2, named). `0` or a non-number means the default. |
 | `OKF_L2_MAX_RSS_MB` | 2048 | Megabytes `okflint` and its children may hold before they are stopped (exit 2, named). Sampled four times a second with `ps`. `0` or a non-number means the default. |
 | `OKF_L2_ISOLATE_MAX` | 200 | When okflint crashes on a bundle of at most this many notes, L2 finds the crashing notes (one run each), names them and checks the rest. Larger bundles keep the plain "crashed" report. |
@@ -384,7 +389,7 @@ body, since every such stub is the same single shingle; the report counts those 
 | `OKF_SEARCH_BIN` | `okf` on PATH | The `okf` search binary the doc-reuse reminder uses to name the closest notes. |
 | `OKF_DOC_DIRS_FILE` | `~/.config/okf/doc-dirs` | File of extra shell globs for locations the doc-reuse guard watches. |
 | `OKF_EDIT_HOOK` | off | `1` turns the edit hook on for every bundle, without the `edit_hook` key. |
-| `OKF_EDIT_HOOK_TIMEOUT` | `plugin/config/edit-hook.json` | Seconds the edit hook waits for the check before it gives up silently, capped at `max_seconds`. A value that is not a positive number uses the default. |
+| `OKF_EDIT_HOOK_TIMEOUT` | `plugin/config/edit-hook.json` | Seconds the edit hook waits for the check before it gives up silently, capped at `max_seconds`. A value that is not a positive number uses the default. The hook's check runs under `OKF_LAYER_TIMEOUT` too, but this box (4 s by default, 4.5 s at most) is far smaller and fires first: the hook stays silent, exits 0 and the check is stopped with it, so the layer limit matters in the hook only when set below the box. |
 | `OKF_MEMORY_BIN` | `okf` on PATH | The okf-memory binary for the L2 graph layer; setting it also turns the layer on. |
 | `OKF_GRAPH_TIMEOUT` | 60 | Seconds okf-memory may run before the L2 graph line says COULD NOT RUN. |
 
@@ -407,7 +412,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.40
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.41
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -423,7 +428,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.40
+    rev: v0.9.41
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

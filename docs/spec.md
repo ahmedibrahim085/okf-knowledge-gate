@@ -253,6 +253,25 @@ and the brand-new machine this tool targets does not have it.
 | LT-21i | the validator exits 124 | COULD NOT RUN, never "timed out" | ✅ |
 | LT-21h | the bundle run fails and each note alone hangs (4 notes, limit 2 s) | one `OKF_L1_TIMEOUT` budget for all of L1: timed out, exit 2, under 10 s (not N × the limit) | ✅ |
 | LT-21f | `OKF_L1_TIMEOUT=0` | falls back to the default; never an instant kill | ✅ |
+| LT-LL1 | the Python layers' frontmatter loader sleeps 30 s on a note (stub; `OKF_LAYER_TIMEOUT=2`) | the Python layers (Trust, Successor, Owner, Size, derived L3, `--duplicates`, the scoped `--file` check) are each `COULD NOT RUN` naming `OKF_LAYER_TIMEOUT`, exit 2; the budget is ONE for all, counted in real milliseconds | ✅ |
+| LT-LL2 | the same run, afterwards | no layer process is left running | ✅ |
+| LT-LL3 | the same run | one budget for all the layers: only the first one started its parse | ✅ |
+| LT-LL4 | `OKF_LAYER_TIMEOUT=0` | falls back to the default (300 s); never an instant kill | ✅ |
+| LT-LL5 | a real 0.9 MB frontmatter note, `OKF_LAYER_TIMEOUT=2` | Trust is `COULD NOT RUN` naming the limit, exit 2 | ✅ |
+| LT-LL6 | the same run, afterwards | no process that names the bundle is left | ✅ |
+| LT-LL7 | `--duplicates` past the limit | `Duplicates` is `COULD NOT RUN` naming the limit, exit 2 | ✅ |
+| LT-LL8 | `--file` past the limit (stub) | `COULD NOT RUN` naming the limit on stderr, `<note> was not checked`, exit 2 | ✅ |
+| LT-LL9 | `--file` on the real 0.9 MB note, `OKF_LAYER_TIMEOUT=2` | the same, in under 8 s | ✅ |
+| LT-LL10 | after a `--file` time limit | no process is left | ✅ |
+| LT-LL11 | the edit hook, a layer that outlasts `OKF_EDIT_HOOK_TIMEOUT` | the hook's smaller box fires first: silent, exit 0, the layer stopped with the check | ✅ |
+| LT-LL12 | `okf-limit.py` runs a 0.3 s command | `<out>.ms` holds its elapsed time in milliseconds | ✅ |
+| LT-LL13 | a healthy 9-note bundle, `OKF_LAYER_TIMEOUT=2`, ten runs | one exit status every time | ✅ |
+| LT-LL14 | only the Size reader is slow (stub) | `Size` is `COULD NOT RUN` naming the limit; the layers before it are not stopped | ✅ |
+| LT-LL15 | `--json` with layers that could not run | `layers_not_run` lists their names in order; `[]` when none | ✅ |
+| LT-LL16 | `--duplicates --json` past the limit (stub) | still one JSON document on stdout (`exit` 2, `layers_not_run` `["Duplicates"]`, `reason`), the reason on stderr, exit 2 | ✅ |
+| LT-LL17 | `--facts` past `OKF_FACTS_TIMEOUT` (stub) | the reason on stderr, exit 2 (it has no JSON document); `--conserve` parses no frontmatter and needs no limit | ✅ |
+| LT-LL18 | `--file --json` | refused, exit 64, message on stderr, nothing on stdout: no empty document | ✅ |
+| LT-LL19 | `OKF_LAYER_TIMEOUT=1`; `--help` with the same value | refused (below the 2 s floor), exit 64, message on stderr, in the full run and in `--file`, `--duplicates`, `--facts` and `--selftest`; `--help` exit 0 | ✅ |
 | LT-20p | `.okfignore` that excludes nothing | same verdict and exit as no file (also with notes behind a symlinked dir) | ✅ |
 | LT-20q | `**/x.md` | also matches `x.md` at the bundle root | ✅ |
 | LT-20q2 | `/**/x.md` | behaves like `**/x.md` | ✅ |
@@ -265,6 +284,9 @@ and the brand-new machine this tool targets does not have it.
 | LT-CE2 | the same source cited as written | measured | ✅ |
 | LT-CE3 | `okf-check .` with a `../x.txt` source; the bundle path typed in another case | measured, exit 4 with `--fail-stale`: only the cited part below the folder it shares with the bundle is judged | ✅ |
 | LT-CE4 | `okf_guard.case_exact("../x.txt")` from the bundle folder (okf-verify calls it too) | True as written, False as `../X.TXT` | ✅ |
+| LT-CE5 | a source that is a symlink whose target is spelled in another case (`l.txt -> SRC.TXT`; a linked folder `dl -> SUB`; an absolute target outside the bundle), with controls spelled as on disk (also through a linked folder whose link climbs with `..`) | not measured, and the line says `is a link whose target is missing or spelled in another case`, on every disk; a wrong or missing name below a correct link keeps `is not a local file`; the controls are measured. An absolute target outside the bundle is judged too: on Linux such a link dangles, so judging it gives macOS the Linux verdict | ✅ |
+| LT-CE6 | `okf_guard.case_exact` over a table of 97 spellings (relative, absolute, `..`, outside the bundle, wrong case above and below it, links to a file or a folder, chains, dangling, loops, NFC/NFD, trailing slash, `.`; links that climb with `..` at depth 1 to 3 and in a chain, in a bundle typed below a link, in another case, or as a link in another case) | the answer in the table; only a link with a mis-cased target answers False on a case-insensitive disk | ✅ |
+| LT-CE7 | a seeded differential over random trees (bundle below 1 to 3 folders, random links, the bundle path typed exactly, in another case, below a link, as a link) | `case_exact` equals the reference "would a case-sensitive disk resolve this exactly as written, judging only below the bundle" (a component walk with exact listing matches): 0 mismatches; 5,000 trees on macOS and on Debian | ✅ |
 | LT-23 | user-facing env variables | documented in README and SKILL.md | ✅ |
 | LT-24a | okflint crashes on one note of a small bundle | the note is named, the others are checked, exit 2 | ✅ |
 | LT-24b | more notes than `OKF_L2_ISOLATE_MAX` | no rescue: the plain "crashed" report | ✅ |
@@ -470,6 +492,7 @@ replacing it.
 | G-5 | a `[` in okflint's banner | JSON body still found | ✅ |
 | G-7 | a decoy `yaml` on `PYTHONPATH` | the pin holds; bundle still fails | ✅ |
 | D-11 | a case-variant path on a case-insensitive filesystem | UNRESOLVED, never CONFIRMED | ✅ |
+| D-11b | a cited path that is a symlink whose target is spelled in another case | not CONFIRMED, on every disk; the control (target as on disk) is CONFIRMED (D-11c) | ✅ |
 | D-12 | `` `path' `` — mismatched delimiters | not a path claim; no manufactured REFUTED | ✅ |
 | D-13 | more than 8 concepts with no checkable claim | says how many it withheld | ✅ |
 | P-9 | the three version fields disagree | caught — `update` keys off that value | ✅ |
@@ -965,6 +988,8 @@ here"*. Conformance is a question about form; this is a question about fact.
 | DU-1 | `--duplicates` limits (F-7, S25-DU-H1..E3): stub bodies, a limit reached while reading, in the body pass, inside one crowded bucket | a body under 5 words is not a body signal and is counted (`body_short`); CUT SHORT names the pass (`cut_in` read, pairs, body) with notes read or bodies hashed; the bucket loop stops near the limit | ✅ |
 | IA-1 | `.okfignore` and symlinks (F-6, S12-IG-F1..F3): an alias of an ignored note; an alias of a kept note; a folder link under an ignored folder | the alias is ignored by every walker; a kept alias is still checked; the folder link is not named; `--json` `symlinked_folders` lists the named ones | ✅ |
 | RF-1 | Review fixes (S26-RF-H1..E3): a `verified.by` spelled with lookalike letters; okf-verify missing; a config check that fails without a message | a Trust warning saying it only looks like `human:`/`process:` (exit 1 under `--strict-trust`); the Config line names the missing checker or the exit code, never blames okf-base.yaml; `--selftest` probes both | ✅ |
+| IV-1 | Invisible characters in a trust prefix (S32-IV-H1..E1): `hu<U+200B>man:dana` (also U+200C/D, U+00AD, U+2060, U+FEFF, combining marks, a precomposed `ḥ`), a leading U+200B, a soft hyphen inside `process:`, blanks and fillers inside `human:` (U+00A0, U+3000, U+2800, U+3164, U+FFA0, U+115F, enclosing U+20DD); the same characters in the id after `human:`, and ordinary spaces in a name | the first group is a Trust warning saying it only looks like `human:`/`process:` (exit 1 under `--strict-trust`); the warning names the hidden code points; the id and ordinary spaces are not called lookalikes; `--selftest` probes the zero-width case and fails (exit 5) when the Cf/Mn drop is removed | ✅ |
+| HD-1 | `okf-check --doctor` and the edit hook (S32-HD-H1..E2): hook on (key in the nearest `okf-base.yaml`, or `OKF_EDIT_HOOK=1`) with `config/edit-hook.json` readable, missing, not JSON or lacking keys; an invalid `okf_check` block; hook off | one line `edit hook ON (<source>); config OK`, `ON (<source>) but CANNOT RUN: <file> ...` saying the hook stays silent, or `OFF: <okf-base.yaml> okf_check block is invalid (<reason>); the hook reads it as off`; no line when off; exit 0 (advisory), the hook itself stays fail-open | ✅ |
 | PO-1 | okf-export polish (F-5, S10-PO-1..6) | `--version` on okf-export and okf-verify; an `<out>` file named as one; setext headings are anchors; targets matched exactly, then ignoring case (two case variants ambiguous); a duplicate heading links the first; only `\n` ends a line | ✅ |
 | GR-1 | The optional okf-memory layer, L2 graph (S27-GR-H1..E3): opted in with `okf_check.graph: true` or `OKF_MEMORY_BIN` | orphans and broken concept links as advisories (`--json` `l2_graph`); not opted in: nothing runs; absent or another `okf`: SKIPPED naming what is unchecked; hung or unreadable: COULD NOT RUN, not a pass; `graph: yes` exit 2 | ✅ |
 | LC-1 | A line citation into a living document, `name.md:N`, `name.md:N-M`, `name:N` (okf-knowledge-gate#14, S21-LC-H1..E6) | CONFIRMED when the file has the line; REFUTED when found and shorter; UNRESOLVED when missing, ambiguous or outside the bundle and the searched repos (not looked up); `name:N` only when a note of that name exists | ✅ |

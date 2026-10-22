@@ -29,7 +29,7 @@ import re
 import sys
 
 sys.path[:0] = [os.environ.get("OKF_SCRIPTS_DIR", ""), os.environ.get("OKF_VENDOR_DIR", "")]
-from okf_notes import load_frontmatter, read_note  # noqa: E402  (bounded reads: a manifest or note is not exempt)
+from okf_notes import load_frontmatter, read_note, shown  # noqa: E402  (bounded reads: a manifest or note is not exempt)
 
 FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})")
 INDENTED = re.compile(r"^(?: {4,}|\t)")
@@ -78,7 +78,7 @@ def statements(bundle, files, facts):
             text = read_note(f, "utf-8", "replace").lstrip("﻿")
         except OSError:
             continue   # L1 reports a note it cannot read
-        rel = os.path.relpath(f, bundle).replace("\n", " ").replace("\t", " ")
+        rel = shown(os.path.relpath(f, bundle)).replace("\n", " ").replace("\t", " ")
         for n, line in body_lines(text):
             for name, spec in facts.items():
                 for pat in spec["patterns"]:
@@ -103,7 +103,7 @@ def main(argv):
         if mode == "list":
             print("no okf_check.facts block in okf-base.yaml: nothing to list")
         return 0
-    files = [f for f in open(lst, "rb").read().decode("utf-8", "replace").split("\0") if f]
+    files = [f for f in open(lst, "rb").read().decode("utf-8", "surrogateescape").split("\0") if f]
     if mode == "list":
         want = argv[5] if len(argv) > 5 else None
         if want and want not in facts:

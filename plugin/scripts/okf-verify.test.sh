@@ -24,12 +24,16 @@ trap 'exit 143' TERM
 # Anchoring on $HERE broke the suite when it was run from a copy under /tmp — a
 # CI that checks out to an ephemeral path went red against correct code. Pick the
 # first workable base instead of assuming one, and say so if none exists.
-NONEPH=""
+# NONEPH only has to EXIST; the D-1 loop dir is created in it, so that one also has to be WRITABLE. An ephemeral HOME and a read-only
+# /usr/local left no such folder and the suite aborted with rc 2 after 260 lines: LOOPBASE is the first folder that is both.
+NONEPH=""; LOOPBASE=""
 for cand in "$HOME" /usr/local /usr; do
   case "$cand" in
     /tmp/*|/private/tmp/*|/var/folders/*|/private/var/folders/*|/var/tmp/*|/private/var/tmp/*|/dev/shm/*) continue ;;
   esac
-  [ -d "$cand" ] && { NONEPH="$cand"; break; }
+  [ -d "$cand" ] || continue
+  [ -n "$NONEPH" ] || NONEPH="$cand"
+  [ -w "$cand" ] && { LOOPBASE="$cand"; break; }
 done
 
 ok()  { PASS=$((PASS+1)); printf '  PASS  %s\n' "$1"; }
@@ -162,8 +166,11 @@ vunresolved "V-4 an unresolvable SHA is UNRESOLVED, not REFUTED"
 # in both the success and failure text — see lessons/llm-green-tests-not-working-code.md.
 grep -qE '^  REFUTED ' "$TMP/out.txt" && bad "V-4 an unresolvable SHA must NOT be called REFUTED" "a REFUTED verdict line was emitted" \
   || ok "V-4 an unresolvable SHA is never given a REFUTED verdict"
-grep -qE '^  CONFIRMED [1-9]|^  REFUTED [1-9]' "$TMP/out.txt" && bad "V-4 counts must show 0 refuted" "non-zero" \
-  || ok "V-4 the summary counts confirm 0 refuted"
+# POSITIVE as well: the summary line must be there, with its layout (a blank line before it, two spaces of indent). A negative
+# check alone went blind when the summary was printed as "\x0a  CONFIRMED ..." (a layout character spelled as if it were a name).
+grep -qE '^  CONFIRMED [0-9]+   REFUTED 0   UNRESOLVED [1-9]' "$TMP/out.txt" && ! grep -qE '^  (CONFIRMED|REFUTED) [1-9]+   REFUTED [1-9]|^  REFUTED [1-9]' "$TMP/out.txt" \
+  && [ "$(grep -B1 -E '^  CONFIRMED [0-9]' "$TMP/out.txt" | head -1)" = "" ] \
+  && ok "V-4 the summary counts confirm 0 refuted (the line is there: indented, after a blank line)" || bad "V-4 counts must show 0 refuted" "$(grep -n 'CONFIRMED' "$TMP/out.txt" | cat -v | head -2 | tr '\n' '|')"
 [ "$rc" = "0" ] && ok "V-4 UNRESOLVED alone does not fail the run" || bad "V-4 UNRESOLVED does not fail" "exit $rc"
 
 # --- EDGE --------------------------------------------------------------------
@@ -252,20 +259,25 @@ grep -qE '^  REFUTED ' "$TMP/out.txt" \
 # assertion in this project, all from fixture placement.
 D1="$TMP/d1"; mkb "$D1"
 # A unique directory per run: fixed names collided between parallel runs and a killed run
-# left them behind for the next one (review round 1, 2026-10-14). Still under $NONEPH, so
-# the parent is non-ephemeral as M6 requires.
+# left them behind for the next one (review round 1, 2026-10-14). Still under a non-ephemeral folder
+# ($LOOPBASE), so the parent is non-ephemeral as M6 requires.
 # Sweep dirs a SIGKILLed run left behind (a trap cannot run on kill -9). Only this suite's own
-# name pattern, only directly under $NONEPH, only older than a day: a parallel live run is safe.
-find "$NONEPH" -maxdepth 1 -type d -name '.okfverify-d1.*' -mtime +0 -exec rm -rf {} + 2>/dev/null || :
+# name pattern, only directly under $LOOPBASE, only older than a day: a parallel live run is safe.
 LOOPDIR=""
-LOOPDIR=$(mktemp -d "$NONEPH/.okfverify-d1.XXXXXX") || { echo "okf-verify.test: cannot create a loop dir under $NONEPH" >&2; exit 2; }
-ln -sf "$LOOPDIR/d1_loopB.log" "$LOOPDIR/d1_loopA.log"
-ln -sf "$LOOPDIR/d1_loopA.log" "$LOOPDIR/d1_loopB.log"
-printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee `%s/d1_loopA.log`.\n' "$LOOPDIR" > "$D1/c.md"
-run "$D1" >/dev/null
-grep -qE '^  REFUTED ' "$TMP/out.txt" \
-  && bad "D-1 a symlink loop is not REFUTED" "entry exists (lexists true) but was called absent" \
-  || ok "D-1 an unresolvable symlink loop is not REFUTED"
+if [ -z "$LOOPBASE" ]; then
+  # An ephemeral loop dir would mask the defect (see above), so the test does not run; it is not made to pass.
+  skip "D-1 — no writable folder outside an ephemeral root (HOME, /usr/local, /usr): the loop test did not run (skip, not a pass)"
+else
+  find "$LOOPBASE" -maxdepth 1 -type d -name '.okfverify-d1.*' -mtime +0 -exec rm -rf {} + 2>/dev/null || :
+  LOOPDIR=$(mktemp -d "$LOOPBASE/.okfverify-d1.XXXXXX") || { echo "okf-verify.test: cannot create a loop dir under $LOOPBASE" >&2; exit 2; }
+  ln -sf "$LOOPDIR/d1_loopB.log" "$LOOPDIR/d1_loopA.log"
+  ln -sf "$LOOPDIR/d1_loopA.log" "$LOOPDIR/d1_loopB.log"
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee `%s/d1_loopA.log`.\n' "$LOOPDIR" > "$D1/c.md"
+  run "$D1" >/dev/null
+  grep -qE '^  REFUTED ' "$TMP/out.txt" \
+    && bad "D-1 a symlink loop is not REFUTED" "entry exists (lexists true) but was called absent" \
+    || ok "D-1 an unresolvable symlink loop is not REFUTED"
+fi
 
 # D-2 CRITICAL: an unreadable path crashed the run with a traceback, and the
 # crash exit code (1) is indistinguishable from "REFUTED found". Every other
@@ -390,6 +402,20 @@ if [ -e "$CI/NOTES.MD" ]; then
 else
   skip "D-11 — filesystem is case-sensitive, the defect cannot occur (skip, not a pass)"
 fi
+
+# D-11b: the same rule for a cited path that is a symlink whose TARGET is spelled in another case. On a case-insensitive
+# disk the link resolves and was CONFIRMED; on Linux it dangles. Neither disk may CONFIRM it. The control (the target
+# spelled as on disk) is CONFIRMED on both. Linux alone cannot go red here: the macOS run is the one that does.
+BD11B="$TMP/bd11b"; mkb "$BD11B"; mkdir -p "$BD11B/d"; echo x > "$BD11B/d/src.txt"
+ln -s SRC.TXT "$BD11B/d/l.txt"; ln -s src.txt "$BD11B/d/ok.txt"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee `%s/d/l.txt` for detail.\n' "$BD11B" > "$BD11B/c.md"
+run "$BD11B" --repo "$REPO" >/dev/null
+grep -qE '^  ok  ' "$TMP/out.txt" \
+  && bad "D-11b a link whose target is spelled in another case must not be CONFIRMED" "reported CONFIRMED for d/l.txt -> SRC.TXT; only src.txt exists" \
+  || ok "D-11b a link whose target is spelled in another case is not CONFIRMED"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee `%s/d/ok.txt` for detail.\n' "$BD11B" > "$BD11B/c.md"
+run "$BD11B" --repo "$REPO" >/dev/null
+vok "D-11c control: a link whose target is spelled as on disk is CONFIRMED"
 
 # D-12: the path regex accepted MISMATCHED delimiters, so a stray apostrophe
 # after a backtick made ordinary prose look like a cited path. That path is
@@ -1030,6 +1056,44 @@ rc=$(run "$TMP/sp-d2" --repo "$TMP/sp-both")
 # S2-SP-H1 (round 2): the text `ok` line names the file it was checked against, not the cut tail
 cite "$TMP/sp-h1b" "my w.py:3 @$SP2"; rc=$(run "$TMP/sp-h1b" --repo "$TMP/sp-only-spaced")
 grep -E '^  ok  ' "$TMP/out.txt" | grep -q 'my w\.py:3' && ok "RV-27 (S2-SP-H1) the ok line names 'my w.py', the file that was checked" || bad "RV-27 S2-SP-H1 ok line" "$(sprow)"
+# --- RV-33 (S2-SP-E5..E8): the name is the writer's own text, not its words rejoined with one space, and any number of words may belong to it.
+# citejson <dir> <repo>: the citation results as JSON [[claim, verdict]...] (kind citation).
+citejson() { "$VERIFY" "$1" --repo "$2" --json > "$TMP/out.json" 2>/dev/null; "$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps([[r["claim"].split(" @")[0], r["verdict"]] for r in d["results"] if r["kind"] == "citation"], ensure_ascii=False))' "$TMP/out.json"; }
+for sep in '  ' $'\t' $'\xc2\xa0'; do
+  W5=$(spcommit "$TMP/sp-ws" "my${sep}w.py:5" "w.py:5"); cite "$TMP/sp-e5" "my${sep}w.py:3 @$W5"; got=$(citejson "$TMP/sp-e5" "$TMP/sp-ws")
+  W6=$(spcommit "$TMP/sp-ws1" "my${sep}w.py:5"); cite "$TMP/sp-e5b" "my${sep}w.py:3 @$W6"; got2=$(citejson "$TMP/sp-e5b" "$TMP/sp-ws1")
+  { [ "$got" = "$("$REALPY" -c 'import json,sys; print(json.dumps([[sys.argv[1] + "w.py:3", "UNRESOLVED"]], ensure_ascii=False))' "my${sep}")" ] \
+    && [ "$got2" = "$("$REALPY" -c 'import json,sys; print(json.dumps([[sys.argv[1] + "w.py:3", "CONFIRMED"]], ensure_ascii=False))' "my${sep}")" ]; } \
+    && ok "RV-33 (S2-SP-E5) 'my${sep}w.py:3 @sha' ($(printf '%s' "$sep" | od -An -c | tr -s ' ' | tr -d '\n')) is the file of that exact name: UNRESOLVED beside w.py, CONFIRMED alone" \
+    || bad "RV-33 S2-SP-E5 whitespace" "both=$got alone=$got2"
+done
+# S2-SP-E6: a name soft-wrapped over two lines is tried as written and with the break read as a space; a blank line ends the paragraph
+W7=$(spcommit "$TMP/sp-wrap" "my w.py:5" "w.py:5"); cite "$TMP/sp-e6" "my
+w.py:3 @$W7"; got=$(citejson "$TMP/sp-e6" "$TMP/sp-wrap")
+cite "$TMP/sp-e6b" "my
+
+w.py:3 @$W7"; got2=$(citejson "$TMP/sp-e6b" "$TMP/sp-wrap")
+{ [ "$got" = '[["my w.py:3", "UNRESOLVED"]]' ] && [ "$got2" = '[["w.py:3", "CONFIRMED"]]' ]; } \
+  && ok "RV-33 (S2-SP-E6) a soft-wrapped 'my<newline>w.py:3 @sha' is UNRESOLVED beside w.py; with a blank line between the words, they are not part of the name" || bad "RV-33 S2-SP-E6 wrap" "wrapped=$got blank=$got2"
+# S2-SP-E7: any number of words before the cut may belong to the name
+W8=$(spcommit "$TMP/sp-five" "one two three four five.py:5" "five.py:5"); cite "$TMP/sp-e7" "one two three four five.py:3 @$W8"; got=$(citejson "$TMP/sp-e7" "$TMP/sp-five")
+W9=$(spcommit "$TMP/sp-five1" "one two three four five.py:5"); cite "$TMP/sp-e7b" "one two three four five.py:3 @$W9"; got2=$(citejson "$TMP/sp-e7b" "$TMP/sp-five1")
+{ [ "$got" = '[["one two three four five.py:3", "UNRESOLVED"]]' ] && [ "$got2" = '[["one two three four five.py:3", "CONFIRMED"]]' ]; } \
+  && ok "RV-33 (S2-SP-E7) a five-word name is found (UNRESOLVED beside five.py, CONFIRMED alone)" || bad "RV-33 S2-SP-E7 five words" "both=$got alone=$got2"
+# S2-SP-E8: an ambiguous citation names the spaced form in its claim, and a quoted name with a non-ASCII letter is a claim
+cite "$TMP/sp-e8" "my w.py:3 @$SP1 and w.py:3 @$SP1"; got=$(citejson "$TMP/sp-e8" "$TMP/sp-both")
+W10=$(spcommit "$TMP/sp-uni" "café w.py:5" "w.py:5"); cite "$TMP/sp-e8b" "\`café w.py\`:3 @$W10"; got2=$(citejson "$TMP/sp-e8b" "$TMP/sp-uni")
+{ [ "$got" = '[["my w.py:3", "UNRESOLVED"], ["w.py:3", "CONFIRMED"]]' ] && [ "$got2" = '[["café w.py:3", "CONFIRMED"]]' ]; } \
+  && ok "RV-33 (S2-SP-E8) the ambiguous claim reads 'my w.py:3', the bare one 'w.py:3'; a quoted \`café w.py\`:3 is a claim" || bad "RV-33 S2-SP-E8 claim text / unicode" "text=$got unicode=$got2"
+# S2-SP-E9: only a line break is read as a space: `my  w.py` (two spaces), `my<TAB>w.py` and `my<NBSP>w.py` with only `my w.py` at the commit name no file
+# (UNRESOLVED: the cut `w.py` ends a longer name), and the claim is not checked against `my w.py`
+W11=$(spcommit "$TMP/sp-ws2" "my w.py:5")
+for sep in '  ' $'\t' $'\xc2\xa0'; do
+  cite "$TMP/sp-e9" "my${sep}w.py:3 @$W11"; got=$(citejson "$TMP/sp-e9" "$TMP/sp-ws2")
+  [ "$got" = '[["w.py:3", "UNRESOLVED"]]' ] && ok "RV-33 (S2-SP-E9) 'my${sep}w.py:3 @sha' with only 'my w.py' present is UNRESOLVED, not CONFIRMED against it" || bad "RV-33 S2-SP-E9 whitespace not collapsed" "got=$got"
+done
+W12=$(spcommit "$TMP/sp-ab" "a b.py:5" "a  b.py:5"); cite "$TMP/sp-e9b" "a  b.py:3 @$W12 and a b.py:4 @$W12"; got=$(citejson "$TMP/sp-e9b" "$TMP/sp-ab")
+[ "$got" = '[["a  b.py:3", "CONFIRMED"], ["a b.py:4", "CONFIRMED"]]' ] && ok "RV-33 (S2-SP-E9) 'a  b.py' and 'a b.py' are two files, each CONFIRMED under the claim as written" || bad "RV-33 S2-SP-E9 two spellings" "got=$got"
 # S2-SP-P1 (round 2): the tree listing is read once per (repo, sha), not once per citation
 mkdir -p "$TMP/gitspy"; printf '#!/bin/sh\necho "$@" >> "%s/gitspy.log"\nexec "%s" "$@"\n' "$TMP" "$(command -v git)" > "$TMP/gitspy/git"; chmod +x "$TMP/gitspy/git"
 { printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\n'; for i in 1 2 3 4 5; do echo "see w.py:$i @$SP6"; echo; done; } > "$TMP/sp-p1.md"
@@ -1147,6 +1211,30 @@ mkdir -p "$TMP/gitflaky"; printf '#!/bin/sh\nif [ ! -e "%s/flaky.once" ]; then :
 rm -f "$TMP/flaky.once"; cite "$TMP/c-p2" "src/a.py:1 @$C2 and src/a.py:2 @$C2"
 PATH="$TMP/gitflaky:$PATH" "$VERIFY" "$TMP/c-p2" --repo "$CREPO" >"$TMP/out.txt" 2>&1
 { grep -q 'CONFIRMED 1 ' "$TMP/out.txt" && grep -qE '^  unresolved ' "$TMP/out.txt" && ! grep -qE '^  REFUTED ' "$TMP/out.txt"; } && ok "RV-31 (S29-SP-N1) a git killed on its first call is not remembered: one citation UNRESOLVED, the next CONFIRMED, none REFUTED" || bad_hard "RV-31 S29-SP-N1 flaky git" "$(grep -E 'CONFIRMED|^  (ok|unresolved|REFUTED)' "$TMP/out.txt" | cut -c1-140 | tr '\n' '|')"
+# --- RV-32 (S3-CE-1): a bundle typed in another case than its folder, citing a path in the SAME typed case. case_exact judged every
+# component of the cited path from `/`, so the typed `repo` (the folder is `Repo`) made every cited path UNRESOLVED, and --strict failed.
+# Only the part below the bundle is the citation. A wrong case BELOW the bundle is still a case-variant (guard). Skipped where the
+# filesystem is case-sensitive: there `repo` and `Repo` are two folders and the defect cannot occur.
+CE="$TMP/ce32"; mkdir -p "$CE/Repo/b"; : > "$CE/Repo/b/in.txt"; mkb "$CE/Repo/b"
+if [ -e "$CE/REPO/B/IN.TXT" ]; then
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee `%s/repo/b/in.txt`.\n' "$CE" > "$CE/Repo/b/note.md"
+  rc=$(run "$CE/repo/b" --strict)
+  { [ "$rc" = 0 ] && grep -qE '^  ok  ' "$TMP/out.txt"; } \
+    && ok "RV-32 (S3-CE-1) a bundle typed in another case, citing a path in that typed case, is CONFIRMED (--strict exit 0)" \
+    || bad "RV-32 S3-CE-1 typed-case bundle" "exit $rc: $(grep -E '^  (ok|unresolved)|case' "$TMP/out.txt" | head -2 | cut -c1-200 | tr '\n' '|')"
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee `%s/repo/b/IN.TXT`.\n' "$CE" > "$CE/Repo/b/note.md"
+  rc=$(run "$CE/repo/b")
+  { [ "$rc" = 0 ] && grep -qE '^  unresolved ' "$TMP/out.txt" && grep -q 'case-variant' "$TMP/out.txt"; } \
+    && ok "RV-32 (S3-CE-1 guard) a wrong case below the bundle is still UNRESOLVED as a case-variant" \
+    || bad "RV-32 S3-CE-1 guard" "exit $rc: $(grep -E 'unresolved|case' "$TMP/out.txt" | head -2 | cut -c1-200 | tr '\n' '|')"
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee `%s/Repo/b/in.txt`.\n' "$CE" > "$CE/Repo/b/note.md"
+  rc=$(run "$CE/repo/b")
+  { [ "$rc" = 0 ] && grep -qE '^  unresolved ' "$TMP/out.txt" && grep -q 'typed in another case than this path' "$TMP/out.txt"; } \
+    && ok "RV-32 (S3-CE-1 message) a path outside only because the bundle is typed in another case says so" \
+    || bad "RV-32 S3-CE-1 message" "exit $rc: $(grep -E '^  (ok|unresolved)|outside' "$TMP/out.txt" | head -2 | cut -c1-200 | tr '\n' '|')"
+else
+  skip "RV-32 (S3-CE-1) — filesystem is case-sensitive, the defect cannot occur (skip, not a pass)"
+fi
 # --- RV-25: a {type: boolean} node, a {map: node} node (free keys) and a node that {requires} a sibling value
 RVID=RV-25
 cc() { # <name> <okf_check body, printf %b> <want rc> [message the error must contain]
@@ -1167,6 +1255,83 @@ cc num-int   '  duplicates:\n    threshold: 1\n' 0
 cc num-high  '  duplicates:\n    threshold: 5\n' 2 'okf_check.duplicates.threshold must be a number from 0.1 to 1'
 cc num-str   '  duplicates:\n    time_limit: soon\n' 2 'okf_check.duplicates.time_limit must be a number from 1 to 3600'
 cc num-bool  '  duplicates:\n    threshold: true\n' 2 'okf_check.duplicates.threshold must be a number'
+
+# S36-ON-VF: notes named with a space, an ESC byte and a byte that is not UTF-8 are verified like any other. The .okfignore keep
+# list and the okf_check.verify.generated match carry names to and from ignore-lib.sh: they were decoded with errors="replace",
+# so with a .okfignore the odd-named note was skipped without a word, and with `generated` set okf-verify stopped with a
+# traceback (a name that is not UTF-8 cannot be encoded back). Each of the three notes cites missing.md:3 (UNRESOLVED), so a
+# skipped note is a missing line. The text and --json spell the names e\x1bx.md and n\xffu.md, never raw. Under the C locale
+# and a UTF-8 one; a disk that refuses the name (APFS) skips the case.
+U8=$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.utf-?8$' | head -1)
+for CASE in ignore generated; do
+  B="$TMP/on-vf-$CASE"; mkb "$B"
+  case "$CASE" in
+    ignore)    printf 'ign.md\n' > "$B/.okfignore"
+               printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\n---\nNot a claim.\n' > "$B/ign.md" ;;
+    generated) printf 'okf_check:\n  verify:\n    generated: ["g*.md"]\n' > "$B/okf-base.yaml" ;;
+  esac
+  for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do
+    printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\n---\nSee missing.md:3 for it.\n' > "$B/$n.md" 2>/dev/null
+  done
+  if [ ! -f "$B/n$(printf '\377')u.md" ]; then
+    skip "S36-ON-VF ($CASE) this disk refuses a note name that is not UTF-8 (run on Linux)"
+  elif [ -z "$U8" ]; then
+    skip "S36-ON-VF ($CASE) no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+  else
+    for LOC in C "$U8"; do
+      rc=$(LC_ALL="$LOC" run "$B"); nu=$(LC_ALL=C grep -a -c '^  unresolved .*missing.md:3' "$TMP/out.txt")
+      raw=$("$REALPY" -c 'import re,sys
+n = 0
+for ln in open(sys.argv[1], "rb").read().split(b"\n"):
+    try: t = ln.decode("utf-8")
+    except UnicodeDecodeError: n += 1; continue
+    if re.search("[\\x00-\\x1f\\x7f-\\x9f]", t): n += 1
+print(n)' "$TMP/out.txt"); named=$(LC_ALL=C grep -a -c 'e\\x1bx.md\|n\\xffu.md' "$TMP/out.txt")
+      LC_ALL="$LOC" "$VERIFY" "$B" --json >"$TMP/out.json" 2>/dev/null
+      got=$("$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(sorted({r["concept"] for r in d["results"]})))' "$TMP/out.json" 2>&1)
+      { [ "$rc" = 0 ] && [ "$nu" = 3 ] && [ "$raw" = 0 ] && [ "$named" -ge 2 ] && [ "$got" = '["a b.md", "e\\x1bx.md", "n\\xffu.md"]' ]; } \
+        && ok "S36-ON-VF under LC_ALL=$LOC ($CASE) okf-verify checks all three odd-named notes; the text and --json spell them \\x1b and \\xff (exit 0)" \
+        || bad "S36-ON-VF odd names under $LOC ($CASE)" "rc=$rc unresolved lines=$nu raw lines=$raw named=$named concepts=$got $(grep -a -m2 'Traceback\|Error' "$TMP/out.txt" | cat -v | tr '\n' '|')"
+    done
+  fi
+done
+
+# S36-ON-SK: the report skeleton of okf-verify is byte-for-byte what it was for an ASCII bundle: the header, the indent of each
+# line, the blank line before the totals, the legend and the verdict line. A name or a claim is spelled where it is printed
+# (okf_guard.shown), never the line around it: the totals line was once printed as "\x0a  CONFIRMED ..." because the whole
+# line, its line break included, went through the spelling. The expected text is the output of the 0.9.40 script for this bundle.
+SK="$TMP/on-sk"; mkb "$SK"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\n---\nSee d.md:2 and fixed in commit deadbe3.\n' > "$SK/c.md"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\n---\nNo claim here.\nSecond line.\n' > "$SK/d.md"
+rc=$(run "$SK"); sed "s|$SK|BUNDLE|" "$TMP/out.txt" > "$TMP/on-sk.txt"
+cat > "$TMP/on-sk.want" <<'WANT'
+okf-verify — BUNDLE
+  repos searched: NONE (SHAs cannot be checked)
+  ok          c.md  [line] d.md:2
+  unresolved  c.md  [sha] deadbe3
+              no repository searched (pass --repo to check SHAs)
+  1 concept(s) carry no checkable claim — unverifiable, not verified:
+              d.md
+
+  CONFIRMED 1   REFUTED 0   UNRESOLVED 1
+  UNRESOLVED means NOT CHECKED — it is not a soft REFUTED and must not be read as one.
+  no refuted claims
+WANT
+{ [ "$rc" = 0 ] && cmp -s "$TMP/on-sk.txt" "$TMP/on-sk.want"; } \
+  && ok "S36-ON-SK the text report of an ASCII bundle is the 0.9.40 report, byte for byte" \
+  || bad "S36-ON-SK report skeleton" "rc=$rc $(diff "$TMP/on-sk.want" "$TMP/on-sk.txt" | cat -v | head -4 | tr '\n' '|')"
+
+# S36-ON-VJ: --json keeps the content fields as they were: a control character in a quoted example stays the JSON escape \u001b
+# (spelling it \x1b would change the contract for content), while the TEXT report spells it \x1b for the terminal. Only a name
+# (concept, a path) is spelled in --json, and a byte that is not UTF-8 in any field (a lone surrogate is not valid JSON text).
+VJ="$TMP/on-vj"; mkb "$VJ"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\n---\nNo claim, only Step%sx:12 here.\n' "$(printf '\033')" > "$VJ/c.md"
+rc=$(run "$VJ"); rawesc=$(LC_ALL=C grep -a -c "$(printf '\033')" "$TMP/out.txt"); sp=$(LC_ALL=C grep -a -c 'e\.g\. Step\\x1bx:12' "$TMP/out.txt")
+"$VERIFY" "$VJ" --json >"$TMP/on-vj.json" 2>/dev/null
+ex=$(LC_ALL=C grep -a -c '"Step\\u001bx:12"' "$TMP/on-vj.json")
+{ [ "$rc" = 0 ] && [ "$rawesc" = 0 ] && [ "$sp" = 1 ] && [ "$ex" = 1 ]; } \
+  && ok "S36-ON-VJ --json keeps a control character in a quoted example as \\u001b; the text spells it \\x1b" \
+  || bad "S36-ON-VJ content in --json" "rc=$rc raw ESC in text=$rawesc spelled in text=$sp json example=$ex $(grep -a -m1 examples -A1 "$TMP/on-vj.json" | cat -v | tr '\n' '|')"
 
 echo
 # Before the summary: the gate runners take only a suite's LAST line as its summary, and a wrapped `rm` can print.

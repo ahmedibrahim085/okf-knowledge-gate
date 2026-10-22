@@ -122,5 +122,32 @@ else
     || bad "S22-DF-E3b dead facts rule" "rc=$rc $(grep -n 'Facts\|another value\|SELFTEST' "$TMP/st-dead.txt" | head -3 | tr '\n' '|')"
 fi
 
+# S36-ON-FA: notes named with a space, an ESC byte and a byte that is not UTF-8 that state another value are each a
+# FACT-CONFLICT, in the text, in --facts and in --json facts[] / errors[], under the C locale and a UTF-8 one (the file
+# list was decoded with errors="replace", so the note was never opened and the conflict was missed: 0.9.40). The byte
+# shows as \xff. A disk that refuses the name (APFS) skips the case.
+U8=$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.utf-?8$' | head -1)
+B="$TMP/on-fa"; mkb "$B" "$COUNTRIES"; note "$B/decisions/0007.md" "Launch countries: A and B"
+for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nLaunch countries: A, B and C\n' 2>/dev/null > "$B/$n.md"
+done
+if [ "$(find "$B" -name '*.md' | wc -l | tr -d ' ')" -ne 7 ]; then
+  skip "S36-ON-FA this disk refuses a note name that is not UTF-8 (run on Linux)"
+elif [ -z "$U8" ]; then
+  skip "S36-ON-FA no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  for LOC in C "$U8"; do
+    export LC_ALL="$LOC"
+    rc=$(run "$B"); nt=$(LC_ALL=C grep -a -c 'FACT-CONFLICT launch.countries states "A, B and C"' "$TMP/out.txt"); fl=$(LC_ALL=C grep -a -c 'Facts  *FAIL  *3 conflict' "$TMP/out.txt")
+    rcl=$(run "$B" --facts launch.countries); nl=$(LC_ALL=C grep -a -c '(differs)' "$TMP/out.txt"); hd=$(LC_ALL=C grep -a -c '4 occurrence(s), 3 differ(s)' "$TMP/out.txt")
+    rcj=$(runjson "$B"); got=$(jget 'sorted(f["note"] for f in d["facts"] if not f["agrees"])'); ne=$(jget 'len([e for e in d["errors"] if "FACT-CONFLICT" in e])')
+    unset LC_ALL
+    { [ "$rc" = 1 ] && [ "$rcj" = 1 ] && [ "$rcl" = 0 ] && [ "$nt" = 3 ] && [ "$fl" = 1 ] && [ "$nl" = 3 ] && [ "$hd" = 1 ] && [ "$ne" = 3 ] \
+      && [ "$got" = '["a b.md", "e\\x1bx.md", "n\\xffu.md"]' ]; } \
+      && ok "S36-ON-FA under LC_ALL=$LOC Facts names all three odd-named notes: 3 conflicts in the text, --facts and --json (exit 1)" \
+      || bad "S36-ON-FA odd names under $LOC" "rc=$rc/$rcj/$rcl text=$nt fail-line=$fl facts-list=$nl/$hd errors[]=$ne facts[]=$got"
+  done
+fi
+
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

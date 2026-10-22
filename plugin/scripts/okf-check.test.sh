@@ -1594,6 +1594,164 @@ grep -q 'L1 conformance *PASS' "$TMP/l1z.txt" && ok "LT-21f OKF_L1_TIMEOUT=0 fal
   || bad "LT-21f OKF_L1_TIMEOUT=0" "$(grep L1 "$TMP/l1z.txt" | head -1)"
 pkill -f '^sleep 8$' 2>/dev/null
 
+# LT-LL: the Python layers (Trust, Successor, Owner, Size, derived L3, --duplicates) have a time limit (OKF_LAYER_TIMEOUT),
+# one budget for all of them together, as OKF_L1_TIMEOUT is for L1. A layer past it is a named COULD NOT RUN, exit 2, and
+# leaves no process behind. Their cost grows with the frontmatter (about 7 s per MB in PyYAML) and a parse cannot be
+# stopped from inside Python.
+# LT-LL1..: a stub in a copy of the plugin: a frontmatter loader that sleeps 30 s on a note holding the marker (deterministic
+# on any machine; L1 reads through load_frontmatter_ex and is not slowed), and it records its pid so the test can prove
+# nothing was left running.
+LLP="$TMP/llplug"; cp -R "$HERE/.." "$LLP"
+cat >> "$LLP/vendor/okf_validate.py" <<'STUB'
+
+
+_real_load_frontmatter = load_frontmatter
+
+
+def load_frontmatter(text):   # test stub: the layers' loader sleeps on a note that holds the marker
+    if "SLOWNOTE" in text:
+        import os, time
+        with open(os.environ["OKF_STUB_PIDS"], "a") as fh:
+            fh.write("%d\n" % os.getpid())
+        time.sleep(30)
+    return _real_load_frontmatter(text)
+STUB
+LLB="$TMP/llb"; mkbundle "$LLB"
+sed 's/^  name: CHANGE ME/  name: T/' "$HERE/../config/okf-base.yaml.template" > "$LLB/okf-base.yaml"
+printf 'okf_check:\n  deprecated_requires: superseded_by\n  require_owner: true\n  size:\n    max_body_chars: 5000\n' >> "$LLB/okf-base.yaml"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\nslow: SLOWNOTE\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$LLB/c.md"
+: > "$TMP/ll.pids"
+t0=$(date +%s); OKF_STUB_PIDS="$TMP/ll.pids" OKF_LAYER_TIMEOUT=2 "$LLP/scripts/okf-check" "$LLB" >"$TMP/ll1.txt" 2>&1; rc=$?; dt=$(( $(date +%s) - t0 ))
+miss=""; for l in 'Trust \(C4\)' Successor Owner Size 'L3 derived'; do
+  grep -Eq "^  $l +COULD NOT RUN — .*2 s.*OKF_LAYER_TIMEOUT" "$TMP/ll1.txt" || miss="$miss [$l]"
+done
+{ [ "$rc" -eq 2 ] && [ -z "$miss" ] && [ "$dt" -lt 25 ]; } \
+  && ok "LT-LL1 Python layers past OKF_LAYER_TIMEOUT are each a named COULD NOT RUN with the limit, exit 2 (${dt}s)" \
+  || bad "LT-LL1 layer time limit" "rc=$rc ${dt}s missing:$miss $(grep -E 'COULD NOT RUN' "$TMP/ll1.txt" | head -6 | tr '\n' '|')"
+sleep 1
+live=0; for p in $(cat "$TMP/ll.pids"); do kill -0 "$p" 2>/dev/null && live=$((live + 1)); done
+{ [ -s "$TMP/ll.pids" ] && [ "$live" -eq 0 ]; } && ok "LT-LL2 no layer process is left running after the time limit ($(wc -l < "$TMP/ll.pids" | tr -d ' ') started, $live alive)" \
+  || bad "LT-LL2 orphan layer process" "$(wc -l < "$TMP/ll.pids" | tr -d ' ') started, $live alive"
+# LT-LL3: one budget for all the layers, not one per layer: Trust takes the 2 s, so the layers after it never start
+# (4 stubs of 2 s would take 8 s). Only the first one reached the loader.
+[ "$(wc -l < "$TMP/ll.pids" | tr -d ' ')" -eq 1 ] && ok "LT-LL3 the layers share one OKF_LAYER_TIMEOUT budget (one stub started, the others had no time left)" \
+  || bad "LT-LL3 one layer budget" "$(wc -l < "$TMP/ll.pids" | tr -d ' ') stub(s) started"
+# LT-LL4: a bad value falls back to the default (as OKF_L1_TIMEOUT=0 does), it is not an instant kill.
+mkbundle "$TMP/ll4b"; OKF_LAYER_TIMEOUT=0 "$CHECK" "$TMP/ll4b" >"$TMP/ll4.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 0 ] && ! grep -q 'OKF_LAYER_TIMEOUT' "$TMP/ll4.txt"; } && ok "LT-LL4 OKF_LAYER_TIMEOUT=0 falls back to the default, not instant kill" \
+  || bad "LT-LL4 OKF_LAYER_TIMEOUT=0" "rc=$rc $(grep -E 'COULD NOT RUN' "$TMP/ll4.txt" | head -2 | tr '\n' '|')"
+# LT-LL5: the same on a real note, no stub: 99000 one-key mappings in a list (0.9 MB, about 7 s to parse here, 3 s on a fast Mac) against a 2 s
+# budget (the smallest the tool accepts). The mapping count is linear in the size; the layers parse it again and again.
+LLR="$TMP/llreal"; mkbundle "$LLR"
+"$REALPY" -c '
+import sys
+sys.stdout.write("---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\nbig:\n" + "- {a: 1}\n" * 99000 + "generated:\n  by: human:t\n  at: \"2026-01-01\"\nstale_after: \"2099-01-01\"\n---\n\nbody\n")' > "$LLR/c.md"
+t0=$(date +%s); OKF_L1_TIMEOUT=1 OKF_LAYER_TIMEOUT=2 "$CHECK" "$LLR" >"$TMP/ll5.txt" 2>&1; rc=$?; dt=$(( $(date +%s) - t0 ))
+{ [ "$rc" -eq 2 ] && grep -Eq '^  Trust \(C4\) +COULD NOT RUN — .*2 s.*OKF_LAYER_TIMEOUT' "$TMP/ll5.txt" && [ "$dt" -lt 25 ]; } \
+  && ok "LT-LL5 a real 0.9 MB frontmatter note: Trust is a named COULD NOT RUN at OKF_LAYER_TIMEOUT=2, exit 2 (${dt}s)" \
+  || bad "LT-LL5 real note" "rc=$rc ${dt}s size=$(wc -c < "$LLR/c.md") $(grep -E 'Trust|COULD' "$TMP/ll5.txt" | head -3 | tr '\n' '|')"
+[ -z "$(pgrep -f "$LLR" 2>/dev/null)" ] && ok "LT-LL6 no process that names the slow bundle is left after the run" \
+  || bad "LT-LL6 orphan on a real note" "$(pgrep -fl "$LLR" | head -2 | tr '\n' '|')"
+# LT-LL7: --duplicates reads the notes too, under the same limit.
+OKF_STUB_PIDS="$TMP/ll.pids" OKF_LAYER_TIMEOUT=2 "$LLP/scripts/okf-check" "$LLB" --duplicates >"$TMP/ll7.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 2 ] && grep -Eq '^  Duplicates +COULD NOT RUN — .*2 s.*OKF_LAYER_TIMEOUT' "$TMP/ll7.txt"; } \
+  && ok "LT-LL7 --duplicates past OKF_LAYER_TIMEOUT is a named COULD NOT RUN, exit 2" \
+  || bad "LT-LL7 duplicates time limit" "rc=$rc $(grep -E 'COULD|Duplic' "$TMP/ll7.txt" | head -3 | tr '\n' '|')"
+# LT-LL8/9/10: the scoped check (`--file`, what the edit hook runs) is under the same limit. A stub, then the real note.
+t0=$(date +%s); OKF_STUB_PIDS="$TMP/ll8.pids" OKF_LAYER_TIMEOUT=2 "$LLP/scripts/okf-check" "$LLB" --file "$LLB/c.md" >"$TMP/ll8.txt" 2>&1; rc=$?; dt=$(( $(date +%s) - t0 ))
+{ [ "$rc" -eq 2 ] && grep -Eq 'COULD NOT RUN — .*2 s.*OKF_LAYER_TIMEOUT' "$TMP/ll8.txt" && grep -q 'c.md was not checked' "$TMP/ll8.txt" && [ "$dt" -lt 15 ]; } \
+  && ok "LT-LL8 --file past OKF_LAYER_TIMEOUT is a named COULD NOT RUN, exit 2, the note named as not checked (${dt}s)" \
+  || bad "LT-LL8 scoped time limit" "rc=$rc ${dt}s $(head -3 "$TMP/ll8.txt" | tr '\n' '|')"
+t0=$(date +%s); OKF_LAYER_TIMEOUT=2 "$CHECK" "$LLR" --file "$LLR/c.md" >"$TMP/ll9.txt" 2>&1; rc=$?; dt=$(( $(date +%s) - t0 ))
+{ [ "$rc" -eq 2 ] && grep -Eq 'COULD NOT RUN — .*2 s.*OKF_LAYER_TIMEOUT' "$TMP/ll9.txt" && [ "$dt" -lt 8 ]; } \
+  && ok "LT-LL9 --file on the real 0.9 MB note: COULD NOT RUN at OKF_LAYER_TIMEOUT=2, exit 2 (${dt}s)" \
+  || bad "LT-LL9 scoped real note" "rc=$rc ${dt}s $(head -3 "$TMP/ll9.txt" | tr '\n' '|')"
+sleep 1; live=0; for p in $(cat "$TMP/ll8.pids" 2>/dev/null); do kill -0 "$p" 2>/dev/null && live=$((live + 1)); done
+{ [ -s "$TMP/ll8.pids" ] && [ "$live" -eq 0 ] && [ -z "$(pgrep -f "$LLR/c.md" 2>/dev/null)" ]; } \
+  && ok "LT-LL10 no process is left after a --file time limit" || bad "LT-LL10 scoped orphan" "$live stub(s) alive"
+# LT-LL11: the edit hook keeps its own, smaller box (OKF_EDIT_HOOK_TIMEOUT, 4 s by default) and stays fail-open: a layer that
+# outlasts the box is killed with the check, the hook is silent and exits 0, and nothing is left running.
+: > "$TMP/ll11.pids"
+printf '{"tool_input":{"file_path":"%s"}}' "$LLB/c.md" | OKF_EDIT_HOOK=1 OKF_EDIT_HOOK_TIMEOUT=3 OKF_STUB_PIDS="$TMP/ll11.pids" "$REALPY" "$LLP/scripts/okf-edit-hook.py" >"$TMP/ll11.out" 2>"$TMP/ll11.err"; rc=$?
+# The watchdog notices the killed check within a poll, then gives the command a second to obey TERM before KILL: poll for up to 6 s.
+for _try in 1 2 3 4 5 6; do
+  sleep 1; live=0; for p in $(cat "$TMP/ll11.pids"); do kill -0 "$p" 2>/dev/null && live=$((live + 1)); done
+  [ "$live" -eq 0 ] && break
+done
+{ [ "$rc" -eq 0 ] && [ ! -s "$TMP/ll11.out" ] && [ ! -s "$TMP/ll11.err" ] && [ -s "$TMP/ll11.pids" ] && [ "$live" -eq 0 ]; } \
+  && ok "LT-LL11 the edit hook's own box fires first: silent, exit 0, the layer killed with it" \
+  || bad "LT-LL11 hook box" "rc=$rc $live alive, pids=$(wc -l < "$TMP/ll11.pids" | tr -d ' ') err=$(head -c 120 "$TMP/ll11.err")"
+# LT-LL12: the watchdog reports the real elapsed time in milliseconds (okf-limit.py writes <out>.ms), so the budget counts
+# 0.3 s as 0.3 s and not as 0 s or 1 s ($SECONDS rounding gave the same healthy bundle different verdicts at a 1 s limit).
+"$REALPY" "$HERE/okf-limit.py" 5 512 "$TMP/ll12.out" -- sleep 0.3 >/dev/null 2>&1
+ms=$(cat "$TMP/ll12.out.ms" 2>/dev/null)
+{ [ -n "$ms" ] && [ "$ms" -ge 250 ] && [ "$ms" -lt 1500 ]; } && ok "LT-LL12 okf-limit.py reports the elapsed time of a 0.3 s command in milliseconds (${ms:-none})" \
+  || bad "LT-LL12 elapsed time" "ms=${ms:-none}"
+# LT-LL13: the same verdict every time. A healthy 9-note bundle at OKF_LAYER_TIMEOUT=2 (the smallest accepted): ten runs, one exit status.
+LLH="$TMP/llh"; mkbundle "$LLH"; for n in 1 2 3 4 5 6; do cp "$LLH/c.md" "$LLH/n$n.md"; done
+codes=""; for i in 1 2 3 4 5 6 7 8 9 10; do OKF_LAYER_TIMEOUT=2 "$CHECK" "$LLH" >"$TMP/ll13.txt" 2>&1; codes="$codes$? "; done
+[ "$(printf '%s\n' $codes | sort -u | wc -l | tr -d ' ')" = 1 ] && ok "LT-LL13 a healthy bundle at OKF_LAYER_TIMEOUT=2 gets one verdict in ten runs (exit $codes)" \
+  || bad "LT-LL13 stable verdict" "exit codes: $codes"
+# LT-LL14: Size is under the limit too, and only Size: it reads every note whole, so a bundle of many large notes is slow
+# there even though it parses no frontmatter. Stub: body_chars sleeps. The other layers are not stopped.
+cat >> "$LLP/scripts/okf_notes.py" <<'STUB'
+
+
+_real_body_chars = body_chars
+
+
+def body_chars(p):   # test stub: the size layer's reader sleeps when asked to
+    if os.environ.get("OKF_STUB_SIZE_SLEEP"):
+        import time
+        time.sleep(30)
+    return _real_body_chars(p)
+STUB
+LLS="$TMP/lls"; mkbundle "$LLS"
+sed 's/^  name: CHANGE ME/  name: T/' "$HERE/../config/okf-base.yaml.template" > "$LLS/okf-base.yaml"
+printf 'okf_check:\n  size:\n    max_body_chars: 5000\n' >> "$LLS/okf-base.yaml"
+OKF_STUB_SIZE_SLEEP=1 OKF_LAYER_TIMEOUT=2 "$LLP/scripts/okf-check" "$LLS" >"$TMP/ll14.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 2 ] && grep -Eq '^  Size +COULD NOT RUN — .*OKF_LAYER_TIMEOUT' "$TMP/ll14.txt" && ! grep -Eq '^  (Trust \(C4\)|Successor|Owner) +COULD NOT RUN' "$TMP/ll14.txt"; } \
+  && ok "LT-LL14 a slow Size layer is a named COULD NOT RUN, and the layers that ran before it are not stopped" \
+  || bad "LT-LL14 size under the limit" "rc=$rc $(grep -E 'Size|COULD' "$TMP/ll14.txt" | head -3 | tr '\n' '|')"
+# LT-LL15: --json names the layers that could not run (layers_not_run); [] for a run that had none.
+OKF_STUB_PIDS="$TMP/ll15.pids" OKF_LAYER_TIMEOUT=2 "$LLP/scripts/okf-check" --json "$LLB" >"$TMP/ll15.json" 2>/dev/null; rc=$?
+got=$("$REALPY" -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["layers_not_run"]))' "$TMP/ll15.json" 2>&1)
+OKF_LAYER_TIMEOUT=2 OKF_L1_TIMEOUT=1 "$CHECK" --json "$LLR" >"$TMP/ll15b.json" 2>/dev/null
+got2=$("$REALPY" -c 'import json,sys; print(",".join(json.load(open(sys.argv[1]))["layers_not_run"]))' "$TMP/ll15b.json" 2>&1)
+"$CHECK" --json "$LLH" >"$TMP/ll15c.json" 2>/dev/null
+got3=$("$REALPY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["layers_not_run"])' "$TMP/ll15c.json" 2>&1)
+{ [ "$rc" -eq 2 ] && [ "$got" = "Trust (C4),Successor,Owner,Size,L3 derived" ] && [ "$got2" = "L1 conformance,Trust (C4),L3 derived" ] && [ "$got3" = "[]" ]; } \
+  && ok "LT-LL15 --json layers_not_run names each layer that could not run, in order; [] when none" \
+  || bad "LT-LL15 layers_not_run" "rc=$rc stub=[$got] real=[$got2] clean=[$got3]"
+# LT-LL16: --duplicates --json past the limit is still a JSON document on stdout (it was empty: the reason went through say,
+# which --json keeps quiet) and the reason is on stderr; exit 2.
+OKF_STUB_PIDS="$TMP/ll16.pids" OKF_LAYER_TIMEOUT=2 "$LLP/scripts/okf-check" "$LLB" --duplicates --json >"$TMP/ll16.json" 2>"$TMP/ll16.err"; rc=$?
+got=$("$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["exit"], d["layers_not_run"], "OKF_LAYER_TIMEOUT" in d["reason"])' "$TMP/ll16.json" 2>&1)
+{ [ "$rc" -eq 2 ] && [ "$got" = "2 ['Duplicates'] True" ] && grep -q 'OKF_LAYER_TIMEOUT' "$TMP/ll16.err"; } \
+  && ok "LT-LL16 --duplicates --json past the limit: a JSON document with the layer and the reason, the reason on stderr, exit 2" \
+  || bad "LT-LL16 duplicates json" "rc=$rc doc=[$got] stdout=$(wc -c < "$TMP/ll16.json" | tr -d ' ')B stderr=$(head -c 100 "$TMP/ll16.err")"
+# LT-LL17: the other modes, probed. --facts has its own watchdog (OKF_FACTS_TIMEOUT) and no JSON document: its timeout names the
+# reason on stderr, exit 2. --file refuses --json (exit 64, message on stderr), so no empty document can come out of it.
+LLF="$TMP/llfacts"; cp -R "$LLP" "$LLF"; printf 'import time\ntime.sleep(30)\n' > "$LLF/scripts/okf-facts.py"
+OKF_FACTS_TIMEOUT=2 "$LLF/scripts/okf-check" "$LLB" --facts >"$TMP/ll17.out" 2>"$TMP/ll17.err"; rc=$?
+{ [ "$rc" -eq 2 ] && grep -q 'OKF_FACTS_TIMEOUT' "$TMP/ll17.err"; } && ok "LT-LL17 --facts past OKF_FACTS_TIMEOUT: the reason on stderr, exit 2" \
+  || bad "LT-LL17 facts time limit" "rc=$rc stderr=$(head -c 100 "$TMP/ll17.err")"
+"$CHECK" "$LLB" --file "$LLB/c.md" --json >"$TMP/ll18.out" 2>"$TMP/ll18.err"; rc=$?
+{ [ "$rc" -eq 64 ] && [ ! -s "$TMP/ll18.out" ] && [ -s "$TMP/ll18.err" ]; } && ok "LT-LL18 --file --json is refused with exit 64 and a message on stderr: no empty document" \
+  || bad "LT-LL18 file json" "rc=$rc stdout=$(wc -c < "$TMP/ll18.out" | tr -d ' ')B stderr=$(head -c 100 "$TMP/ll18.err")"
+# LT-LL19: 1 s is not a safe floor (Trust alone took 0.11 to 0.2 s and a whole healthy run 0.55 to 0.7 s at load 10), so a value
+# below 2 is refused with a message, exit 64 (a usage error), before any layer runs. --help is not affected.
+OKF_LAYER_TIMEOUT=1 "$CHECK" "$LLH" >"$TMP/ll19.out" 2>"$TMP/ll19.err"; rc=$?
+OKF_LAYER_TIMEOUT=1 "$CHECK" --help >/dev/null 2>&1; hrc=$?
+# Every mode that runs a layer refuses it, not only the full run: --file (the edit hook's check), --duplicates, --facts, --selftest.
+frc=""; for m in "--file $LLH/c.md" --duplicates --facts --selftest; do
+  OKF_LAYER_TIMEOUT=1 "$CHECK" "$LLH" $m >"$TMP/ll19m.out" 2>"$TMP/ll19m.err"; r=$?
+  { [ "$r" -eq 64 ] && grep -q 'OKF_LAYER_TIMEOUT=1 is below 2' "$TMP/ll19m.err"; } || frc="$frc [$m rc=$r]"
+done
+{ [ "$rc" -eq 64 ] && grep -q 'OKF_LAYER_TIMEOUT=1 is below 2' "$TMP/ll19.err" && [ ! -s "$TMP/ll19.out" ] && [ "$hrc" -eq 0 ] && [ -z "$frc" ]; } \
+  && ok "LT-LL19 OKF_LAYER_TIMEOUT=1 is refused (below the 2 s floor), exit 64, stderr names it, in the full run and in --file, --duplicates, --facts and --selftest; --help still works" \
+  || bad "LT-LL19 floor" "rc=$rc help=$hrc modes:$frc stdout=$(wc -c < "$TMP/ll19.out" | tr -d ' ')B stderr=$(head -c 120 "$TMP/ll19.err")"
+
 # LT-20p: an ignore file that excludes nothing changes nothing, even when every note is
 # behind a symlinked directory. Since (S8-N1) a folder link that points outside the bundle is not
 # entered by any layer, so both runs see no note (exit 0) and both name the link; before, L3 alone saw it (exit 4).
@@ -1625,7 +1783,7 @@ lib=$(bash -c '. "$1/l3-lib.sh"; printf %s "$L3_STATUS"' _ "$HERE" | tr ',' '\n'
 # LT-23: every user-facing environment variable is documented in README and in the skill.
 # "The skill" is SKILL.md plus the reference files it links (0.9.0 moved the maintainer detail into
 # skills/okf/references/, one level deep, as Anthropic's skill guidance asks); the variables did not go away.
-miss=""; for v in OKF_L1_TIMEOUT OKF_L2_TIMEOUT OKF_L2_ISOLATE_MAX OKF_INSTALL_TIMEOUT OKF_DOC_DIRS_FILE OKF_SEARCH_BIN OKF_AUTO_INSTALL; do
+miss=""; for v in OKF_L1_TIMEOUT OKF_L2_TIMEOUT OKF_LAYER_TIMEOUT OKF_L2_ISOLATE_MAX OKF_INSTALL_TIMEOUT OKF_DOC_DIRS_FILE OKF_SEARCH_BIN OKF_AUTO_INSTALL; do
   grep -q "$v" "$HERE/../../README.md" 2>/dev/null || miss="$miss README:$v"
   grep -rq "$v" "$HERE/../skills/okf" 2>/dev/null || miss="$miss SKILL:$v"
 done
@@ -3154,6 +3312,222 @@ if command -v okflint >/dev/null 2>&1; then
 else
   skip "S30-CF-N2b L1 + L2 tally — okflint not installed (this is a skip, not a pass)" "uv tool install okflint"
 fi
+
+# --- S31-VD (0.9.41): the vendored validator's duplicate-key check was quadratic; its log check read fenced code ---
+section "S31-VD (0.9.41)"
+# S31-VD-E1: `_duplicate_keys` counted every key against the whole list (O(n^2)): 60,000 keys in one mapping (a 0.6 MB
+# note, under the 5 MB cap) took 40 s, and Trust, Successor, Owner and derived L3 each parse the note again. The node is
+# built OUTSIDE the timer, so the bound measures only the duplicate check: 0.06 s fixed, 40 s shipped. 10 s is 160 times
+# the fixed time, so a loaded 4-CPU runner passes, and a quadratic version fails by 4 times. The result must be the same:
+# the one key written twice, named once.
+S31D="$TMP/s31vd"; mkdir -p "$S31D"
+PYTHONPATH="$HERE/../vendor/pyyaml:$HERE/../vendor" "$REALPY" - >"$S31D/e1.txt" 2>&1 <<'PY'
+import time, yaml, okf_validate as v
+text = "".join("k%d: 1\n" % i for i in range(60000)) + "k5: 2\n"
+node = yaml.SafeLoader(text).get_single_node()
+t0 = time.time(); dups = v._duplicate_keys(node); dt = time.time() - t0
+print("size=%d keys=%d dups=%s seconds=%.2f ok=%s" % (len(text), len(node.value), dups, dt, dt < 10 and dups == ["k5"]))
+PY
+grep -q 'size=[0-9]* keys=60001 dups=\[.k5.\] seconds=[0-9.]* ok=True$' "$S31D/e1.txt" \
+  && ok "S31-VD-E1 _duplicate_keys on 60,000 keys (0.6 MB) is linear: under 10 s and names only k5 ($(sed 's/.*seconds=\([0-9.]*\).*/\1/' "$S31D/e1.txt") s)" \
+  || bad "S31-VD-E1 duplicate-key check is quadratic" "$(tail -2 "$S31D/e1.txt" | cut -c1-200 | tr '\n' ' ')"
+# S31-VD-E1b: the same through okf-check (L1, Trust, Successor, Owner and derived L3 all parse the note): one 0.59 MB note
+# with 60,000 keys finishes with the duplicate named. Measured: 8 s fixed (the YAML parse itself, five times), minutes shipped.
+# 90 s is 11 times the fixed time.
+D="$TMP/s31vd/e1b"; mkbundle "$D"
+"$REALPY" -c '
+import sys
+sys.stdout.write("---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\nstale_after: \"2099-01-01\"\n"
+                 + "".join("k%d: 1\n" % i for i in range(60000)) + "k5: 2\n---\n\nbody\n")' > "$D/n.md"
+t0=$(date +%s); "$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?; dt=$(( $(date +%s) - t0 ))
+{ [ "$rcl" -eq 0 ] && [ "$dt" -lt 90 ] && grep -q 'n.md: .*duplicate key `k5`' "$D.txt" && ! grep -q 'COULD NOT RUN' "$D.txt"; } \
+  && ok "S31-VD-E1b okf-check on a 0.59 MB note with 60,000 keys finishes in ${dt} s (under 90 s), names the duplicate k5, exit 0" \
+  || bad "S31-VD-E1b okf-check on a 60,000-key note" "rc=$rcl ${dt}s $(grep -E 'n.md|COULD' "$D.txt" | head -2 | cut -c1-140 | tr '\n' ' ')"
+# S31-VD-H1 / N1 / N2: a `## ` line inside a fenced block is code, not a date heading (§9). A real bad heading still warns,
+# also right after a closed fence (a fence ends where the markdown fence ends: same character, at least as long).
+s31log() {   # <name> <log.md text>: a bundle whose log.md is the text; S31OUT holds the okf-check output
+  local d="$TMP/s31vd/$1"; mkbundle "$d"; printf '%s' "$2" > "$d/log.md"; S31OUT="$d.txt"; "$CHECK" "$d" >"$S31OUT" 2>&1; S31RC=$?
+}
+s31log fence '# Log
+
+## 2026-10-01
+* a shell step:
+
+```sh
+## not a heading, a shell comment
+```
+
+~~~
+## nor this, in a tilde fence
+~~~
+
+````
+```
+## nor this, inside a longer fence
+```
+````
+'
+{ [ "$S31RC" -eq 0 ] && ! grep -q 'date heading' "$S31OUT"; } \
+  && ok "S31-VD-H1 a ## line inside a backtick, tilde or longer fence gives no date-heading warning (exit 0)" \
+  || bad "S31-VD-H1 fenced ## line" "rc=$S31RC $(grep -n 'date heading' "$S31OUT" | head -3 | cut -c1-160 | tr '\n' ' ')"
+s31log after '# Log
+
+## 2026-10-01
+
+```sh
+## fenced, ignored
+```
+
+## notadate
+'
+{ [ "$S31RC" -eq 0 ] && grep -q 'log.md: §9 date heading `notadate` is not ISO 8601' "$S31OUT" && ! grep -q 'fenced, ignored' "$S31OUT"; } \
+  && ok "S31-VD-N1 a real bad heading after a closed fence still warns, and the fenced line does not (exit 0)" \
+  || bad "S31-VD-N1 real heading after a fence" "rc=$S31RC $(grep -n 'date heading' "$S31OUT" | head -3 | cut -c1-160 | tr '\n' ' ')"
+s31log plain '# Log
+
+## 2026-10-01
+* x
+
+## yesterday
+'
+grep -q 'log.md: §9 date heading `yesterday` is not ISO 8601' "$S31OUT" \
+  && ok "S31-VD-N2 a bad heading in a log with no fence warns as before" \
+  || bad "S31-VD-N2 bad heading" "rc=$S31RC $(grep -n 'date heading' "$S31OUT" | head -3 | cut -c1-160 | tr '\n' ' ')"
+# S36-ON-OW: the folder-default owner reaches notes named with a space, an ESC byte and a byte that is not UTF-8, and a
+# note of that name that has its own owner no longer stops the Owner layer ("COULD NOT RUN"): the default's key was decoded
+# with errors="replace" and matched nothing, so the odd-named note was reported as having no owner (a false FAIL, 0.9.40).
+# The default also shows as the owner on the L3 line of each. Under the C locale and a UTF-8 one; a disk that refuses the
+# name (APFS) skips the case.
+U8=$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.utf-?8$' | head -1)
+mk54 on-ow '  require_owner: true\n  owners:\n    "**": team:a\n'; D="$TMP/lt54-on-ow"
+mk54 on-ow2 '  require_owner: true\n'; D2="$TMP/lt54-on-ow2"
+note54 "$D" c.md ''
+for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do note54 "$D" "$n.md" '' 2000-01-01 2>/dev/null; note54 "$D2" "$n.md" 'owner: team:x' 2>/dev/null; done
+note54 "$D2" c.md 'owner: team:x'
+if [ "$(find "$D" -name '*.md' | wc -l | tr -d ' ')" -ne 6 ]; then
+  skip "S36-ON-OW this disk refuses a note name that is not UTF-8 (run on Linux)"
+elif [ -z "$U8" ]; then
+  skip "S36-ON-OW no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  for LOC in C "$U8"; do
+    LC_ALL="$LOC" "$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+    ow=$(LC_ALL=C grep -a -c 'Owner  *PASS  *4 note(s) have an owner' "$D.txt"); sh=$(LC_ALL=C grep -a -c 'expired .*owner team:a' "$D.txt")
+    { [ "$rcl" -eq 0 ] && [ "$ow" = 1 ] && [ "$sh" = 3 ]; } \
+      && ok "S36-ON-OW under LC_ALL=$LOC the folder default is the owner of all three odd-named notes: Owner PASS, owner team:a on each L3 line (exit 0)" \
+      || bad "S36-ON-OW folder default under $LOC" "rc=$rcl owner-pass=$ow shown=$sh $(LC_ALL=C grep -a 'Owner' "$D.txt" | cat -v | head -3 | tr '\n' '|')"
+    LC_ALL="$LOC" "$CHECK" "$D2" >"$D2.txt" 2>&1; rcl=$?
+    ow=$(LC_ALL=C grep -a -c 'Owner  *PASS  *4 note(s) have an owner' "$D2.txt")
+    { [ "$rcl" -eq 0 ] && [ "$ow" = 1 ]; } \
+      && ok "S36-ON-OW2 under LC_ALL=$LOC three odd-named notes with their own owner: Owner PASS (exit 0)" \
+      || bad "S36-ON-OW2 own owner under $LOC" "rc=$rcl owner-pass=$ow $(LC_ALL=C grep -a 'Owner' "$D2.txt" | cat -v | head -3 | tr '\n' '|')"
+  done
+fi
+
+# S36-ON-DP: --json and the L2 text spell the name of a note that is not UTF-8 the same printable way, \xff, in every list
+# that carries a note name: warnings[], stale[], l2_findings[], trust_findings[] and the L2 text (L2 printed U+FFFD, and
+# --json held \ufffd in stale[] and errors[] and a lone surrogate \udcff in warnings[] and trust_findings[]: 0.9.40).
+# Three folders, one note of each odd name in each: no stale_after (an L2 finding and L1 warnings), expired (stale), a
+# human review of a draft (a Trust warning). It needs okflint for L2: without it this is a skip, not a pass.
+if ! command -v okflint >/dev/null 2>&1; then
+  skip "S36-ON-DP L2 and --json spelling of an odd name — okflint not installed (this is a skip, not a pass)" "uv tool install okflint"
+elif [ -z "$U8" ]; then
+  skip "S36-ON-DP no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  D="$TMP/on-dp"; mkbundle "$D"; sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$D/okf-base.yaml"
+  mkdir -p "$D/miss" "$D/old" "$D/drf"
+  for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do
+    printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\n---\nbody\n' 2>/dev/null > "$D/miss/$n.md"
+    note54 "$D" "old/$n.md" '' 2000-01-01 2>/dev/null
+    printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: draft\nstale_after: "2099-01-01"\nverified:\n  - by: human:t\n    at: "2026-02-01"\n---\nbody\n' 2>/dev/null > "$D/drf/$n.md"
+  done
+  if [ "$(find "$D" -name '*.md' | wc -l | tr -d ' ')" -ne 12 ]; then
+    skip "S36-ON-DP this disk refuses a note name that is not UTF-8 (run on Linux)"
+  else
+    for LOC in C "$U8"; do
+      LC_ALL="$LOC" "$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+      LC_ALL="$LOC" "$CHECK" --json "$D" >"$D.json" 2>/dev/null
+      fffd=$(LC_ALL=C grep -a -c "$(printf '\357\277\275')" "$D.txt"); l2t=$(LC_ALL=C grep -a -c 'miss/n\\xffu.md' "$D.txt")
+      bad_json=$(LC_ALL=C grep -a -c '\\ufffd\|\\udc' "$D.json")
+      in_json=$(jq44 "$D.json" '[k for k in ("warnings", "stale", "l2_findings") if any("n\\xffu.md" in x for x in d[k])] + [k for k in ("trust_findings",) if any("n\\xffu.md" in x["file"] for x in d[k])]')
+      { [ "$fffd" = 0 ] && [ "$l2t" -ge 1 ] && [ "$bad_json" = 0 ] \
+        && [ "$in_json" = "['warnings', 'stale', 'l2_findings', 'trust_findings']" ]; } \
+        && ok "S36-ON-DP under LC_ALL=$LOC an odd name is \\xff in the L2 text and in --json warnings[], stale[], l2_findings[], trust_findings[]; no U+FFFD, no lone surrogate" \
+        || bad "S36-ON-DP spelling under $LOC" "rc=$rcl U+FFFD in text=$fffd L2 lines=$l2t bad json=$bad_json lists=$in_json"
+    done
+  fi
+fi
+
+# S36-ON-TX: the text a terminal receives holds no raw ESC (or other control character) and no raw byte that is not UTF-8
+# from a note name, in any mode: the full run (L1, L2, Trust, Successor, Owner, Size, Facts, L3 expired and derived, the folder
+# and refusal lines), --duplicates, --facts, --conserve and --file. Each shows the name as e\x1bx.md and n\xffu.md. A name with
+# an ESC byte is a terminal-injection vector: it is a note name an agent or a contributor chose. Under the C locale and a UTF-8
+# one; a disk that refuses the non-UTF-8 name (APFS) still runs the ESC half.
+_rawlines() { "$REALPY" -c 'import re,sys
+n = 0
+for ln in open(sys.argv[1], "rb").read().split(b"\n"):
+    try: t = ln.decode("utf-8")
+    except UnicodeDecodeError: n += 1; continue
+    if re.search("[\\x00-\\x1f\\x7f-\\x9f\\u061c\\u200e\\u200f\\u202a-\\u202e\\u2066-\\u2069]", t): n += 1
+print(n)' "$1"; }
+D="$TMP/on-tx"; mkbundle "$D"; rm -f "$D/c.md"; sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$D/okf-base.yaml"
+printf 'okf_check:\n  max_note_bytes: 4096\n  require_owner: true\n  owners: {"**": team:docs}\n  size: {max_body_chars: 5}\n  facts:\n    port: {value: "8001", patterns: ["port ([0-9]+)"]}\n' >> "$D/okf-base.yaml"
+ESCN="e$(printf '\033')x"; BYTEN="n$(printf '\377')u"; BIDN="b$(printf '\342\200\256')c"   # BIDN: U+202E, a bidi override: it reorders the text around it on a terminal
+for n in "$ESCN" "$BYTEN" "$BIDN"; do
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: deprecated\nstale_after: "2000-01-01"\nsources:\n  - resource: s.txt\n    last_modified: "2000-01-01"\nverified:\n  - by: human:t\n    at: "2026-02-01"\n---\nbody port 8003 See [m](nowhere.md).\n\nCut line.\n' 2>/dev/null > "$D/$n.md"
+  printf -- '---\ntitle: T\n---\nbody\n' 2>/dev/null > "$D/bad-$n.md"
+  printf -- '---\ntype: Lesson\ntitle: [\n---\nbody\n' 2>/dev/null > "$D/yaml-$n.md"
+  mkdir -p "$D/d$n" 2>/dev/null && ln -s "d$n" "$D/lnk$n" 2>/dev/null
+  ln -s nowhere "$D/dang$n.md" 2>/dev/null
+  head -c 5000 /dev/zero | tr '\0' x 2>/dev/null > "$D/big$n.md"
+done
+echo x > "$D/s.txt"
+if [ ! -f "$D/$ESCN.md" ]; then
+  skip "S36-ON-TX this disk refuses a note name with an ESC byte"
+elif [ -z "$U8" ]; then
+  skip "S36-ON-TX no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  git init -q "$D"; git -C "$D" add -A >/dev/null 2>&1; git -C "$D" -c user.name=t -c user.email=t@e -c commit.gpgsign=false commit -qm base
+  for n in "$ESCN" "$BYTEN" "$BIDN"; do grep -v 'Cut line' "$D/$n.md" 2>/dev/null > "$D/$n.tmp" && mv "$D/$n.tmp" "$D/$n.md" 2>/dev/null; done
+  for LOC in C "$U8"; do
+    for MODE in "" "--duplicates" "--facts" "--conserve HEAD" "--file $D/$ESCN.md" "--file $D/$BIDN.md" "--facts --json"; do
+      LC_ALL="$LOC" "$CHECK" "$D" $MODE >"$D.txt" 2>&1; rcl=$?
+      raw=$(_rawlines "$D.txt"); named=$(LC_ALL=C grep -a -c 'e\\x1bx\.md\|b\\u202ec\.md' "$D.txt")
+      { [ "$raw" = 0 ] && [ "$named" -ge 1 ]; } \
+        && ok "S36-ON-TX under LC_ALL=$LOC 'okf-check ${MODE:-(full run)}': no raw control character or non-UTF-8 byte, the ESC name reads e\\x1bx.md (exit $rcl)" \
+        || bad "S36-ON-TX text under $LOC ${MODE:-full run}" "raw lines=$raw lines naming e\\x1bx.md=$named $(LC_ALL=C grep -a -n . "$D.txt" | cat -v | head -2 | tr '\n' '|')"
+    done
+    LC_ALL="$LOC" "$CHECK" --json "$D" >"$D.json" 2>/dev/null
+    rawj=$(LC_ALL=C grep -a -c 'u001b\|ufffd\|udc[89a-f]\|[^\\]\\u202e' "$D.json")
+    [ "$rawj" = 0 ] && ok "S36-ON-TX under LC_ALL=$LOC --json holds no \\u001b, \\ufffd or lone surrogate from a name" \
+      || bad "S36-ON-TX json under $LOC" "$rawj line(s): $(LC_ALL=C grep -a -o 'u001b\|ufffd\|udc[89a-f][0-9a-f]' "$D.json" | sort | uniq -c | tr '\n' ' ')"
+  done
+fi
+
+# S36-ON-FP: `okf-check --fingerprint` prints names the same way: no raw control character, bidi override or non-UTF-8 byte in
+# the text or in --json (the mode is read by people as well as by tests). The change detection of a run compares the fingerprint
+# it takes itself (bundle_fingerprint), not this output, so a bundle that changes during a run is still CONCURRENT.
+if [ -f "$D/$ESCN.md" ] && [ -n "$U8" ]; then
+  for LOC in C "$U8"; do
+    LC_ALL="$LOC" "$CHECK" --fingerprint "$D" >"$D.fp" 2>&1; rcl=$?
+    LC_ALL="$LOC" "$CHECK" --fingerprint --json "$D" >"$D.fpj" 2>&1
+    raw=$(_rawlines "$D.fp"); named=$(LC_ALL=C grep -a -c 'e\\x1bx\.md' "$D.fp"); rawj=$(LC_ALL=C grep -a -c 'u001b\|ufffd\|udc[89a-f]\|[^\\]\\u202e' "$D.fpj")
+    { [ "$rcl" = 0 ] && [ "$raw" = 0 ] && [ "$named" -ge 1 ] && [ "$rawj" = 0 ]; } \
+      && ok "S36-ON-FP under LC_ALL=$LOC --fingerprint names the ESC note e\\x1bx.md, with no raw control character in the text or --json" \
+      || bad "S36-ON-FP fingerprint under $LOC" "rc=$rcl raw lines=$raw named=$named raw in json=$rawj $(head -c 200 "$D.fp" | cat -v | head -2 | tr '\n' '|')"
+  done
+else
+  skip "S36-ON-FP --fingerprint spelling: the fixture of S36-ON-TX was not built (no ESC-named note, or no UTF-8 locale)"
+fi
+
+# S36-ON-LY: the layout of the text report is the layout it was: the totals of a failing run follow a blank line, and a detail
+# line keeps its indent. Names are spelled where they are printed; a line is never spelled whole (okf-verify once printed its
+# totals as "\x0a  CONFIRMED ..."). An ASCII bundle, so no spelling applies at all.
+LY="$TMP/on-ly"; mkbundle "$LY"; printf -- '---\ntitle: T\n---\nbody\n' > "$LY/bad.md"
+"$CHECK" "$LY" >"$TMP/on-ly.txt" 2>&1; rcl=$?
+{ [ "$rcl" = 1 ] && [ "$(grep -B1 -E '^  FAILED' "$TMP/on-ly.txt" | head -1)" = "" ] && grep -qE '^  L1 conformance   FAIL   [0-9]+ error' "$TMP/on-ly.txt" \
+  && grep -qE '^                   bad\.md: ' "$TMP/on-ly.txt" && ! grep -qF '\x0a' "$TMP/on-ly.txt"; } \
+  && ok "S36-ON-LY an ASCII bundle's text report keeps its layout: indent, and the blank line before FAILED (exit 1)" \
+  || bad "S36-ON-LY report layout" "rc=$rcl $(cat -v "$TMP/on-ly.txt" | head -6 | tr '\n' '|')"
 
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

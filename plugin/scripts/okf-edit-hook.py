@@ -46,12 +46,17 @@ def bundle_of(note: Path):
     return None
 
 
-def switched_on(bundle: Path) -> bool:
-    if os.environ.get("OKF_EDIT_HOOK") == "1":
-        return True
+def load_verify():
     loader = SourceFileLoader("okf_verify", str(HERE / "okf-verify"))
     verify = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_verify", loader))
     loader.exec_module(verify)
+    return verify
+
+
+def switched_on(bundle: Path) -> bool:
+    if os.environ.get("OKF_EDIT_HOOK") == "1":
+        return True
+    verify = load_verify()
     try:
         return verify.load_block(bundle).get("edit_hook") is True
     except verify.BaseConfigError:
@@ -113,7 +118,43 @@ def main() -> int:
     return 2
 
 
+def doctor(start: Path) -> None:
+    """`--doctor <folder>`, run by `okf-check --doctor`: one line when the hook is switched on for <folder>, saying
+    whether it can run. The hook itself is fail-open, so a config it cannot read leaves it silent on every edit; this is
+    the one place that says so. Prints nothing when the hook is off. Advisory: never changes an exit code."""
+    try:
+        if os.environ.get("OKF_EDIT_HOOK") == "1":
+            where = "OKF_EDIT_HOOK=1"
+        else:
+            bundle = bundle_of(start.resolve() / "x")   # "x": bundle_of walks the parents of a note, and <start> must be one
+            if bundle is None:
+                return
+            verify = load_verify()
+            try:
+                if verify.load_block(bundle).get("edit_hook") is not True:
+                    return
+            except verify.BaseConfigError as e:   # the hook reads an invalid block as off; the full run is what reports it
+                reason = clean_line(str(e).splitlines()[0] if str(e) else type(e).__name__, 160)
+                print(f"  edit hook          OFF: {bundle}/okf-base.yaml okf_check block is invalid ({reason}); the hook reads it as off")
+                return
+            where = f"{bundle}/okf-base.yaml"
+    except Exception as e:   # okf-verify missing or broken: the hook cannot even decide whether it is on
+        print(f"  edit hook          UNKNOWN   (cannot tell whether it is switched on: {type(e).__name__}: {e})")
+        return
+    try:
+        time_box()   # reads the same config, and the same keys, as a real run
+        int(json.loads(CONFIG.read_text(encoding="utf-8"))["max_line_chars"])
+    except (OSError, ValueError, KeyError, TypeError) as e:
+        print(f"  edit hook          ON ({where}) but CANNOT RUN: {CONFIG} is missing, unreadable or incomplete "
+              f"({type(e).__name__}: {e}). The hook stays silent on every edit until it is restored (reinstall the plugin).")
+        return
+    print(f"  edit hook          ON ({where}); config OK ({CONFIG.name})")
+
+
 if __name__ == "__main__":
+    if sys.argv[1:2] == ["--doctor"]:
+        doctor(Path(sys.argv[2]) if len(sys.argv) > 2 else Path.cwd())
+        sys.exit(0)
     try:
         sys.exit(main())
     except Exception:   # fail-open: a broken hook must never get in the way of an edit

@@ -9,6 +9,23 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.41] - 2026-10-22
+
+OKF Knowledge Gate 0.9.41 closes the review findings of the checks and the vendored validator: citations of files with spaces, a time limit for the Python layers, notes with odd names, hidden characters in `human:`, and a symlink target spelled in another case.
+
+### Fixed
+- **`okf-verify` no longer cuts an unpinned citation at a space.** `my w.py:3` beside `w.py` was judged as `w.py` (a false CONFIRMED, REFUTED or UNRESOLVED). Only a line break is read as a space now, bare names that differ only in case are told apart, the case of a cited path is judged below the bundle's own spelling, and the walk of the repository is bounded. Its test no longer needs a writable folder above the bundle.
+- **The vendored validator is linear on duplicate keys.** A mapping of 60,000 keys (a 0.6 MB note) took 40 s or more; it takes 0.07 s. Its log check no longer reads `##` lines inside code fences.
+- **The Python layers have a time limit.** Trust, Successor, Owner, Size, derived L3 and `--duplicates` share one budget, `OKF_LAYER_TIMEOUT` (default 300 s, smallest value 2 s, anything lower exits 64). A layer past it is `COULD NOT RUN` naming the limit, exit 2, and `--json` carries `layers_not_run`; `--duplicates --json` prints a JSON document with the reason; the scoped `--file` check is bounded too.
+- **A note whose name is not UTF-8 is no longer dropped.** Size, Facts, Duplicates, derived L3, Conserve and the L2 graph now see it, the owner default of its folder applies, and `okf-verify` no longer crashes on it with a `.okfignore` or `generated` key.
+- **Names never reach a terminal raw.** A control character, an ESC byte, a byte that is not UTF-8 or a bidi override (U+202E and the other bidi controls) in a note name is printed as `\xNN` in every text mode, in `--fingerprint` and in `okf-verify`.
+- **Hidden characters in `human:` are caught.** A zero-width character, a soft hyphen, a combining mark, a line or paragraph separator, a no-break or ideographic space, a hangul filler or a bidi control inside `human:` or `process:` no longer passes `--strict-trust`. A switched-on edit hook that cannot run now says so.
+- **L3 derived judges the target of a symlink.** A source that is a symlink whose target is spelled in another case was measured on macOS and unmeasurable on Linux; the target is now case-exact on both.
+
+### Changed
+- `okf-check --json`: a note name that holds a control character is spelled `\xNN` (a literal backslash and `x`), as in the text report, instead of the JSON escape `\u00NN`.
+- `okf-check` and `okf-verify` print a name with a control character in the same spelling in every mode.
+
 ## [0.9.40] - 2026-10-22
 
 OKF Knowledge Gate 0.9.40 closes the hidden-folder exposure of `okf-export` and turns the public repository's CI green again: it was red on the 0.9.38 and 0.9.39 pushes.
@@ -801,7 +818,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.40...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.41...HEAD
+[0.9.41]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.40...v0.9.41
 [0.9.40]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.39...v0.9.40
 [0.9.39]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.38...v0.9.39
 [0.9.38]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.37...v0.9.38

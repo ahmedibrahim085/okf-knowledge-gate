@@ -5,7 +5,7 @@ points at. Needs the vendored okf_validate on sys.path (its bounded loader refus
 """
 import os
 
-from okf_guard import NoteRefused, note_cap, obsidian_path, read_note, refusal  # noqa: F401  (re-exported: one reader for every tool)
+from okf_guard import NoteRefused, note_cap, obsidian_path, read_note, refusal, shown  # noqa: F401  (re-exported: one reader for every tool)
 from okf_validate import load_frontmatter, split_frontmatter
 
 

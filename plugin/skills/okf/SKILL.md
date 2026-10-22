@@ -46,7 +46,7 @@ Precedence when several apply: 5 > 1 > 3 > 2 > 6 > 4. A reached verdict outranks
 - **warn** is soft guidance. Broken cross-links are tolerated by the spec (§6.1): they are knowledge not yet
   written. Never "fix" a bundle by deleting an outbound link.
 - **SKIPPED** means a layer did not run. A skipped layer is counted in the verdict line and never shown as PASS; the exit code stays 0 unless another gate fails.
-- **`--json`** carries the verdict, the counts and the findings behind them: `errors[]` (L1 and the okf_check house rules such as size), `l2_findings[]` (house-rule errors only), `l2_advisories[]` (the L2 advisories behind `l2_warnings`, as `RULE file — message`; the first 200, then one last line that counts the rest; empty when L2 did not run), `l2_warnings` and `l2_by_rule` (the L2 advisory totals; null when L2 did not run), `stale[]` (expired or malformed `stale_after`), `lifecycle[]` (a status outside draft, stable, deprecated), `skipped[]` (layers that did not run), `warnings[]` (L1 warnings, then the okf_check size warnings) and `trust_findings`. Each entry is one text line that names the note. The key set is the same on every exit path, plus `misplaced_keys[]` when an okf_check option sits at the top level of okf-base.yaml instead of inside okf_check (it is then ignored).
+- **`--json`** carries the verdict, the counts and the findings behind them: `errors[]` (L1 and the okf_check house rules such as size), `layers_not_run[]` (each layer that printed `COULD NOT RUN`, `[]` when none), `l2_findings[]` (house-rule errors only), `l2_advisories[]` (the L2 advisories behind `l2_warnings`, as `RULE file — message`; the first 200, then one last line that counts the rest; empty when L2 did not run), `l2_warnings` and `l2_by_rule` (the L2 advisory totals; null when L2 did not run), `stale[]` (expired or malformed `stale_after`), `lifecycle[]` (a status outside draft, stable, deprecated), `skipped[]` (layers that did not run), `warnings[]` (L1 warnings, then the okf_check size warnings) and `trust_findings`. Each entry is one text line that names the note. The key set is the same on every exit path, plus `misplaced_keys[]` when an okf_check option sits at the top level of okf-base.yaml instead of inside okf_check (it is then ignored).
 - **CONCURRENT** means the bundle changed during the scan; the report is a point-in-time reading.
 
 ## Trust (C4): can a "verified by a human" claim be trusted?
@@ -94,7 +94,9 @@ as an agent) into exit 1; it changes severity only, never what is found.
   stopped with `exceeded N MB`, the bundle is the cause, not the limit (`OKF_L2_MAX_RSS_MB`, default 2048); `killed (out
   of memory or time limit)` means something outside `okf-check` stopped it. `okflint` never outlives
   `okf-check`: a `timeout`, TERM, INT or even SIGKILL to `okf-check` or to its `okf-limit.py` watchdog stops it (a process
-  that calls `setsid` leaves the group and is not reached; `okflint` starts none).
+  that calls `setsid` leaves the group and is not reached; `okflint` starts none). The Python layers (Trust, Successor,
+  Owner, Size, derived L3) share one time budget, `OKF_LAYER_TIMEOUT` (default 300 s): a layer past it is `COULD NOT RUN`
+  naming the limit (exit 2; `--json` `layers_not_run`), never a pass.
 
 ## What this never does
 
@@ -137,7 +139,9 @@ inside the bundle). It is meant for an edit hook; the full run is still the gate
 The plugin ships that hook, OFF by default: `okf_check: {edit_hook: true}` in a bundle's `okf-base.yaml` (or
 `OKF_EDIT_HOOK=1`) makes every Write/Edit of a note in that bundle run it. On an L1 error or a Trust warning Claude
 sees one line starting `okf-check:` after the edit; fix the note it names. The hook is time-boxed and stays silent
-when it cannot run.
+when it cannot run. The bundle is the nearest folder above the note with an `okf-base.yaml`, so a manifest above the
+project (for example in `$HOME`) with `edit_hook: true` applies to every note below it. If the hook seems to do nothing,
+run `okf-check --doctor`: it names the file that switched the hook on and says when the hook's config is unreadable.
 
 ## okf-export: a note-tool vault in, an OKF bundle out
 
@@ -157,7 +161,7 @@ empty, inside the vault, or cannot be written). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.40`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.41`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

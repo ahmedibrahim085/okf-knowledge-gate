@@ -95,6 +95,16 @@ the words before it spell a file that exists at that commit:
 - both exist, or two such names do: UNRESOLVED, naming them, because the writer's intent cannot be told;
 - only `w.py` exists: `my` is read as prose and the claim is CONFIRMED against `w.py`.
 
+The name is the text as written, from any word of the same paragraph (a blank line or a code block ends it): a double space, a
+tab or a no-break space between its words is part of the file name, and a name soft-wrapped over two lines is also tried with
+the line break read as a space (only a line break: two spaces are not one). Any number of words may belong to the name. Words of
+prose count too: with a file `old notes w.md` beside `w.md`, "I read the old notes w.md:15" is UNRESOLVED (ambiguous), as the
+writer may have meant either; quote or rename to settle it.
+
+The file names of a searched repository come from `git ls-files` (tracked and untracked files, not the ignored ones). If git
+cannot list the repository, its folder is walked (`.git` skipped) up to 100000 entries (`OKF_VERIFY_WALK_LIMIT`); past that, a
+line citation with words before it, which may spell a file there, is UNRESOLVED and the detail names the limit.
+
 Quote the path (`` `my w.py`:3 @sha ``, also `".."` and `'..'`) to make the boundary explicit: it is then never cut,
 so with only `w.py` present it is REFUTED. A cut that ends a longer name while the words before it do not spell it
 (`a dir/w.py:1` for `my dir/w.py`) is UNRESOLVED, never REFUTED.
@@ -110,6 +120,14 @@ so with only `w.py` present it is REFUTED. A cut that ends a longer name while t
   the file is missing, two candidates match (`ambiguous`: two notes share the name, or a bundle note and a repository
   document both end with the path), or the path leaves the bundle and every searched repository, in which case it is not
   looked up at all; a symlink is judged by where it points, so a link inside the bundle to a file outside it is not read;
+- a name that holds a space follows the rule of pinned citations: `my w.md:10` names `w.md` unless the words before it spell
+  a file that exists. Only `my w.md` exists: that file is checked (the report names it). `my w.md` and `w.md` both exist, or
+  two files `my w.md`: UNRESOLVED, naming them; its claim reads `my w.md:10`, so it is told from the claim `w.md:10`. The
+  short form works the same way (`Handbook for agents:10`). Quote the name (`` `my w.md`:10 ``, also `".."` and `'..'`) and
+  it is never cut. The quotes may hold any letter (`` `café notes.md`:10 ``) and may hold the short form
+  (`"Handbook for agents":10`), which is a claim when a note of that name exists, like the unquoted short form;
+- a file counts only in the case it is written: `spec.md:10` beside `Spec.md` is UNRESOLVED on every disk, not REFUTED on a
+  case-insensitive one;
 - inside a code block it is a literal; a citation pinned with `@sha` stays a code citation.
 
 A note with no checkable claim is listed with the number of strings in it that look like citations (`word:12`) but match

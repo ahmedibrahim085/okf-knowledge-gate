@@ -59,7 +59,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.40"
+VERSION="0.9.41"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -192,7 +192,22 @@ for c in python3 python; do command -v "$c" >/dev/null 2>&1 && { PY="$c"; break;
 MIRROR_ROOT=""
 L2_MIRROR_ROOT=""
 L2_SRC=""   # the bundle as the user gave it: where L2 looks for dangling links when LAYER_BUNDLE is a copy
-say()  { [ "$JSON" -eq 1 ] && return 0; local m="$*"; [ -n "$MIRROR_ROOT" ] && m=${m//"$MIRROR_ROOT"/"$BUNDLE"}; [ -n "$L2_MIRROR_ROOT" ] && m=${m//"$L2_MIRROR_ROOT"/"$BUNDLE"}; printf '%s\n' "$m"; }
+# esc_line <text> — prints the text and a newline, with every byte that is not UTF-8, every control character (ESC, CR, TAB,
+# the C1 set) and every bidi control (U+061C, U+200E/F, U+202A-E, U+2066-9) spelled \xNN, as okf_guard.shown spells a note name in --json. A note name can hold both, and an ESC byte from a
+# name would reach the terminal as an escape sequence. The common line (printable ASCII and well-formed UTF-8 without C1
+# controls; line breaks stay) is printed as it is, by one regex in the C locale; any other goes through `okf_guard.py show`.
+# Without python the controls become `?` (a byte that is not UTF-8 stays). A regex the shell cannot compile fails the match,
+# which sends the line down the slow path: never a raw line by mistake.
+printf -v OKF_PLAIN_RE '^([ -~\n]|\xc2[\xa0-\xbf]|[\xc3-\xd7\xd9-\xdf][\x80-\xbf]|\xd8[\x80-\x9b\x9d-\xbf]|\xe0[\xa0-\xbf][\x80-\xbf]|\xe2\x80[\x80-\x8d\x90-\xa9\xaf-\xbf]|\xe2\x81[\x80-\xa5\xaa-\xbf]|\xe2[\x82-\xbf][\x80-\xbf]|[\xe1\xe3-\xec\xee\xef][\x80-\xbf][\x80-\xbf]|\xed[\x80-\x9f][\x80-\xbf]|\xf0[\x90-\xbf][\x80-\xbf][\x80-\xbf]|[\xf1-\xf3][\x80-\xbf][\x80-\xbf][\x80-\xbf]|\xf4[\x80-\x8f][\x80-\xbf][\x80-\xbf])*$'
+esc_line() {
+  local LC_ALL=C
+  if [[ $1 =~ $OKF_PLAIN_RE ]]; then printf '%s\n' "$1"
+  elif [ -n "${PY:-}" ] && [ -r "$HERE/okf_guard.py" ]; then printf '%s\n' "$1" | "$PY" "$HERE/okf_guard.py" show
+  else printf '%s\n' "$1" | tr '\000-\011\013-\037\177' '?'; fi
+}
+# say also notes the layer of every "<layer>   COULD NOT RUN" line, for --json layers_not_run (the layer column ends at two spaces).
+say()  { case "$*" in "  "[!\ ]*"  COULD NOT RUN"*) local _l="${*#  }"; record notrun "${_l%%  *}" ;; esac
+  [ "$JSON" -eq 1 ] && return 0; local m="$*"; [ -n "$MIRROR_ROOT" ] && m=${m//"$MIRROR_ROOT"/"$BUNDLE"}; [ -n "$L2_MIRROR_ROOT" ] && m=${m//"$L2_MIRROR_ROOT"/"$BUNDLE"}; esc_line "$m"; }
 # record <kind> <text> — one finding for --json (kind: error, stale, l2, skipped). Appends to a file, so it also works
 # inside `| while read` pipelines. The text lines of the human report stay untouched.
 record() { printf '%s\t%s\n' "$1" "$(printf '%s' "$2" | tr '\n\t' '  ')" >> "$TMP/findings.tsv" 2>/dev/null; return 0; }
@@ -207,22 +222,27 @@ emit_json() {
   _w="[]"; [ -s "$TMP/l1warn.json" ] && _w=$(cat "$TMP/l1warn.json")
   # Warnings other layers recorded (the Size layer's) follow the L1 ones in the same list; nothing recorded, nothing changes.
   if [ -n "$PY" ] && awk -F'\t' '$1=="warning"{f=1} END{exit !f}' "$TMP/findings.tsv" 2>/dev/null; then
-    _w=$("$PY" - "$_w" "$TMP/findings.tsv" <<'PY'
-import json, sys
+    _w=$(OKF_SCRIPTS_DIR="$HERE" "$PY" - "$_w" "$TMP/findings.tsv" <<'PY'
+import json, os, sys
+sys.path.insert(0, os.environ["OKF_SCRIPTS_DIR"])
+from okf_guard import shown
 out = json.loads(sys.argv[1])
-for line in open(sys.argv[2], encoding="utf-8", errors="replace").read().splitlines():
+# surrogateescape + shown: a note name that is not UTF-8 reads as `\xff` here, not as U+FFFD (errors="replace")
+for line in open(sys.argv[2], encoding="utf-8", errors="surrogateescape").read().splitlines():
     kind, _, text = line.partition("\t")
     if kind == "warning":
-        out.append(text)
+        out.append(shown(text))
 print(json.dumps(out))
 PY
 )
   fi
   _t="[]"; [ -s "$TMP/trust.json" ] && _t=$(cat "$TMP/trust.json"); [ "${TRUST_RAN:-1}" -eq 0 ] && _t=null
   if [ -n "$PY" ]; then
-    _b=$(printf '%s' "$BUNDLE" | "$PY" -c 'import json,sys; sys.stdout.write(json.dumps(sys.stdin.read()))')
-    _f=$(OKF_SIZES_JSONL="$TMP/sizes.jsonl" OKF_FACTS_JSONL="$TMP/facts.jsonl" OKF_SYMLINKED_LST="$TMP/symlinked-folders.lst" OKF_GRAPH_JSON="$TMP/graph.json" "$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
+    _b=$(printf '%s' "$BUNDLE" | "$PY" -c 'import json,sys; sys.path.insert(0, sys.argv[1]); from okf_guard import shown; sys.stdout.write(json.dumps(shown(sys.stdin.read())))' "$HERE")
+    _f=$(OKF_SCRIPTS_DIR="$HERE" OKF_SIZES_JSONL="$TMP/sizes.jsonl" OKF_FACTS_JSONL="$TMP/facts.jsonl" OKF_SYMLINKED_LST="$TMP/symlinked-folders.lst" OKF_GRAPH_JSON="$TMP/graph.json" "$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
 import json, os, sys
+sys.path.insert(0, os.environ["OKF_SCRIPTS_DIR"])
+from okf_guard import shown
 # Layers that read a filtered copy (.okfignore, crash isolation) hand okflint the copy's path, and some of its messages
 # print it (R201: "reserved file missing in <root>"). The report names the bundle the user pointed at; the copy is
 # also spelled by its real path (macOS /var -> /private/var), so both spellings go.
@@ -234,8 +254,8 @@ def unmirror(t):
     for r in sorted(roots, key=len, reverse=True):
         t = t.replace(r, sys.argv[4])
     return t
-out = {"errors": [], "stale": [], "l2_findings": [], "skipped": [], "lifecycle": [], "l2_warnings": None, "l2_by_rule": {}, "l2_advisories": []}
-key = {"error": "errors", "stale": "stale", "l2": "l2_findings", "skipped": "skipped", "lifecycle": "lifecycle"}
+out = {"errors": [], "stale": [], "l2_findings": [], "skipped": [], "lifecycle": [], "l2_warnings": None, "l2_by_rule": {}, "l2_advisories": [], "layers_not_run": []}
+key = {"error": "errors", "stale": "stale", "l2": "l2_findings", "skipped": "skipped", "lifecycle": "lifecycle", "notrun": "layers_not_run"}
 # The L2 advisory totals the text prints ("138 warning(s), by rule: S202 x136, L002 x2"); null when L2 did not run (okf-knowledge-gate#2).
 if sys.argv[3] == "ran":
     try:
@@ -258,19 +278,20 @@ if sys.argv[3] == "ran":
     except (OSError, IndexError, ValueError):
         pass
 try:
-    lines = open(sys.argv[1], encoding="utf-8", errors="replace").read().splitlines()
+    lines = open(sys.argv[1], encoding="utf-8", errors="surrogateescape").read().splitlines()
 except OSError:
     lines = []
 misplaced = []
 for line in lines:
     kind, _, text = line.partition("\t")
     if kind in key:
-        out[key[kind]].append(text)
+        if kind != "notrun" or text not in out["layers_not_run"]:   # a layer that prints COULD NOT RUN twice is named once
+            out[key[kind]].append(text)
     elif kind == "misplaced":
         misplaced.append(text)
 for k, v in out.items():
     if isinstance(v, list):
-        out[k] = [unmirror(t) for t in v]
+        out[k] = [shown(unmirror(t)) for t in v]
 # Present only when a key was found, so a report without one is unchanged.
 if misplaced:
     out["misplaced_keys"] = [{"key": m, "belongs": "okf_check." + m} for m in misplaced]
@@ -287,9 +308,9 @@ except (OSError, ValueError):
     pass
 # Present only when a symlinked folder was left out: the paths the text report names on its symlinks line (F-6).
 try:
-    rows = open(os.environ.get("OKF_SYMLINKED_LST", ""), encoding="utf-8", errors="replace").read().splitlines()
+    rows = open(os.environ.get("OKF_SYMLINKED_LST", ""), encoding="utf-8", errors="surrogateescape").read().splitlines()
     if rows:
-        out["symlinked_folders"] = rows
+        out["symlinked_folders"] = [shown(r) for r in rows]
 except OSError:
     pass
 # Present only when okf_check.facts is set: every statement of a declared fact and whether it agrees (okf-knowledge-gate#15).
@@ -303,7 +324,7 @@ PY
 )
   else
     _b="\"${BUNDLE//\"/\\\"}\""
-    _f='"errors":[],"stale":[],"l2_findings":[],"skipped":[],"lifecycle":[],"l2_warnings":null,"l2_by_rule":{},"l2_advisories":[]'
+    _f='"errors":[],"stale":[],"l2_findings":[],"skipped":[],"lifecycle":[],"l2_warnings":null,"l2_by_rule":{},"l2_advisories":[],"layers_not_run":[]'
   fi
   printf '{"bundle":%s,"exit":%d,"l1_errors":%s,"l1_warnings":%s,"concepts":%s,"change_detection":"%s"%s,"warnings":%s,"trust_findings":%s,"l2_profile":"%s",%s}\n' \
     "$_b" "$code" "${L1_ERR:-null}" "${L1_WARN:-null}" "${L1_CONCEPTS:-null}" "$_cd" "$_ign" "$_w" "$_t" "${L2_PROFILE:-ran}" "$_f"
@@ -357,7 +378,7 @@ err_capped() {
     1) total=0 ;;         # genuinely empty
     *) total=-1 ;;        # grep itself failed — we do NOT know the count
   esac
-  while IFS= read -r line; do printf '%s%s\n' "$indent" "$line" >&2; done < <(head -"$limit" "$buf")
+  while IFS= read -r line; do esc_line "$indent$line" >&2; done < <(head -"$limit" "$buf")
   # only the leading WHITESPACE of the item prefix, never the label itself:
   # "unreadable: ... and 2 more" reads as a filename called "... and 2 more".
   if [ "$total" -lt 0 ]; then
@@ -469,27 +490,29 @@ run_scoped() {
   [ "${_want_file:-0}" = 1 ] && { echo "usage: okf-check <bundle> --file <note>" >&2; return 64; }
   [ "$JSON" -eq 1 ] && { echo "error: --file prints text lines; --json is not supported with it" >&2; return 64; }
   case "$2" in *$'\n'*) echo "error: --file: a newline in the note name would split a finding over two lines" >&2; return 64 ;; esac
-  [ -f "$2" ] || { echo "error: --file '$2' is not a file" >&2; return 64; }
-  case "$2" in *.md) ;; *) echo "error: --file '$2' is not a .md note" >&2; return 64 ;; esac
+  [ -f "$2" ] || { esc_line "error: --file '$2' is not a file" >&2; return 64; }
+  case "$2" in *.md) ;; *) esc_line "error: --file '$2' is not a .md note" >&2; return 64 ;; esac
   bundle=$(cd -P "$1" && pwd) || return 64
   note="$(cd -P "$(dirname -- "$2")" && pwd)/$(basename -- "$2")"
-  case "$note" in "$bundle"/*) rel=${note#"$bundle"/} ;; *) echo "error: --file '$2' is not inside $1" >&2; return 64 ;; esac
+  case "$note" in "$bundle"/*) rel=${note#"$bundle"/} ;; *) esc_line "error: --file '$2' is not inside $1" >&2; return 64 ;; esac
   if okfignore_present "$bundle"; then
     okfignore_load "$bundle"; [ $? -eq 2 ] && return $EXIT_DEP
-    okfignore_match "$rel" && { echo "$rel: not checked (.okfignore excludes it)"; return 0; }
+    okfignore_match "$rel" && { esc_line "$rel: not checked (.okfignore excludes it)"; return 0; }
   fi
-  [ -n "$PY" ] || { echo "okf-check: python3 is missing - $rel was not checked" >&2; return $EXIT_DEP; }
+  [ -n "$PY" ] || { esc_line "okf-check: python3 is missing - $rel was not checked" >&2; return $EXIT_DEP; }
   resolve_note_cap "$bundle" || return $EXIT_DEP
   # The full run checks links against the notes .okfignore keeps (a filtered mirror), so the scoped run does too.
   keep=""
   if okfignore_present "$bundle"; then okfignore_list "$bundle" > "$TMP/scoped-keep.lst" 2>/dev/null && keep="$TMP/scoped-keep.lst"; fi
-  out=$(OKF_KEEP_LIST="$keep" py_with_vendor "$HERE/okf-scoped.py" "$bundle" "$rel" $([ "$STRICT_TRUST" -eq 1 ] && echo --strict-trust)); rc=$?
-  [ -n "$out" ] && printf '%s\n' "$out"
+  OKF_KEEP_LIST="$keep" run_layer "Scoped check" "$HERE/okf-scoped.py" "$bundle" "$rel" $([ "$STRICT_TRUST" -eq 1 ] && echo --strict-trust); rc=$?
+  if layer_stopped "$rc" >&2; then echo "okf-check: $rel was not checked" >&2; return $EXIT_DEP; fi   # stderr: stdout is findings only
+  out=$(<"$TMP/layer.out")
+  [ -n "$out" ] && esc_line "$out"
   case "$rc" in
     0) return 0 ;;
     1) [ -n "$out" ] && return $EXIT_CONFORM ;;   # exit 1 with no finding printed is a crash, not a verdict
   esac
-  echo "okf-check: the scoped check could not run (exit $rc) - $rel was not checked" >&2
+  esc_line "okf-check: the scoped check could not run (exit $rc) - $rel was not checked" >&2
   return $EXIT_DEP
 }
 
@@ -697,6 +720,59 @@ stop_limited() {
   RL_PID=""
 }
 
+# The Python layers (Trust, Successor, Owner, Size, derived L3, --duplicates, and the scoped --file check) read the notes, and
+# the first four parse every note's frontmatter: 3.6 to 7.7 s per MB in PyYAML, linear, and a parse cannot be stopped from
+# inside Python. So each runs under the watchdog (run_limited), as L1 does. OKF_LAYER_TIMEOUT seconds is ONE budget for all of
+# them together (LAYER_SPENT_MS): a layer with no time left is not started. Size parses no YAML but reads every note whole;
+# it costs 54 to 74 ms on a 4.5 MB note, so it stays in the budget, which only a bundle of many large notes would use up.
+# Called from the main shell, never from $(...): LAYER_SPENT_MS must survive.
+# Default 300: a note of 4.5 MB (the cap is 5 MB) costs one parsing layer 16 s on a fast Mac and 35 s on a slower one, so the
+# four layers need 64 to 140 s of the budget at the cap while L1 alone needs 16 to 36 s of its own 120 s. 120 would answer
+# exit 2 for a bundle that L1 passes.
+LAYER_LIMIT="${OKF_LAYER_TIMEOUT:-300}"; case "$LAYER_LIMIT" in ''|*[!0-9]*|0) LAYER_LIMIT=300 ;; esac
+LAYER_SPENT_MS=0; LAYER_NAME=""
+# 1 s is not a safe OKF_LAYER_TIMEOUT: Trust alone takes 0.11 to 0.2 s and a whole healthy run 0.55 to 0.7 s at a load of 10, so the
+# same bundle would get different verdicts. A usage error (64) before any layer runs; 0 and a non-number still mean the default.
+layer_floor() {
+  [ "$LAYER_LIMIT" -ge 2 ] && return 0
+  echo "okf-check: OKF_LAYER_TIMEOUT=$LAYER_LIMIT is below 2 seconds, the smallest limit that gives a bundle the same verdict every time" >&2
+  exit 64
+}
+# run_layer NAME CMD...: run one layer; its stdout is left in $TMP/layer.out (a file: --duplicates --json prints over 100 MB, which
+# a shell variable made 5 s slower), its stderr goes to ours, and the status is its own (143 when stopped for time, as
+# run_limited). NAME is what layer_stopped calls it. A first CMD word of `-` is the python script on stdin: the watchdog
+# gives its command no stdin, so the script is put in a file first. The budget counts the milliseconds okf-limit.py
+# measured (<out>.ms), not $SECONDS: whole seconds counted a 0.2 s layer as 0 or 1 s, so one healthy bundle got
+# different verdicts at a 1 s limit.
+run_layer() {
+  local f="$TMP/layer.out" t0=$SECONDS rc left ms
+  LAYER_NAME="$1"; shift
+  if [ "$1" = - ]; then cat > "$TMP/layer.py"; set -- "$TMP/layer.py" "${@:2}"; fi
+  left=$((LAYER_LIMIT * 1000 - LAYER_SPENT_MS))
+  if [ "$left" -le 0 ]; then : > "$f"; echo timeout > "$f.limit"; return 143; fi   # as l1_validate
+  run_limited "$((left / 1000)).$(printf %03d $((left % 1000)))" "$f" env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$VENDOR_PY${PYTHONPATH:+:$PYTHONPATH}" "$PY" "$@"; rc=$?
+  ms=$(cat "$f.ms" 2>/dev/null); case "$ms" in ''|*[!0-9]*) ms=$(( (SECONDS - t0) * 1000 )) ;; esac
+  LAYER_SPENT_MS=$((LAYER_SPENT_MS + ms))
+  cat "$f.err" >&2 2>/dev/null
+  return $rc
+}
+# layer_stopped STATUS: right after run_layer, say that the watchdog stopped the layer and return 0; 1 when it did not.
+# The reason is left in LAYER_WHY: say is silent under --json, so a mode that prints a JSON document needs it.
+layer_stopped() {
+  local why f="$TMP/layer.out"
+  if l1_timed_out "$1" "$f"; then why="the $LAYER_LIMIT s time limit shared by the Python layers (OKF_LAYER_TIMEOUT) is used up"
+  elif [ "$1" -eq 137 ] && grep -q '^rss' "$f.limit" 2>/dev/null; then why="it was stopped for memory (OKF_L2_MAX_RSS_MB)"
+  else return 1; fi
+  LAYER_WHY="$why"
+  say "  $(printf '%-16s' "$LAYER_NAME") COULD NOT RUN — $why; not a pass"
+}
+# json_not_run LAYER WHY: for a mode whose stdout is ONE JSON document (--duplicates --json): when its layer could not run, still
+# print a document, shaped like the main --json (exit, layers_not_run) plus the reason, and say the reason on stderr.
+json_not_run() {
+  "$PY" -c 'import json, sys; print(json.dumps({"bundle": sys.argv[1], "exit": 2, "layers_not_run": [sys.argv[2]], "reason": sys.argv[3]}))' "$BUNDLE" "$1" "$2"
+  echo "okf-check: $1 COULD NOT RUN — $2" >&2
+}
+
 doctor() {
   local fatal=0 okflint_state="MISSING"
   say "okf-check $VERSION — doctor"
@@ -832,6 +908,12 @@ doctor() {
   else
     say "  okf-memory         absent (optional — L2 graph, orphans and broken concept links; set OKF_MEMORY_BIN)"
   fi
+  # Explicit --doctor only (a normal run calls doctor() too and starts no python for this). Names a switched-on edit hook
+  # whose config it cannot read: the hook is fail-open, so it would otherwise just stay silent.
+  if [ "$MODE" = doctor ] && [ -n "$PY" ] && [ -f "$HERE/okf-edit-hook.py" ]; then
+    local hook_line; hook_line=$(py_with_vendor "$HERE/okf-edit-hook.py" --doctor "${BUNDLE:-$PWD}" 2>/dev/null)
+    [ -z "$hook_line" ] || say "$hook_line"
+  fi
   say ""
   OKFLINT_STATE="$okflint_state"
   # EXIT_DEP, not a bare 1: `1` is EXIT_CONFORM, so returning it here made
@@ -943,8 +1025,10 @@ __l1_core() {
   # upgrade — into "0 errors" and a confident PASS. This is G-4 exactly, one
   # layer up: parsed is not understood, and a checker that cannot fail is
   # worthless. Silence about a missing key is the failure mode, so say so. (G-9)
-  "$PY" - "$TMP/l1.json" "$TMP/l1warn.json" <<'PY' > "$TMP/l1.txt" 2>/dev/null
-import json,sys
+  OKF_SCRIPTS_DIR="$HERE" "$PY" - "$TMP/l1.json" "$TMP/l1warn.json" <<'PY' > "$TMP/l1.txt" 2>/dev/null
+import json, os, sys
+sys.path.insert(0, os.environ["OKF_SCRIPTS_DIR"])
+from okf_guard import shown
 try:
     d = json.load(open(sys.argv[1]))
 except Exception:
@@ -964,7 +1048,7 @@ for e in d["errors"]: print("E|" + e)
 # written as JSON for --json, where `l1_warnings` has only ever been a count.
 ws = [str(w).replace("\n", " ") for w in d["warnings"]]
 for w in ws: print("W|" + w)
-json.dump(ws, open(sys.argv[2], "w"))
+json.dump([shown(w) for w in ws], open(sys.argv[2], "w"))   # a name that is not UTF-8 reads \xff in --json, not a lone surrogate
 PY
   if grep -q '^SHAPE|' "$TMP/l1.txt" 2>/dev/null; then
     say "  L1 conformance   COULD NOT RUN — $(sed -n 's/^SHAPE|//p' "$TMP/l1.txt" | head -1)"
@@ -1004,9 +1088,10 @@ PY
 # honest-looking "agent drafts, person reviews later" case as an advisory. Both count into the final
 # advisory tally; neither fails the run (exit stays 0). The identity line prints once per run.
 run_trust() {
-  local bundle="$1" out nw na why
-  out=$(py_with_vendor "$HERE/okf-trust.py" "$bundle" "$TMP/trust.json" 2>"$TMP/trust.err")
-  if [ $? -ne 0 ]; then
+  local bundle="$1" out nw na why ec
+  run_layer "Trust (C4)" "$HERE/okf-trust.py" "$bundle" "$TMP/trust.json" 2>"$TMP/trust.err"; ec=$?; out=$(<"$TMP/layer.out")
+  if layer_stopped "$ec"; then TRUST_RAN=0; return $EXIT_DEP; fi
+  if [ "$ec" -ne 0 ]; then
     # Unknown is not clean: --json gets null (not []), and the helper's own last error line is shown.
     TRUST_RAN=0; why=$(tail -1 "$TMP/trust.err" 2>/dev/null)
     say "  Trust (C4)       COULD NOT RUN (okf-trust.py failed${why:+: $why}; check python3 and PyYAML with: okf-check --doctor)"
@@ -1070,7 +1155,7 @@ run_config() {   # $1 the real bundle (paths in the block resolve against it), $
 run_successor() {
   local bundle="$1" out ec n
   [ -f "$bundle/okf-base.yaml" ] && [ -n "$PY" ] || return 0
-  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$bundle/okf-base.yaml" <<'PYEOF'
+  OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" run_layer Successor - "$bundle" "$bundle/okf-base.yaml" <<'PYEOF'
 import os, pathlib, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
@@ -1118,7 +1203,8 @@ for p in sorted(bundle.rglob("*.md")):
             print("E|%s: superseded_by %s is deprecated too: point at the final successor, not a deprecated one" % (rel, ref))
 print("N|%d" % n)
 PYEOF
-  ); ec=$?
+  ec=$?; out=$(<"$TMP/layer.out")
+  layer_stopped "$ec" && return $EXIT_DEP
   [ "$ec" -eq 0 ] || { say "  Successor        COULD NOT RUN — the successor check exited $ec"; return $EXIT_DEP; }
   n=$(printf '%s\n' "$out" | sed -n 's/^N|//p')
   [ -n "$n" ] || return 0
@@ -1171,12 +1257,12 @@ PY
       done < <(okf_md_files "$bundle") ) > "$TMP/owner-defaults.tsv"
   fi
   # $TMP/owners.tsv (relative path, TAB, owner) is what L3 reads to show the owner on its findings.
-  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$bundle/okf-base.yaml" "$TMP/owners.tsv" "$TMP/owner-defaults.tsv" <<'PYEOF'
+  OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" run_layer Owner - "$bundle" "$bundle/okf-base.yaml" "$TMP/owners.tsv" "$TMP/owner-defaults.tsv" <<'PYEOF'
 import json, os, pathlib, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter, check_actor, Report
-    from okf_notes import meta, INVALID, read_note
+    from okf_notes import meta, INVALID, read_note, shown
     cfg = load_frontmatter(read_note(sys.argv[2], "utf-8", "replace"))
 except Exception:
     sys.exit(0)
@@ -1187,7 +1273,7 @@ if not isinstance(opt, dict) or opt.get("require_owner") is not True:
     sys.exit(0)
 bundle = pathlib.Path(sys.argv[1])
 
-defaults = dict(l.rstrip("\n").split("\t", 1) for l in open(sys.argv[4], encoding="utf-8", errors="replace") if "\t" in l)
+defaults = dict(l.rstrip("\n").split("\t", 1) for l in open(sys.argv[4], encoding="utf-8", errors="surrogateescape") if "\t" in l)
 n, rows = 0, []
 for p in sorted(bundle.rglob("*.md")):
     if p.name in ("index.md", "log.md") or not p.is_file():   # a dangling link is no note (okf_md_files)
@@ -1196,12 +1282,12 @@ for p in sorted(bundle.rglob("*.md")):
     rel = str(p.relative_to(bundle))
     m = meta(p, invalid=INVALID)
     if m is INVALID:
-        print("E|%s: the frontmatter is not valid YAML, so its owner cannot be read (L1 reports the YAML error)" % rel)
+        print("E|%s: the frontmatter is not valid YAML, so its owner cannot be read (L1 reports the YAML error)" % shown(rel))
         continue
     raw = m.get("owner")
     if raw is not None and not isinstance(raw, str):
         # a list, a number or a boolean is not an actor; shown as JSON, never as a Python repr (0.9.8 review G-3)
-        print("E|%s: owner `%s` is not an allowed actor form (an owner is one string, such as team:docs)" % (rel, json.dumps(raw)))
+        print("E|%s: owner `%s` is not an allowed actor form (an owner is one string, such as team:docs)" % (shown(rel), json.dumps(raw)))
         continue
     # The note's own owner beats a folder default.
     own = (raw or "").strip() or defaults.get(rel, "").strip()
@@ -1209,15 +1295,16 @@ for p in sorted(bundle.rglob("*.md")):
     if own:
         check_actor(own, "owner", rel, shape)   # section 7, the same check L1 runs on generated.by
     if not own:
-        print("E|%s: no owner (no owner key and no okf_check.owners default matches)" % rel)
+        print("E|%s: no owner (no owner key and no okf_check.owners default matches)" % shown(rel))
     elif shape.warnings:
-        print("E|%s: owner `%s` is not an allowed actor form (section 7: human:<id>, process:<id>, <prefix>:<id> or <producer>/<version>)" % (rel, own))
+        print("E|%s: owner `%s` is not an allowed actor form (section 7: human:<id>, process:<id>, <prefix>:<id> or <producer>/<version>)" % (shown(rel), own))
     elif not any(c in rel + own for c in "\t\n"):
         rows.append("%s\t%s\n" % (rel, own))
-open(sys.argv[3], "w", encoding="utf-8").write("".join(rows))
+open(sys.argv[3], "w", encoding="utf-8", errors="surrogateescape").write("".join(rows))   # owners.tsv holds the real name
 print("N|%d" % n)
 PYEOF
-  ); ec=$?
+  ec=$?; out=$(<"$TMP/layer.out")
+  layer_stopped "$ec" && return $EXIT_DEP
   [ "$ec" -eq 0 ] || { say "  Owner            COULD NOT RUN — the owner check exited $ec"; return $EXIT_DEP; }
   [ -n "$(printf '%s\n' "$out" | sed -n 's/^N|//p')" ] || return 0
   if printf '%s\n' "$out" | grep -q '^E|'; then
@@ -1274,12 +1361,12 @@ PY
       mv "$TMP/size-files.kept" "$TMP/size-files.lst"
     fi
   fi
-  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "$bundle/okf-base.yaml" "$TMP/size-files.lst" <<'PYEOF'
+  OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" run_layer Size - "$bundle" "$bundle/okf-base.yaml" "$TMP/size-files.lst" <<'PYEOF'
 import json, os, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter
-    from okf_notes import body_chars, read_note
+    from okf_notes import body_chars, read_note, shown
     cfg = load_frontmatter(read_note(sys.argv[2], "utf-8", "replace"))
 except Exception:
     sys.exit(0)
@@ -1291,14 +1378,14 @@ if not any(isinstance(v, int) and not isinstance(v, bool) for v in (mx, wn)):
     sys.exit(0)   # the values are checked once, by the shared schema (run_config)
 fix = "(fix: split or move a section to a companion note; do not compress)"
 bundle = sys.argv[1]
-files = [f for f in open(sys.argv[3], "rb").read().decode("utf-8", "replace").split("\0") if f]
+files = [f for f in open(sys.argv[3], "rb").read().decode("utf-8", "surrogateescape").split("\0") if f]
 n = 0
 for f in sorted(files):
     c = body_chars(f)
     if c is None:
         continue
     n += 1
-    rel = os.path.relpath(f, bundle).replace("\n", " ").replace("\t", " ")
+    rel = shown(os.path.relpath(f, bundle)).replace("\n", " ").replace("\t", " ")
     # One row per measured note for --json sizes[] (okf-knowledge-gate#17): the trend shows before a note breaks.
     print("S|" + json.dumps({"note": rel, "body_chars": c, "max_body_chars": mx if isinstance(mx, int) else None,
                              "warn_body_chars": wn if isinstance(wn, int) else None}))
@@ -1308,7 +1395,8 @@ for f in sorted(files):
         print("W|%s: body is %d characters, above okf_check.size.warn_body_chars %d %s" % (rel, c, wn, fix))
 print("N|%d" % n)
 PYEOF
-  ); ec=$?
+  ec=$?; out=$(<"$TMP/layer.out")
+  layer_stopped "$ec" && return $EXIT_DEP
   [ "$ec" -eq 0 ] || { say "  Size             COULD NOT RUN — the size check exited $ec"; return $EXIT_DEP; }
   [ -n "$(printf '%s\n' "$out" | sed -n 's/^N|//p')" ] || return 0
   printf '%s\n' "$out" | sed -n 's/^S|//p' > "$TMP/sizes.jsonl"
@@ -1399,14 +1487,17 @@ run_graph() {
   run_limited "$secs" "$TMP/graph.out" "$bin" validate "$bundle" --json; ec=$?
   # Exit 0 or 1 (okf-memory exits 1 on a non-conformant bundle, with its report) and both keys present, else no verdict:
   # an error exit, or a changed output format, must not read as a clean graph (review 0.9.35).
-  if [ "$ec" -gt 1 ] || ! "$PY" - "$TMP/graph.out" "$TMP/graph.json" "$TMP/graph.txt" <<'PY' 2>/dev/null; then
-import json, sys
-d = json.load(open(sys.argv[1], encoding="utf-8", errors="replace"))
+  if [ "$ec" -gt 1 ] || ! OKF_SCRIPTS_DIR="$HERE" "$PY" - "$TMP/graph.out" "$TMP/graph.json" "$TMP/graph.txt" <<'PY' 2>/dev/null; then
+import json, os, sys
+sys.path.insert(0, os.environ["OKF_SCRIPTS_DIR"])
+from okf_guard import shown
+d = json.load(open(sys.argv[1], encoding="utf-8", errors="surrogateescape"))
 # Both keys must be there; okf-memory v0.6.2 writes null for an empty list (review 0.9.35 round 2).
 if not (isinstance(d, dict) and all(k in d and (d[k] is None or isinstance(d[k], list)) for k in ("broken_links", "orphans"))):
     sys.exit(1)
-broken = ["%s -> %s" % (b.get("source_concept"), b.get("target_href")) for b in d.get("broken_links") or []]
-orphans = [str(o) for o in d.get("orphans") or []]
+# names: spelled \xNN when they hold a control character or a byte that is not UTF-8 (shown), in the text and in --json
+broken = [shown("%s -> %s" % (b.get("source_concept"), b.get("target_href"))) for b in d.get("broken_links") or []]
+orphans = [shown(str(o)) for o in d.get("orphans") or []]
 json.dump({"broken_links": broken, "orphans": orphans}, open(sys.argv[2], "w"))
 with open(sys.argv[3], "w") as f:
     f.write("%d %d\n" % (len(broken), len(orphans)))
@@ -1468,8 +1559,10 @@ run_duplicates() {
     okfignore_load "$bundle"; [ $? -eq 2 ] && { say "  Duplicates       COULD NOT RUN — .okfignore could not be applied (see the message above)"; return $EXIT_DEP; }
     okfignore_list "$bundle" > "$TMP/dup-keep.lst" 2>/dev/null && keep="$TMP/dup-keep.lst"
   fi
-  OKF_KEEP_LIST="$keep" OKF_OWNERS_TSV="$TMP/owners.tsv" OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor "$HERE/okf-duplicates.py" "$bundle" "$ROOT/config/okf-check-block.json" "$JSON" "$DUP_BODY"
+  OKF_KEEP_LIST="$keep" OKF_OWNERS_TSV="$TMP/owners.tsv" OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" run_layer Duplicates "$HERE/okf-duplicates.py" "$bundle" "$ROOT/config/okf-check-block.json" "$JSON" "$DUP_BODY"
   rc=$?
+  if layer_stopped "$rc"; then [ "$JSON" -eq 1 ] && json_not_run Duplicates "$LAYER_WHY"; return $EXIT_DEP; fi
+  cat "$TMP/layer.out"
   [ "$rc" -eq 0 ] || { say "  Duplicates       COULD NOT RUN — okf-duplicates.py exited $rc"; return $EXIT_DEP; }
   return 0
 }
@@ -1687,8 +1780,10 @@ __l2_core() {
   counts=$(OKF_SCRIPTS_DIR="$HERE" "$PY" - "$TMP/l2.txt" "$bundle" "$dlst" "$(l2_wikilink_root "$_src" "$bundle")" "$_src" <<'PY' 2>/dev/null
 import json, os, re, sys
 sys.path.insert(0, os.environ["OKF_SCRIPTS_DIR"])
-from okf_guard import obsidian_path
-raw = open(sys.argv[1], encoding="utf-8", errors="replace").read()
+from okf_guard import obsidian_path, shown
+# surrogateescape: okflint prints a note name that is not UTF-8 as the raw byte; shown() below spells it \xff in the text and
+# --json (errors="replace" made it U+FFFD)
+raw = open(sys.argv[1], encoding="utf-8", errors="surrogateescape").read()
 
 # `raw.find("[")` grabbed the FIRST bracket anywhere — including one inside
 # okflint's pre-JSON banner (`unknown okf_version=[0.3]`), which then made the
@@ -1788,13 +1883,13 @@ unknown = [x for x in doc if isinstance(x, dict) and "severity" not in x]
 others  = [x for x in doc if sev(x) not in ("error",) and x not in unknown]
 # One advisory per dangling *.md link okf-check set aside before okflint ran.
 try:
-    dangling = [d for d in open(sys.argv[3], encoding="utf-8", errors="replace").read().split("\0") if d]
+    dangling = [d for d in open(sys.argv[3], encoding="utf-8", errors="surrogateescape").read().split("\0") if d]
 except OSError:
     dangling = []
 others += [{"code": "DANGLING_MD", "severity": "warning", "file": d} for d in dangling]
 print(len(errors), len(others), len(unknown), len(dropped), dropped_err)
 for x in errors + unknown:
-    print("E|%s %s — %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", "")))
+    print(shown("E|%s %s — %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", ""))))
 # Advisory findings grouped by rule code, most frequent first (ecosystem ticket 01): a flat
 # "226 warnings" hides which okflint rule family produced them.
 from collections import Counter
@@ -1803,7 +1898,7 @@ for code, n in sorted(Counter(str(x.get("code", "?")) for x in others).items(), 
 # The advisories themselves, same text format as the E rows, for `l2_advisories` in --json (okf-knowledge-gate#2). One row per
 # finding, so the text is flattened: a newline in a file name or message must not forge a C| or E| row.
 for x in others:
-    print("W|" + re.sub(r"[\r\n\t]", " ", "%s %s \u2014 %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", ""))))
+    print("W|" + shown(re.sub(r"[\r\n\t]", " ", "%s %s \u2014 %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", "")))))
 if _above:
     anc, n = _above.most_common(1)[0]
     src = os.path.realpath(sys.argv[5])
@@ -2021,7 +2116,7 @@ run_derived_stale() {
   # py_with_vendor, unlike the index reconciler: `sources` is nested structure,
   # and hand-rolling a YAML list-of-mappings parser with regexes is how a gate
   # starts quietly disagreeing with the validator standing above it.
-  out=$(OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor - "$bundle" "${REAL_BUNDLE:-$bundle}" <<'PYEOF'
+  OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" run_layer "L3 derived" - "$bundle" "${REAL_BUNDLE:-$bundle}" <<'PYEOF'
 import datetime, pathlib, sys
 sys.path.insert(0, __import__("os").environ["OKF_SCRIPTS_DIR"])
 from okf_guard import case_exact
@@ -2037,7 +2132,7 @@ except Exception:
 frozen = pathlib.Path(sys.argv[1])   # where the notes are read
 bundle = pathlib.Path(sys.argv[2])   # where sources are looked for
 RESERVED = {"index.md", "log.md"}
-stale, unmeasurable = [], []
+stale, unmeasurable, linked = [], [], set()
 # .okfignore: the notes it leaves in (NUL-separated, relative). Sources are resolved against the REAL bundle, the notes
 # are read from the frozen copy, which holds only the notes .okfignore keeps.
 import os
@@ -2045,7 +2140,7 @@ _kl = os.environ.get("OKF_KEEP_LIST")
 keep = None
 if _kl:
     try:
-        keep = {x for x in open(_kl, encoding="utf-8", errors="replace").read().split("\0") if x}
+        keep = {x for x in open(_kl, encoding="utf-8", errors="surrogateescape").read().split("\0") if x}
     except OSError:
         keep = None
 
@@ -2087,6 +2182,13 @@ for p in sorted(frozen.rglob("*.md")):
         # src.txt, on Linux it was not. Only the cited part below the folder it shares with the bundle is judged.
         target = next((c for c in cand if c.is_file() and case_exact(c, bundle)), None)
         if target is None:
+            # Name a link only when it is the cause: every name is there as written, a link lies on the path inside the
+            # bundle, and the path does not resolve case-exact through it (its target is missing, or spelled in another
+            # case where the disk ignores case). "not a local file" is false for the second. A wrong name below a correct
+            # link (`dok/F.TXT`) or a missing file keeps the plain message.
+            if any(case_exact(c, bundle, False) and not (c.exists() and case_exact(c, bundle))
+                   and any(q.is_symlink() for q in (c, *c.parents) if bundle in q.parents) for c in cand):
+                linked.add((rel, res))
             unmeasurable.append((rel, res))
             continue
         try:
@@ -2101,10 +2203,12 @@ for p in sorted(frozen.rglob("*.md")):
 for rel, res, rec, mt in stale:
     print(f"STALE {rel}: {res} changed {mt}, but this concept records it as of {rec}")
 for rel, res in unmeasurable:
-    print(f"UNMEASURABLE {rel}: {res} is not a local file — freshness could not be measured")
+    why = "is a link whose target is missing or spelled in another case" if (rel, res) in linked else "is not a local file"
+    print(f"UNMEASURABLE {rel}: {res} {why} — freshness could not be measured")
 sys.exit(1 if stale else 0)
 PYEOF
-  ); ec=$?
+  ec=$?; out=$(<"$TMP/layer.out")
+  layer_stopped "$ec" && return $EXIT_DEP
   if [ "$ec" -ne 0 ] && [ "$ec" -ne 1 ]; then
     say "  L3 derived       COULD NOT RUN — the source comparison exited $ec"
     say "                   NOT a pass: recorded sources were never compared."
@@ -2329,6 +2433,8 @@ selftest() {
   probe "draft + human verifier -> C4" "draft with human verification" run_trust "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: draft\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - by: human:selftest\n    at: "2026-02-01"\nstale_after: "2099-01-01"\n---\nbody\n'
 
   probe "lookalike human: -> named" "only looks like \`human:\`" run_trust "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - by: "\\u04bb\\u03c5\\u043c\\u0430\\u043f:selftest"\n    at: "2026-02-01"\nstale_after: "2099-01-01"\n---\nbody\n'
+  # A zero-width space inside the prefix: it renders as nothing, so the claim reads as human: while no tool does.
+  probe "invisible character in human: -> named" "only looks like \`human:\`" run_trust "bad.md" '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - by: "hu\\u200bman:selftest"\n    at: "2026-02-01"\nstale_after: "2099-01-01"\n---\nbody\n'
 
   say "  Config (okf_check block):"
   # A block the schema refuses must stop the run (exit 2), never be read as "nothing declared".
@@ -2465,19 +2571,19 @@ case "$MODE" in
   # its window, and a mutation re-adding `-maxdepth 1` to the fingerprint slipped
   # through exactly that way. Also answers "why did it say CONCURRENT?".
   fingerprint) [ -n "$BUNDLE" ] || { echo "usage: okf-check --fingerprint <bundle>" >&2; exit 64; }
-               [ -d "$BUNDLE" ] || { echo "error: $BUNDLE is not a directory" >&2; exit 64; }
+               [ -d "$BUNDLE" ] || { esc_line "error: $BUNDLE is not a directory" >&2; exit 64; }
                # The R-6 fail-closed guard was added to the normal path in the
                # same commit that introduced this mode, and not ported here: an
                # unreadable directory produced empty output and exit 0, a silent
                # clean read of a path we were never allowed to see. (G-3)
                ls "$BUNDLE" >/dev/null 2>&1 || {
-                 echo "error: $BUNDLE is not readable — cannot fingerprint it (this is not 'unchanged')" >&2
+                 esc_line "error: $BUNDLE is not readable — cannot fingerprint it (this is not 'unchanged')" >&2
                  exit $EXIT_DEP; }
                # ...and every directory below it, or a fingerprint taken over a
                # subtree we cannot see compares equal to itself forever. (G-8)
                _u=$(unreadable_dirs "$BUNDLE")
                [ -z "$_u" ] || {
-                 echo "error: $BUNDLE contains unreadable directories — a fingerprint over them is not 'unchanged'" >&2
+                 esc_line "error: $BUNDLE contains unreadable directories — a fingerprint over them is not 'unchanged'" >&2
                  printf '%s\n' "$_u" | err_capped 3 "  unreadable: "
                  exit $EXIT_DEP; }
                # `--json` used to print raw `size mtime path` lines here and exit
@@ -2485,10 +2591,16 @@ case "$MODE" in
                if [ "$JSON" -eq 1 ]; then
                  [ -n "$PY" ] || { echo '{"error":"python3 required for --fingerprint --json"}'; exit $EXIT_DEP; }
                  bundle_fingerprint "$BUNDLE" | "$PY" -c 'import json,sys
-print(json.dumps({"bundle": sys.argv[1],
-                  "fingerprint": [l.rstrip("\n") for l in sys.stdin if l.strip()]}))' "$BUNDLE"
+sys.path.insert(0, sys.argv[2])
+from okf_guard import shown
+print(json.dumps({"bundle": shown(sys.argv[1]),
+                  "fingerprint": [shown(l.rstrip("\n")) for l in sys.stdin if l.strip()]}))' "$BUNDLE" "$HERE"
+               elif [ -n "$PY" ]; then
+                 # Names are spelled for the reader here too; the run's own change detection compares bundle_fingerprint
+                 # directly (FP_BEFORE / FP_AFTER), never this output.
+                 bundle_fingerprint "$BUNDLE" | "$PY" "$HERE/okf_guard.py" show
                else
-                 bundle_fingerprint "$BUNDLE"
+                 bundle_fingerprint "$BUNDLE" | tr '\000-\011\013-\037\177' '?'
                fi
                exit 0;;
   init-house-rules) # The ONLY writer of okf-base.yaml, and only on this explicit request. L2 reads
@@ -2526,12 +2638,14 @@ print(json.dumps({"bundle": sys.argv[1],
             # signal that must never lie. selftest is a report, not a data feed;
             # force human output for it. (R-5)
             JSON=0
+            layer_floor
             doctor >/dev/null 2>&1 || { doctor; echo "cannot selftest: dependencies missing" >&2; exit $EXIT_DEP; }
             selftest; exit $?;;
 esac
 
 [ -n "$BUNDLE" ] || { echo "usage: okf-check <bundle> [--doctor|--selftest|--json|--fail-stale|--strict-trust]" >&2; exit 64; }
 [ -d "$BUNDLE" ] || { echo "error: $BUNDLE is not a directory" >&2; exit 64; }
+layer_floor   # before every mode that runs a layer, --file included
 [ "$MODE" = scoped ] && { run_scoped "$BUNDLE" "${SCOPED_FILE:-}"; exit $?; }
 # An UNREADABLE directory used to yield "L1 PASS 0 concepts" and exit 0 — a
 # permission problem, or a typo'd path, read as a clean bill of health. The
@@ -2556,6 +2670,8 @@ resolve_note_cap "$BUNDLE" || exit $EXIT_DEP   # every layer and helper below ju
 # Its readers are all bounded (okf_notes.read_note), and the manifest is judged first: a device or pipe named okf-base.yaml
 # is refused up front, never opened (the plain open().read() of review round 1 ran a real /dev/zero out of memory).
 # --conserve <ref> (okf-knowledge-gate#16): a report of its own, read from git and the notes on disk; it runs instead of the layers.
+# It is not under OKF_LAYER_TIMEOUT because it never parses frontmatter (okf-conserve.py compares text and calls neither
+# yaml nor the validator's loader), so a hostile frontmatter cannot stall it.
 if [ "$MODE" = conserve ]; then
   [ -n "${CONSERVE_REF:-}" ] || { echo "usage: okf-check <bundle> --conserve <ref> [--fail-lost] [--deleted FILE]" >&2; exit 64; }
   OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor "$HERE/okf-conserve.py" "$BUNDLE" "$CONSERVE_REF" "$VERSION" "$JSON" "${FAIL_LOST:-0}" ${DELETED_FILE:+"$DELETED_FILE"}

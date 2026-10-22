@@ -29,14 +29,14 @@ sys.dont_write_bytecode = True   # a direct run must not leave scripts/__pycache
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
 from okf_validate import load_frontmatter, split_frontmatter  # noqa: E402  (the validator's own splitter, so both agree)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from okf_guard import read_note  # noqa: E402  (bounded read)
+from okf_guard import read_note, shown  # noqa: E402  (bounded read)
 
 # `<producer>/<version>` or an `agent:<id>` actor; `human:` and `process:` are never agents.
 AGENT_FORM = re.compile(r"^(?:agent:\S+|[^\s:/]+/\S+|[^\s:/]+)$")   # a bare token (`claudebot`) is an agent too; `team:<id>` is not
 
 
 # Letters that render like the ones in `human:` and `process:` (Unicode confusables for h u m a n p r o c e s and the
-# colon). NFKC already folds full-width forms and the mathematical alphabets; these survive it. B-4, narrow: a value that
+# colon). NFKD (below) already folds full-width forms and the mathematical alphabets; these survive it. B-4, narrow: a value that
 # only LOOKS like `human:` is named, so nobody reads `һυмап:dana` as a human claim. Nothing new is denied.
 LOOKALIKE = str.maketrans({
     "\u04bb": "h", "\u04ba": "h", "\u029c": "h", "\u0570": "h", "\u13c2": "h", "\u041d": "h", "\u0397": "h",
@@ -54,12 +54,35 @@ LOOKALIKE = str.maketrans({
 })
 
 
+# Characters that render as nothing, as a gap or on top of a letter: format (Cf: zero-width space and joiners, soft hyphen,
+# word joiner, BOM), combining and enclosing marks (Mn, Me), space, line and paragraph separators (Zs: no-break, ideographic;
+# Zl, Zp), plus the characters that are controls, letters or symbols by category but draw a blank or break the line (next line
+# U+0085, braille blank, hangul fillers).
+HIDDEN_CATEGORIES = ("Cf", "Mn", "Me", "Zs", "Zl", "Zp")
+BLANK_FILLERS = "\u0085\u115f\u1160\u2800\u3164\uffa0"
+
+
+def is_hidden(ch):
+    """An ordinary space is not hidden: it shows, and an all-ASCII spelling is the validator's near-miss rule, not this one."""
+    return ch != " " and (unicodedata.category(ch) in HIDDEN_CATEGORIES or ch in BLANK_FILLERS)
+
+
+def hidden_code_points(actor):
+    """The U+XXXX of every hidden character in the prefix of <actor> (before its first colon), in numeric order, once each. The actor
+    is printed with them in it, so the warning has to name them."""
+    return [f"U+{n:04X}" for n in sorted({ord(c) for c in actor.split(":", 1)[0] if is_hidden(c)})]   # as written: NFKD would turn U+00A0 into U+0020
+
+
 def lookalike_prefix(actor):
     """`human:` or `process:` when <actor> only looks like it: lookalike letters that the plain spelling check (the
     validator's near-miss rule, ASCII only) does not see. None for the real prefix and for an ASCII near-miss."""
     if actor.startswith(("human:", "process:")) or actor.isascii():
         return None
-    folded = unicodedata.normalize("NFKC", actor).translate(LOOKALIKE).lower()
+    # Hidden characters out: `hu<U+200B>man:` reads as `human:` and no tool does. NFKD, not NFKC: NFKC would recompose a
+    # precomposed letter such as U+1E25 (`ḥ`), so the Mn drop could not remove its mark; NFKD splits it into base and mark.
+    # Each character is judged as written first (NFKD turns a no-break space into an ordinary one), then its parts.
+    visible = "".join(d for c in actor if not is_hidden(c) for d in unicodedata.normalize("NFKD", c) if not is_hidden(d))
+    folded = visible.translate(LOOKALIKE).lower()
     for p in ("human:", "process:"):
         if folded.startswith(p):
             return p
@@ -118,8 +141,10 @@ def findings_for(meta):
         where = f"verified[{i}].by"
         look = lookalike_prefix(actor)
         if look:
+            hidden = hidden_code_points(actor)
+            seen = f" (its prefix holds the hidden {', '.join(hidden)})" if hidden else ""
             yield ("warning", where, f"`{actor}` only looks like `{look}`: it spells it with lookalike characters, so no "
-                                     f"tool reads it as that actor; write `{look}` in plain ASCII")
+                                     f"tool reads it as that actor; write `{look}` in plain ASCII{seen}")
             continue
         if not actor.startswith("human:"):
             continue
@@ -153,7 +178,7 @@ def main():
         tag = "W" if r["severity"] == "warning" else "A"
         print(f'{tag}|{r["file"]}: {r["entry"]} {r["reason"]}')
     with open(out_path, "w", encoding="utf-8") as fh:
-        json.dump(records, fh)
+        json.dump([dict(r, file=shown(r["file"])) for r in records], fh)   # --json reads a name that is not UTF-8 as \xff, not a lone surrogate
 
 
 if __name__ == "__main__":

@@ -52,6 +52,7 @@ Usage:
 from __future__ import annotations
 
 import argparse
+import bisect
 import json
 import os
 import re
@@ -88,7 +89,7 @@ CITE_RE = re.compile(r"(?<![\w./\\-])([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]{
 # The gap between `path:line` and `@sha` may hold ONE line break (a wrapped line) but never a blank line: across a paragraph break the two
 # are separate statements and one was read as the other's citation. (audit R058)
 # The same claim with a path that holds a space, QUOTED: the quotes say where the path starts, so nothing is cut and nothing is guessed.
-QCITE_RE = re.compile(r"(?<![\w./\\-])([`\"'])([A-Za-z0-9_][A-Za-z0-9_./-]*(?: [A-Za-z0-9_./-]+)+\.[A-Za-z0-9]{1,8})\1:(\d+)(?:-(\d+))?`?(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:@|at(?:[ \t]+|[ \t]*\r?\n[ \t]*))`?([0-9a-f]{7,40})\b`?(?:[ \t]+[\"“]([^\"”\n]{1,200})[\"”])?", re.I)
+QCITE_RE = re.compile(r"(?<![\w./\\-])([`\"'])(\w[\w./-]*(?: [\w./-]+)+\.[A-Za-z0-9]{1,8})\1:(\d+)(?:-(\d+))?`?(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:@|at(?:[ \t]+|[ \t]*\r?\n[ \t]*))`?([0-9a-f]{7,40})\b`?(?:[ \t]+[\"“]([^\"”\n]{1,200})[\"”])?", re.I)
 # A line citation into a living document, with no commit (okf-knowledge-gate#14): `decision-12.md:94`, `spec.md:40-42`. The
 # lookbehind keeps a URL, a Windows path or a glued token from being cut into a citation of its tail; the lookahead lets a
 # sentence's full stop follow (`spec.md:42.`) but not a longer token (`d.md:3x`, `d.md:3:4`).
@@ -96,6 +97,11 @@ LINE_RE = re.compile(r"(?<![\w./\\:-])((?:\.{1,2}/)*[A-Za-z0-9_][A-Za-z0-9_./-]*
 # The short form `decision-12:94` names a note by its file name. Prose holds the same shape (`Step:2`, `localhost:8080`), so
 # it is a claim only when a note of that name exists in the bundle; a time (`10:30`) has no letter and never matches.
 NAME_RE = re.compile(r"(?<![\w./\\:-])([A-Za-z0-9_-]{1,120}):(\d+)(?:-(\d+))?(?![\w:/-]|\.\w)(?:[ \t]+[\"“]([^\"”\n]{1,200})[\"”])?")
+# The same, with a name that holds a space, QUOTED (`my w.md`:10): the quotes say where the name starts, so nothing is cut or guessed.
+# A name may hold any letter (\w), as the words before an unquoted citation can.
+QLINE_RE = re.compile(r"(?<![\w./\\-])([`\"'])(\w[\w./-]*(?: [\w./-]+)+\.md)\1:(\d+)(?:-(\d+))?(?![\w:/-]|\.\w)(?:[ \t]+[\"“]([^\"”\n]{1,200})[\"”])?")
+# The short form, QUOTED (`"Handbook for agents":10`): a claim when a note of that name exists, as the unquoted short form is, and never cut at a space.
+QNAME_RE = re.compile(r"(?<![\w./\\:-])([`\"'])(\w(?:[\w -]{0,118}\w)?)\1:(\d+)(?:-(\d+))?(?![\w:/-]|\.\w)(?:[ \t]+[\"“]([^\"”\n]{1,200})[\"”])?")
 # What a writer may have meant as a citation, counted for a note with no checkable claim so the writer learns which forms
 # are checkable (okf-knowledge-gate#14, part 3). A hint, never a verdict.
 LOOKS_TOKEN = re.compile(r"[^`'\"()\[\]<>:]{1,120}:\d+(?:-\d+)?")   # one whitespace-separated token; see looks_like()
@@ -115,7 +121,7 @@ EPHEMERAL = ("/tmp/", "/private/tmp/", "/var/folders/", "/private/var/folders/",
              "/var/tmp/", "/private/var/tmp/", "/dev/shm/")
 
 
-def strip_code_fences(body: str) -> tuple[str, bool]:
+def strip_code_fences(body: str, seams: set | None = None) -> tuple[str, bool]:
     """Drop code blocks before extracting claims.
 
     A path inside a code block is a LITERAL — `const LOG = '/tmp/net-spy.log'`
@@ -128,6 +134,9 @@ def strip_code_fences(body: str) -> tuple[str, bool]:
         untoggled at the inner fence and leaked its literals — the precise
         cry-wolf failure this function exists to prevent.
       * 4-space / tab indented blocks are code too, and were not handled at all.
+
+    `seams` receives the index of each line of the result that follows dropped code: text on the two sides of a code block
+    is not one paragraph.
     """
     out, fence_char, fence_len = [], "", 0
     for line in body.split("\n"):
@@ -139,8 +148,12 @@ def strip_code_fences(body: str) -> tuple[str, bool]:
             continue
         if m:
             fence_char, fence_len = m.group(2)[0], len(m.group(2))
+            if seams is not None:
+                seams.add(len(out))
             continue
         if INDENTED.match(line):
+            if seams is not None:
+                seams.add(len(out))
             continue
         out.append(line)
     # An unclosed fence runs to end-of-document under CommonMark, so the parse is
@@ -191,7 +204,7 @@ def git(repo: Path, *args: str) -> tuple[int, str]:
         return _GIT_ANSWERS[key]
     try:
         p = subprocess.run(["git", "-C", str(repo), *args],
-                           capture_output=True, text=True, timeout=15)
+                           capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=15)
     except subprocess.TimeoutExpired:
         return GIT_UNAVAILABLE, "git timed out"
     except (OSError, subprocess.SubprocessError):
@@ -470,45 +483,120 @@ def _blob_lines(repo: Path, sha: str, path: str):
     return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0), "", True
 
 
-def spaced_names(path: str, prefix: str):
-    """The names the writer's own words could spell if the cut at a space was wrong: `my big w.py:3` -> `big w.py`, `my big w.py`."""
-    toks = prefix[-200:].split()[-3:]
-    out = []
-    for k in range(1, len(toks) + 1):
-        words = toks[-k:]
-        words[0] = words[0].lstrip("`\"'([<")
-        if words[0]:
-            out.append(" ".join(words + [path]))
+_BLANK_LINE = re.compile(r"(?s).*\n[ \t\r\f\v]*\n")   # up to the last blank line of a text: the end of the paragraph before
+_TAIL = re.compile(r"\s(\S+)\Z")
+_QUOTE_OPEN = "`\"'([<"
+
+
+WALK_LIMIT = int(os.environ.get("OKF_VERIFY_WALK_LIMIT") or 100000)   # entries of a searched repository to look at when git cannot list it
+
+
+def walk_docs(root: Path):
+    """The `.md` files of a folder, as paths below it, or None past WALK_LIMIT entries (files and folders; `.git` is not entered)."""
+    out, seen = [], 0
+    for dp, dns, fns in os.walk(root):
+        dns[:] = [d for d in dns if d != ".git"]
+        seen += len(dns) + len(fns)
+        if seen > WALK_LIMIT:
+            return None
+        out += [os.path.relpath(os.path.join(dp, f), root) for f in fns if f.endswith(".md")]
     return out
 
 
-_TREES: dict[tuple[str, str], tuple[int, str]] = {}
+def tail_index(names):
+    """The names that hold whitespace, by their text after the last whitespace: `my big w.py` is found under `w.py`.
+
+    A name that starts with whitespace or an opening quote is left out: the words before a citation are read from the word's first
+    letter, so no such name is ever spelled.
+    """
+    t: dict[str, list[str]] = {}
+    for n in names:
+        m = _TAIL.search(n)
+        if m and not n[0].isspace() and n[0] not in _QUOTE_OPEN:
+            t.setdefault(m.group(1), []).append(n)
+    return t
+
+
+def spaced_names(path: str, prefix: str, tails: dict):
+    """The names the writer's own words could spell if the cut at a space was wrong: `my big w.py:3` -> `big w.py`, `my big w.py`.
+
+    `prefix` is the text before the citation in its paragraph and `tails` (`tail_index`) the names there are: a name is spelled when
+    the prefix ends with the words of its start, taken from a word's first letter, as written (a double space, a tab and a no-break
+    space count) or with each line break read as one space (a soft-wrapped name: markdown shows the line break as a space).
+    Any number of words may belong to it. As written first, then shortest first.
+    """
+    window = prefix[-4096:]
+    cut = len(window) < len(prefix)
+    collapsed = None
+    out = []
+    for n in tails.get(path, ()):
+        x = n[:len(n) - len(path)]
+        exact = window.endswith(x) and _word_start(window, len(window) - len(x), cut)
+        if not exact:
+            collapsed = re.sub(r"[ \t]*\r?\n[ \t]*", " ", window) if collapsed is None else collapsed
+        if exact or (collapsed.endswith(x) and _word_start(collapsed, len(collapsed) - len(x), cut)):
+            out.append((not exact, len(n), n))
+    return [n for _, _, n in sorted(out)]
+
+
+def _word_start(text: str, at: int, cut: bool) -> bool:
+    """Is `at` the first letter of a word of `text` (an opening quote or bracket before it does not count)? `cut`: `text` starts mid-text."""
+    while at > 0 and text[at - 1] in _QUOTE_OPEN:
+        at -= 1
+    return text[at - 1].isspace() if at > 0 else not cut
+
+
+_TREES: dict[tuple[str, str], tuple[int, list[str]]] = {}
 
 
 def tree_listing(repo: Path, sha: str):
-    """`git ls-tree -r` of one commit, read once per run: it ran per citation and grew the spawns with the citations. Only a success is kept."""
+    """`git ls-tree -r` of one commit, read once per run: it ran per citation and grew the spawns with the citations. Only a success is kept.
+
+    On success the second value is the list of names. They are read NUL-separated: git writes a name with a tab, a quote or a
+    non-ASCII letter in quotes and escapes otherwise, and such a name could never equal the one the writer typed.
+    """
     k = (str(repo), sha)
     if k not in _TREES:
-        rc, out = git(repo, "ls-tree", "-r", "--name-only", sha)
+        rc, out = git(repo, "ls-tree", "-r", "--name-only", "-z", sha)
         if rc != 0:
             return rc, out
-        _TREES[k] = (rc, out)
+        _TREES[k] = (rc, [n for n in out.split("\0") if n])
     return _TREES[k]
 
 
-def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects: list[str], prefix: str = "", quoted: bool = False,
-                   named: list | None = None, anchor: str | None = None):
+_TREE_TAILS: dict[tuple[str, str], tuple[dict, dict]] = {}
+
+
+def tree_tails(repo: Path, sha: str, names: list[str]):
+    """(tail_index, ends) of one commit's names, once per run: `ends` maps each end of a path, from a "/" on, to the names that end so.
+
+    Only an end that holds whitespace can be spelled by the words before a citation, so only those are kept.
+    """
+    k = (str(repo), sha)
+    if k not in _TREE_TAILS:
+        ends: dict[str, list[str]] = {}
+        for n in names:
+            if re.search(r"\s", n):
+                for i in [-1] + [j for j, ch in enumerate(n) if ch == "/"]:
+                    ends.setdefault(n[i + 1:], []).append(n)
+        _TREE_TAILS[k] = (tail_index(ends), ends)
+    return _TREE_TAILS[k]
+
+
+def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects: list[str], prefix: str = "",
+                   quoted: bool = False, named: list | None = None, anchor: str | None = None):
     """`path:lines @sha`: the sha must resolve, then the path must exist in THAT commit's tree.
 
     REFUTED only when the commit was found and its tree lacks the path: then we looked in the right place. A sha that
     resolves nowhere stays UNRESOLVED, as for a bare SHA claim. A line (or the end of a range) past the end of the
     file at that commit is REFUTED too: same commit, same file, so the claim is known false.
+
+    `prefix` is the text before the path in its paragraph: the words that may spell a name (`spaced_names`); a `quoted` path is never cut.
     """
     v, d = check_sha(sha, repos, subjects)
     if v != CONFIRMED:
         return v, f"sha part: {d}"
-    found, absent, cut, spaced = [], [], [], []
-    cands = [] if quoted else spaced_names(path, prefix)
+    found, absent, cut, spaced, spaced_as = [], [], [], [], []
     for r in repos:
         rc, out = git(r, "cat-file", "-e", f"{sha}^{{commit}}")
         if rc == GIT_UNAVAILABLE:
@@ -519,24 +607,29 @@ def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects:
         exact = rc == 0
         if exact:
             found.append((r, path))
-        if exact and not cands:
+        if exact and (quoted or not prefix.strip()):
             continue
         rc, out = tree_listing(r, sha)
         if rc != 0:
             return UNRESOLVED, f"could not list {sha} in {r.name}: {out}"
         # `my w.py:3` may name the file `my w.py`, whose end `w.py` is another file: the words before the cut decide nothing alone.
-        spaced.extend((r, n) for n in out.splitlines() if any(n == c or n.endswith("/" + c) for c in cands))
+        tails, ends = tree_tails(r, sha, out)
+        for c in () if quoted else spaced_names(path, prefix, tails):
+            spaced.extend((r, n) for n in ends[c])
+            spaced_as.extend([c] * len(ends[c]))
         if exact:
             continue
-        hits = [n for n in out.splitlines() if n.endswith("/" + path)]
+        hits = [n for n in out if n.endswith("/" + path)]
         found.extend((r, n) for n in hits)
         if not hits:
             # `my dir/w.py` cited with its space reads as `dir/w.py`: the end of a longer name, not at a "/". Not a missing file.
-            longer = [n for n in out.splitlines() if n.endswith(" " + path)]
+            longer = [n for n in out if n.endswith(" " + path)]
             (cut.extend(longer) if longer and not quoted else absent.append(r.name))
     if spaced:
         names = sorted({n for _, n in found} | {n for _, n in spaced})
         if found or len({n for _, n in spaced}) > 1:
+            if named is not None:
+                named.append(spaced_as[0])  # the claim reads as the writer spelled it, not as the bare name that is another file
             return UNRESOLVED, (f"the cited path is ambiguous: {path} with the words before it can name {' or '.join(names[:4])} "
                                 f"at {sha}, so no file was checked")
         found = spaced
@@ -686,28 +779,37 @@ def since_check(found: Path, text: str, lines: str, since: tuple):
     return ("moved", starts) if starts else ("changed", None)
 
 
-def check_line(target: str, lines: str, by_name: bool, note_dir: Path, bundle: Path, repos: list[Path],
-               docs: list[str], guard, anchor: str | None = None, since: tuple | None = None,
-               generated: frozenset = frozenset()):
-    """A line citation into a living document (okf-knowledge-gate#14): the file must exist with that many lines.
+_LINE_DOCS: dict[tuple, tuple] = {}
+
+
+def find_line_doc(target: str, by_name: bool, note_dir: Path, bundle: Path, repos: list[Path], docs: dict):
+    """`_find_line_doc`, asked once per name and folder in a run: the words before a citation give it many names to try."""
+    key = (target, by_name, str(note_dir), str(bundle), tuple(map(str, repos)))
+    if key not in _LINE_DOCS:
+        _LINE_DOCS[key] = _find_line_doc(target, by_name, note_dir, bundle, repos, docs)
+    return _LINE_DOCS[key]
+
+
+def _find_line_doc(target: str, by_name: bool, note_dir: Path, bundle: Path, repos: list[Path], docs: dict):
+    """Where the document a line citation names is: (found, shown, None); (None, None, (verdict, detail)) when it is not found,
+    ambiguous or outside; (None, None, None) when a short-form name matches no note, which is prose.
 
     `target` is a path (`notes/d.md`) or, with `by_name`, a note's file name without `.md`. A path is read from the citing
     note's folder, then the bundle root, then as the end of one bundle path, then from the root of each searched repository.
-    REFUTED only when the file was found and is shorter. A file that is missing or ambiguous is UNRESOLVED, and a path that
-    leaves the bundle and every searched repository is not even looked up: a bundle you did not write must not learn, through
-    this check, which files exist on your machine. Returns None when a short-form name matches no note: it is prose.
+    A hit counts only in the case it is written: `is_file()` answers yes for `spec.md` beside `Spec.md` on a case-insensitive disk.
+    `docs` maps each end of a bundle document's path, from a "/" on (and the whole path), to the documents that end so.
     """
     found = None
     roots = [bundle, *repos]
     outside_msg = "outside the bundle and the searched repositories, so it was not looked up"
     if by_name:
-        hits = [d for d in docs if os.path.basename(d) == target + ".md"]
+        hits = [d for d in docs.get(target + ".md", ()) if os.path.basename(d) == target + ".md"]
         if not hits:
-            return None
+            return None, None, None
         if len(hits) > 1:
-            return UNRESOLVED, f"ambiguous: {len(hits)} notes are named {target}.md ({', '.join(sorted(hits)[:3])})"
+            return None, None, (UNRESOLVED, f"ambiguous: {len(hits)} notes are named {target}.md ({', '.join(sorted(hits)[:3])})")
         if not real_inside(bundle / hits[0], roots):
-            return UNRESOLVED, outside_msg
+            return None, None, (UNRESOLVED, outside_msg)
         found, shown = bundle / hits[0], hits[0]
     else:
         outside = False
@@ -716,29 +818,71 @@ def check_line(target: str, lines: str, by_name: bool, note_dir: Path, bundle: P
             if not inside_any(str(p), [bundle]) or not real_inside(p, roots):
                 outside = True
                 continue
-            if p.is_file():
+            if p.is_file() and _guard().case_exact(p, base):
                 found, shown = p, os.path.relpath(p, bundle)
                 break
         if found is None:
             # Otherwise the end of a bundle path, or a document of a searched repository: one candidate in all, or ambiguous.
             cands = []
             if not target.startswith("../"):
-                cands += [(bundle / d, d) for d in docs if d == target or d.endswith("/" + target)]
+                cands += [(bundle / d, d) for d in docs.get(target, ())]
             for r in repos:
                 p = Path(os.path.normpath(str(r / target)))
-                if inside_any(str(p), [r]) and real_inside(p, roots) and p.is_file():
+                if inside_any(str(p), [r]) and real_inside(p, roots) and p.is_file() and _guard().case_exact(p, r):
                     cands.append((p, f"{r.resolve().name or r}/{os.path.relpath(p, r)}"))
             cands = [(p, n) for p, n in cands if real_inside(p, roots)]
             if len(cands) > 1:
-                return UNRESOLVED, (f"ambiguous: {len(cands)} documents match {target} "
-                                    f"({', '.join(sorted(n for _, n in cands)[:3])})")
+                return None, None, (UNRESOLVED, f"ambiguous: {len(cands)} documents match {target} "
+                                                f"({', '.join(sorted(n for _, n in cands)[:3])})")
             if cands:
                 found, shown = cands[0]
         if found is None:
             if outside and not any(inside_any(os.path.normpath(str(r / target)), [r]) for r in repos):
-                return UNRESOLVED, outside_msg
+                return None, None, (UNRESOLVED, outside_msg)
             where = ", ".join(r.resolve().name or str(r) for r in repos)   # `--repo .` has no name of its own
-            return UNRESOLVED, f"not found in the bundle{' or the searched repositories (' + where + ')' if repos else ''}"
+            return None, None, (UNRESOLVED, f"not found in the bundle{' or the searched repositories (' + where + ')' if repos else ''}")
+    return found, shown, None
+
+
+def check_line(target: str, lines: str, by_name: bool, note_dir: Path, bundle: Path, repos: list[Path],
+               docs: dict, guard, anchor: str | None = None, since: tuple | None = None,
+               generated: frozenset = frozenset(), cands: list[str] = (), quoted: bool = False, named: list | None = None):
+    """A line citation into a living document (okf-knowledge-gate#14): the file must exist with that many lines.
+
+    `find_line_doc` says which file `target` is. REFUTED only when the file was found and is shorter. A file that is missing or
+    ambiguous is UNRESOLVED, and a path that leaves the bundle and every searched repository is not even looked up: a bundle you
+    did not write must not learn, through this check, which files exist on your machine. Returns None when a short-form name
+    matches no note: it is prose.
+
+    The cut at a space (`my w.md:10` is read as `w.md:10`) is repaired as for a pinned citation (RV-27): the words before it may
+    spell the name (`cands`, from `spaced_names`: names of documents there are). If they do, that file is the one checked, unless the bare name is a file too, or
+    the words fit two files: then no file is checked. A QUOTED name (`quoted`) is never cut. `named` receives the file that was
+    checked, or, when none was, the name as the writer spelled it.
+    """
+    found, shown, early = find_line_doc(target, by_name, note_dir, bundle, repos, docs)
+    spaced = []
+    for c in cands:
+        f, n, e = find_line_doc(c, by_name, note_dir, bundle, repos, docs)
+        if f is not None:
+            spaced.append((f, n, c))
+        elif e and e[1].startswith("ambiguous"):
+            if named is not None:
+                named.append(c)
+            return e
+    if spaced:
+        names = sorted({n for _, n, _ in spaced} | ({shown} if found is not None else set()))
+        if found is not None or len(names) > 1:
+            if named is not None:
+                named.append(spaced[0][2])   # the claim reads as the writer spelled it, not as the bare name that is another file
+            return UNRESOLVED, (f"the cited path is ambiguous: {target} with the words before it can name {' or '.join(names[:4])}, "
+                                f"so no file was checked")
+        (found, shown, _), early = spaced[0], None
+        if named is not None:
+            named.append(shown)   # the caller prints the file that was checked, not the cut tail
+    if early:
+        return early
+    if found is None:
+        return None
     why = guard.refusal(found)
     if why:
         return UNRESOLVED, f"{shown} was not opened: {why}"
@@ -802,15 +946,20 @@ def root_forms(r) -> tuple:
     return _ROOT_FORMS[key]
 
 
-def inside_any(p: str, roots: list[Path]) -> bool:
-    """Is the normalised path `p` inside one of `roots`? Lexical: `p` is read as written and is never touched on disk (a
-    path under `/net/<host>` would make macOS mount that host), so asking costs no stat on `p`. The roots are looked at
-    instead, in every spelling `root_forms` gives."""
+def root_of(p: str, roots: list[Path]):
+    """The spelling of the root that the normalised path `p` is inside of, or None. Lexical: `p` is read as written and is never
+    touched on disk (a path under `/net/<host>` would make macOS mount that host), so asking costs no stat on `p`. The roots are
+    looked at instead, in every spelling `root_forms` gives."""
     for r in roots:
         for form in root_forms(r):
             if p == form or p.startswith(form.rstrip(os.sep) + os.sep):
-                return True
-    return False
+                return form
+    return None
+
+
+def inside_any(p: str, roots: list[Path]) -> bool:
+    """Is the normalised path `p` inside one of `roots`? See `root_of`."""
+    return root_of(p, roots) is not None
 
 
 def check_path(raw: str, bundle: Path, roots: list[Path] | None = None, host_paths: bool = False):
@@ -822,9 +971,14 @@ def check_path(raw: str, bundle: Path, roots: list[Path] | None = None, host_pat
     p = Path(os.path.normpath(str(p)))
     # A bundle is untrusted input. Probing arbitrary host paths answers "does this key file exist on the runner?" in
     # a CI log, so only paths inside the bundle or a --repo folder are looked up unless --host-paths says otherwise.
-    if roots is not None and not host_paths and not inside_any(str(p), [bundle, *roots]):
+    root = root_of(str(p), [bundle, *(roots or [])])
+    if roots is not None and not host_paths and root is None:
+        # A folder written in another case than the note spells it is outside, as written: say so, the cause is not obvious.
+        folded = str(p).lower()
+        case = any(folded.startswith(f.lower().rstrip(os.sep) + os.sep) for r in [bundle, *roots] for f in root_forms(r))
         return UNRESOLVED, ("outside the bundle and the --repo folders, so it was not looked up "
-                            "(pass --host-paths to check paths on this machine)")
+                            "(pass --host-paths to check paths on this machine)"
+                            + ("; the bundle or --repo folder is typed in another case than this path" if case else ""))
 
     # EXISTENCE IS CHECKED FIRST. An earlier draft tested `ephemeral` before
     # `exists()`, which made a file that demonstrably EXISTS in a temp directory
@@ -841,7 +995,8 @@ def check_path(raw: str, bundle: Path, roots: list[Path] | None = None, host_pat
         if p.exists():
             # UNRESOLVED, not REFUTED: the file is plainly there under another
             # case, so the claim is not false — it is unverified as written.
-            if not _guard().case_exact(p):
+            # Only the part below the root is the citation: how the root was typed is not (`okf-verify repo/b` for the folder `Repo/b`).
+            if not _guard().case_exact(p, root):
                 return UNRESOLVED, ("only a case-variant of this path exists and the "
                                     "filesystem is case-insensitive — present, but not "
                                     "as written, which is not the same as confirmed")
@@ -1185,7 +1340,7 @@ def not_ignored(bundle: Path):
         return None
     if r.returncode != 0:
         return None
-    return {x for x in r.stdout.decode("utf-8", "replace").split("\0") if x}
+    return {x for x in r.stdout.decode("utf-8", "surrogateescape").split("\0") if x}   # names: surrogateescape, as rglob reads them
 
 
 def generated_notes(bundle: Path, docs: list[str]) -> frozenset:
@@ -1195,11 +1350,11 @@ def generated_notes(bundle: Path, docs: list[str]) -> frozenset:
         return frozenset()
     lib = Path(__file__).resolve().parent / "ignore-lib.sh"
     try:
-        r = subprocess.run(["bash", str(lib), "--match", *pats], input="\0".join(docs).encode() + b"\0",
+        r = subprocess.run(["bash", str(lib), "--match", *pats], input="\0".join(docs).encode("utf-8", "surrogateescape") + b"\0",
                            capture_output=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         return frozenset()
-    return frozenset(x for x in r.stdout.decode("utf-8", "replace").split("\0") if x)
+    return frozenset(x for x in r.stdout.decode("utf-8", "surrogateescape").split("\0") if x)
 
 
 def verify(bundle: Path, repos: list[Path], host_paths: bool = False, since: tuple | None = None, remote: bool = False):
@@ -1209,6 +1364,27 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False, since: tup
     # The bundle's documents, the targets of line citations: every *.md, ignored or not (an ignored note still exists).
     docs = sorted(str(f.relative_to(bundle)) for f in bundle.rglob("*.md") if f.is_file())
     names = {os.path.basename(d) for d in docs}
+    ends: dict[str, list[str]] = {}   # each end of a document's path, from a "/" on (and the whole), -> the documents that end so
+    for d in docs:
+        for k in [-1] + [i for i, ch in enumerate(d) if ch == "/"]:
+            ends.setdefault(d[k + 1:], []).append(d)
+    spelled_by: list = []
+    def doc_tails():
+        """The documents whose names hold whitespace, for the words before a line citation to spell (`spaced_names`): path form, name form.
+        The bundle's, and each searched repository's. Read at the first line citation."""
+        if not spelled_by:
+            repo_docs, unseen = [], []
+            for r in repos:
+                rc, out = git(r, "ls-files", "-z", "--cached", "--others", "--exclude-standard", "--", "*.md")
+                found_md = out.split("\0") if rc == 0 else walk_docs(r)   # git did not answer: walk the folder
+                if found_md is None:
+                    unseen.append(r.resolve().name or str(r))
+                else:
+                    repo_docs += [n for n in found_md if n]
+            doubt = (f"git could not list {', '.join(unseen)} and it holds more than {WALK_LIMIT} entries, so a file with a space in its name "
+                     f"there could not be ruled out") if unseen else ""
+            spelled_by.append((tail_index({*ends, *repo_docs}), tail_index({os.path.basename(d)[:-3] for d in docs}), doubt))
+        return spelled_by[0]
     generated = generated_notes(bundle, docs)
     for f in sorted(bundle.rglob("*.md")):
         if f.name in RESERVED:
@@ -1238,32 +1414,58 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False, since: tup
             results.append({"concept": rel, "kind": "file", "claim": str(f),
                             "verdict": UNRESOLVED, "detail": "unreadable"})
             continue
-        body, unclosed = strip_code_fences(text[frontmatter_end(text):])
+        seams: set = set()
+        body, unclosed = strip_code_fences(text[frontmatter_end(text):], seams)
         if unclosed:
             results.append({"concept": rel, "kind": "parse", "claim": "unclosed code fence",
                             "verdict": UNRESOLVED,
                             "detail": ("an unclosed code fence swallowed the rest of this "
                                        "concept — any claim after it was NOT checked")})
+        # The words before a citation, in its paragraph: `my w.md:10` is matched as `w.md:10`, and they may be the start of its name (RV-27).
+        # The paragraph ends at a blank line and at dropped code; `spaced_names` reads no more than 4096 characters of it.
+        seam_at = []   # where the code dropped by strip_code_fences was, as offsets into the body
+        if seams:
+            starts = [0] + [i + 1 for i, ch in enumerate(body) if ch == "\n"]
+            seam_at = sorted(starts[i] for i in seams if i < len(starts))
+        def before(m):
+            lo = max(0, m.start() - 4096)
+            chunk = m.string[lo:m.start()]
+            blank = _BLANK_LINE.match(chunk)
+            start = blank.end() if blank else 0
+            k = bisect.bisect_right(seam_at, m.start())
+            return chunk[max(start, seam_at[k - 1] - lo if k else 0):]
         # A citation is ONE claim: blank it out before the SHA and path scans so its sha is not also counted on its own.
         cites = []
         def take(m):
             g = m.groups()
             quoted = len(g) == 6   # QCITE_RE has the quote character first; both end with the optional anchor
             core = g[1:5] if quoted else g[0:4]
-            cites.append(core + (m.string[m.string.rfind("\n", 0, m.start()) + 1:m.start()], quoted, g[-1]))
+            cites.append(core + ("" if quoted else before(m)[-4096:], quoted, g[-1]))
             return " " * len(m.group(0))
         body = CITE_RE.sub(take, QCITE_RE.sub(take, body))
         # Line citations into living documents, after the pinned ones above have been blanked out.
         lcites = []
+        def take_qline(m):
+            lcites.append((m.group(2), m.group(3), m.group(4), False, m.group(5), [], True, ""))
+            return " " * len(m.group(0))
         def take_line(m):
-            lcites.append((m.group(1), m.group(2), m.group(3), False, m.group(4)))
+            pre, tails = before(m), doc_tails()
+            cands = spaced_names(m.group(1), pre, tails[0])
+            # words that may spell a file there is no list of (git could not list a repository): the verdict on the bare name is not safe
+            lcites.append((m.group(1), m.group(2), m.group(3), False, m.group(4), cands, False, tails[2] if pre.strip() and not cands else ""))
+            return " " * len(m.group(0))
+        def take_qname(m):
+            if m.group(2) + ".md" not in names or not any(c.isalpha() for c in m.group(2)):
+                return m.group(0)   # names no note: prose, left for the hint below
+            lcites.append((m.group(2), m.group(3), m.group(4), True, m.group(5), [], True, ""))
             return " " * len(m.group(0))
         def take_name(m):
-            if m.group(1) + ".md" not in names or not any(c.isalpha() for c in m.group(1)):
+            cands = spaced_names(m.group(1), before(m), doc_tails()[1])
+            if not any(c.isalpha() for c in m.group(1)) or not any(n + ".md" in names for n in [m.group(1), *cands]):
                 return m.group(0)   # names no note: prose, left for the hint below
-            lcites.append((m.group(1), m.group(2), m.group(3), True, m.group(4)))
+            lcites.append((m.group(1), m.group(2), m.group(3), True, m.group(4), cands, False, ""))
             return " " * len(m.group(0))
-        body = NAME_RE.sub(take_name, LINE_RE.sub(take_line, body))
+        body = NAME_RE.sub(take_name, QNAME_RE.sub(take_qname, LINE_RE.sub(take_line, QLINE_RE.sub(take_qline, body))))
         # Commit subjects quoted in the note, for the rewrite hint: after the citations are blanked, so an anchor is not one.
         subjects = QUOTED.findall(body)
         found = 0
@@ -1281,15 +1483,25 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False, since: tup
                     old_note.append("")
             return re.search(r"(?<![\w./-])" + re.escape(claim) + r"(?![\d-])", old_note[0]) is not None
 
-        for target, lo, hi, by_name, anchor in lcites:
+        for target, lo, hi, by_name, anchor, cands, quoted, doubt in lcites:
             lines = f"{lo}-{hi}" if hi else lo
             claim = f"{target}:{lines}"
-            if ("line", claim, anchor) in seen:   # the same citation with two anchors is two claims
+            # The words before the cut can change which file is named, so they are part of what makes two citations the same claim.
+            lk = ("line", claim, anchor, tuple(cands), doubt)   # two anchors are two claims
+            if lk in seen:
                 continue
-            seen.add(("line", claim, anchor))
+            seen.add(lk)
             note_since = (since[0], since[1], had_at_ref) if since else None
-            v, d, extra = (check_line(target, lines, by_name, f.parent, bundle, repos, docs, guard, anchor, note_since, generated)
-                           + ({},))[:3]
+            named: list = []
+            v, d, extra = (check_line(target, lines, by_name, f.parent, bundle, repos, ends, guard, anchor, note_since, generated,
+                                      cands, quoted, named) + ({},))[:3]
+            if doubt:
+                v, d, extra = UNRESOLVED, (f"{d} ({doubt})" if v == UNRESOLVED else doubt), {}
+            if named:
+                claim = f"{named[0]}:{lines}"
+            if ("line", claim, anchor, v, d) in seen:
+                continue
+            seen.add(("line", claim, anchor, v, d))
             found += 1
             res = {"concept": rel, "kind": "line", "claim": claim, "verdict": v, "detail": d}
             if extra.get("moved_to"):
@@ -1303,7 +1515,7 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False, since: tup
             lines = f"{lo}-{hi}" if hi else lo
             claim = f"{path}:{lines} @{sha}"
             # The words before the cut can change which file is named, so only the RESULT can say two citations are the same claim.
-            ck = (claim, quoted, tuple(() if quoted else spaced_names(path, prefix)), anchor)
+            ck = (claim, quoted, prefix, anchor)   # the words before the path decide which file is named, with the tree
             if ck not in checked:
                 named: list = []
                 checked[ck] = (*check_citation(path, lines, sha, repos, subjects, prefix, quoted, named, anchor), named)
@@ -1495,6 +1707,19 @@ def main() -> int:
     failed = (counts[REFUTED] > 0 or moved > 0
               or (a.strict and (counts[UNRESOLVED] > 0 or bool(no_claims))))
 
+    shown = _guard().shown   # a name or a text field that holds a byte that is not UTF-8, a control character or a bidi control is spelled \xNN; never a whole line (its line breaks and indent are layout)
+
+    def spelled(x):
+        """--json: only a byte that is not UTF-8 is spelled (a lone surrogate is not valid JSON text); a control character in a
+        quoted claim keeps its JSON escape, as before."""
+        if isinstance(x, str):
+            return shown(x, False)
+        if isinstance(x, list):
+            return [spelled(v) for v in x]
+        if isinstance(x, dict):
+            return {k: spelled(v) for k, v in x.items()}
+        return x
+
     if a.json:
         report = {"bundle": str(a.bundle), "counts": counts,
                   "no_checkable_claims": no_claims,
@@ -1505,33 +1730,42 @@ def main() -> int:
             report["repos_unreadable"] = unreadable
         if unrecognized:   # present only when a no-claim note holds citation-shaped text (okf-knowledge-gate#14, part 3)
             report["unrecognized_citations"] = unrecognized
+        report = spelled(report)
+        # The names are spelled in full, as okf-check spells them in --json: the notes, and the path a refused file is cited by.
+        report["no_checkable_claims"] = [shown(n) for n in report["no_checkable_claims"]]
+        for r in report["results"]:
+            r["concept"] = shown(r["concept"])
+            if r["kind"] == "file":
+                r["claim"] = shown(r["claim"])
+        for u in report.get("unrecognized_citations", []):
+            u["concept"] = shown(u["concept"])
         print(json.dumps(report, indent=2))
         return 0 if not failed else 1
 
-    print(f"okf-verify — {a.bundle}")
-    print(f"  repos searched: {', '.join(r.name for r in repos) if repos else 'NONE (SHAs cannot be checked)'}")
+    print(f"okf-verify — {shown(str(a.bundle))}")
+    print(f"  repos searched: {', '.join(shown(r.name) for r in repos) if repos else 'NONE (SHAs cannot be checked)'}")
     for s in skipped:
-        print(f"  ! not a git repo, skipped: {s}")
+        print(f"  ! not a git repo, skipped: {shown(s)}")
     for u in unreadable:
-        print(f"  ! cannot read, skipped: {u['path']} ({u['why']})")
+        print(f"  ! cannot read, skipped: {shown(u['path'])} ({shown(u['why'])})")
     for r in results:
         mark = {CONFIRMED: "ok  ", REFUTED: "REFUTED", UNRESOLVED: "unresolved", MOVED: "MOVED"}[r["verdict"]]
         # Ellipsis, not a bare cut: a claim sliced at 48 characters read as the
         # whole claim, which matters when the reader is deciding whether the
         # verdict addressed what they wrote. (U-4)
         claim = r["claim"] if len(r["claim"]) <= 48 else r["claim"][:47] + "…"
-        print(f"  {mark:11s} {r['concept']}  [{r['kind']}] {claim}")
+        print(f"  {mark:11s} {shown(r['concept'])}  [{r['kind']}] {shown(claim)}")
         if r["verdict"] != CONFIRMED:
-            print(f"              {r['detail']}")
+            print(f"              {shown(r['detail'])}")
         if r.get("warning"):
-            print(f"              ! {r['warning']}")
+            print(f"              ! {shown(r['warning'])}")
     if no_claims:
         print(f"  {len(no_claims)} concept(s) carry no checkable claim — unverifiable, not verified:")
         hint = {u["concept"]: u for u in unrecognized}
         for n in no_claims[:8]:
             u = hint.get(n)
-            print(f"              {n}" + (f"  ({u['count']} string(s) look like citations but match no checkable form, "
-                                            f"e.g. {u['examples'][0]})" if u else ""))
+            print(f"              {shown(n)}" + (f"  ({u['count']} string(s) look like citations but match no checkable form, "
+                                                  f"e.g. {shown(u['examples'][0])})" if u else ""))
         # A list that stops at 8 without saying so reads as the whole list.
         # Same class as a gate that skips a layer silently. (D-13)
         if len(no_claims) > 8:

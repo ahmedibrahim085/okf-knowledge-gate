@@ -26,7 +26,7 @@ import subprocess
 import sys
 
 sys.path[:0] = [os.environ.get("OKF_SCRIPTS_DIR", ""), os.environ.get("OKF_VENDOR_DIR", "")]
-from okf_notes import read_note  # noqa: E402  (bounded reads)
+from okf_notes import read_note, shown  # noqa: E402  (bounded reads)
 
 HUNK = re.compile(r"^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@")
 CAP = 50   # entries per kind in the text report; --json has every one
@@ -37,12 +37,14 @@ def short(t):
     return t if len(t) <= WIDTH else t[:WIDTH - 1] + "…"
 
 
-def git(top, *args):
+def git(top, *args, errors="replace"):
+    # errors="surrogateescape" for a list of file names: a name decoded with "replace" no longer opens the file (U+FFFD for a
+    # non-UTF-8 byte), and the later `:(literal)path` pathspec then matches nothing.
     try:
         p = subprocess.run(["git", "-C", str(top), *args], capture_output=True, timeout=60)
     except (OSError, subprocess.SubprocessError) as e:
         return 1, f"git could not run ({type(e).__name__})"
-    return p.returncode, p.stdout.decode("utf-8", "replace")
+    return p.returncode, p.stdout.decode("utf-8", errors)
 
 
 def norm(line):
@@ -79,7 +81,7 @@ def removed_lines(top, ref, rel_bundle):
     settings (mnemonicPrefix, noprefix, external tools, colour) are overridden.
     """
     base = ["-c", "core.quotePath=false", "diff", "--no-color", "--no-renames", "--no-ext-diff", "--no-textconv"]
-    rc, out = git(top, *base, "-z", "--name-only", ref, "--", pathspec(rel_bundle))
+    rc, out = git(top, *base, "-z", "--name-only", ref, "--", pathspec(rel_bundle), errors="surrogateescape")
     if rc != 0:
         raise RuntimeError(f"git diff {ref} failed")
     removed, added, hunk = [], {}, 0
@@ -108,7 +110,7 @@ def removed_lines(top, ref, rel_bundle):
 def trailer_notes(top, ref):
     """Notes named by `OKF-Deleted: <note>` trailers in the commits since ref (one per line, a path relative to the bundle)."""
     # git's own trailer parser: `OKF-Deleted:` counts in the trailer block at the end of a message, not in its prose.
-    rc, out = git(top, "log", "--format=%(trailers:key=OKF-Deleted,valueonly)", f"{ref}..HEAD")
+    rc, out = git(top, "log", "--format=%(trailers:key=OKF-Deleted,valueonly)", f"{ref}..HEAD", errors="surrogateescape")
     return {x.strip() for x in out.split("\n") if x.strip()} if rc == 0 else set()
 
 
@@ -137,12 +139,14 @@ def main(argv):
     declared_notes, declared_lines = trailer_notes(top, ref), set()
     if deleted_file:
         try:
-            for line in read_note(deleted_file, "utf-8", "replace").split("\n"):
+            # A note name keeps its bytes (surrogateescape, as git's list of names is read); a `line:` entry is text and is
+            # decoded as the diff text is (replace), so a line holding a byte that is not UTF-8 still matches.
+            for line in read_note(deleted_file, "utf-8", "surrogateescape").split("\n"):
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
                 if line.startswith("line:"):
-                    declared_lines.add(norm(line[5:]))
+                    declared_lines.add(norm(line[5:].encode("utf-8", "surrogateescape").decode("utf-8", "replace")))
                 else:
                     declared_notes.add(line)
         except OSError as e:
@@ -177,7 +181,7 @@ def main(argv):
         if not counts(text) or in_frontmatter(path, n):
             continue
         note = os.path.relpath(path, rel_bundle) if rel_bundle else path
-        entry = {"note": note, "line": n, "text": text.strip()}
+        entry = {"note": shown(note), "line": n, "text": text.strip()}
         if norm(text) in corpus:
             kinds["moved"].append(entry)
         elif note in declared_notes or norm(text) in declared_lines:
