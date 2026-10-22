@@ -112,14 +112,14 @@ if [ -f "$HERE/doc-reuse-guard.sh" ] && command -v jq >/dev/null 2>&1; then
     printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":"x"}}' "$fp" | env "$@" bash "$G18" 2>/dev/null
   }
   out=$(guard18 "$T18/proj/docs/new-note.md" OKF_DOC_DIRS_FILE="$T18/cfg/none")
-  printf '%s' "$out" | grep -q "Doc-reuse check" && ok "LT-18a a new .md under a default location (docs/) still triggers the reminder" \
+  grep -q "Doc-reuse check" <<<"$out" && ok "LT-18a a new .md under a default location (docs/) still triggers the reminder" \
     || bad "LT-18a default location" "out=$(printf '%s' "$out" | head -c 120)"
   out=$(guard18 "$T18/vault/Notes/sub/new-note.md" OKF_DOC_DIRS_FILE="$T18/cfg/none")
   [ -z "$out" ] && ok "LT-18b a personal location is not built in: with no config file it does not trigger" \
     || bad "LT-18b personal location" "out=$(printf '%s' "$out" | head -c 120)"
   printf '# extra durable-doc locations, one shell glob per line\n\n*/Notes/*\n' > "$T18/cfg/dirs"
   out=$(guard18 "$T18/vault/Notes/sub/new-note.md" OKF_DOC_DIRS_FILE="$T18/cfg/dirs")
-  printf '%s' "$out" | grep -q "Doc-reuse check" && ok "LT-18c a glob listed in the config file triggers the reminder" \
+  grep -q "Doc-reuse check" <<<"$out" && ok "LT-18c a glob listed in the config file triggers the reminder" \
     || bad "LT-18c config glob" "out=$(printf '%s' "$out" | head -c 120)"
   printf '*/[unclosed\n' > "$T18/cfg/bad"; chmod 000 "$T18/cfg/bad" 2>/dev/null
   guard18 "$T18/vault/x/new.md" OKF_DOC_DIRS_FILE="$T18/cfg/bad" >/dev/null; rc1=$?
@@ -153,19 +153,19 @@ STUB
   chmod +x "$T19/bin/okf"
   g19() { local fp="$1"; shift; printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":"x"}}' "$fp" | env OKF_DOC_DIRS_FILE="$T19/none" "$@" bash "$G19" 2>/dev/null; }
   out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf")
-  { printf '%s' "$out" | grep -q "Closest existing notes" && printf '%s' "$out" | grep -q "alpha-note, beta-note, gamma-note" && ! printf '%s' "$out" | grep -q "delta-note"; } \
+  { grep -q "Closest existing notes" <<<"$out" && grep -q "alpha-note, beta-note, gamma-note" <<<"$out" && ! grep -q "delta-note" <<<"$out"; } \
     && ok "LT-19a the reminder names the three closest notes (and only three)" || bad "LT-19a closest notes" "out=$(printf '%s' "$out" | head -c 200)"
   printf '%s' "$out" | jq -e . >/dev/null 2>&1 && ok "LT-19a2 the reminder stays valid hook JSON" || bad "LT-19a2 JSON" "invalid"
   out0=$(g19 "$T19/docs/new-note-name.md" PATH="/usr/bin:/bin" OKF_SEARCH_BIN="")
-  { printf '%s' "$out0" | grep -q "Doc-reuse check" && ! printf '%s' "$out0" | grep -q "Closest"; } \
+  { grep -q "Doc-reuse check" <<<"$out0" && ! grep -q "Closest" <<<"$out0"; } \
     && ok "LT-19b no search binary: the reminder is exactly today's text" || bad "LT-19b no binary" "out=$(printf '%s' "$out0" | head -c 160)"
   t0=$(date +%s); out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf" STUB_SLEEP=15); t1=$(date +%s)
   # The stub hangs for 15 s. The bound is "well under the hang", not a fixed 3 s: at load 24 an honest cut-off took 5 s
   # and a fixed limit failed a correct guard (final review, CI-owner POV). A guard that does not cut off takes >= 15 s.
-  { [ $((t1-t0)) -lt 12 ] && printf '%s' "$out" | grep -q "Doc-reuse check" && ! printf '%s' "$out" | grep -q "Closest"; } \
+  { [ $((t1-t0)) -lt 12 ] && grep -q "Doc-reuse check" <<<"$out" && ! grep -q "Closest" <<<"$out"; } \
     && ok "LT-19c a hung search binary is cut off (returned in $((t1-t0))s, well under its 15 s hang) and the reminder is today's text" || bad "LT-19c timeout" "took $((t1-t0))s out=$(printf '%s' "$out" | head -c 120)"
   out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf" STUB_FAIL=1); rc=$?
-  { printf '%s' "$out" | grep -q "Doc-reuse check" && ! printf '%s' "$out" | grep -q "Closest" && [ "$rc" -eq 0 ]; } \
+  { grep -q "Doc-reuse check" <<<"$out" && ! grep -q "Closest" <<<"$out" && [ "$rc" -eq 0 ]; } \
     && ok "LT-19d a failing search binary leaves today's reminder (exit 0)" || bad "LT-19d failing binary" "rc=$rc out=$(printf '%s' "$out" | head -c 120)"
   : > "$T19/argv.log"
   g19 "$T19/lnk/docs/other-note.md" OKF_SEARCH_BIN="$T19/bin/okf" STUB_LOG="$T19/argv.log" >/dev/null
@@ -219,10 +219,10 @@ OUT
 REAL
   chmod +x "$T19/bin/okf-real2"
   out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf-real2")
-  printf '%s' "$out" | grep -q "alpha-note, alpha-two, other-three" \
+  grep -q "alpha-note, alpha-two, other-three" <<<"$out" \
     && ok "LT-19g2 real okf output with a two-digit score [10.56] parses" || bad "LT-19g2 two-digit score" "out=$(printf '%s' "$out" | head -c 240)"
   out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf-real")
-  printf '%s' "$out" | grep -q "alpha-note, alpha-note-two, alpha-three" \
+  grep -q "alpha-note, alpha-note-two, alpha-three" <<<"$out" \
     && ok "LT-19g real okf output (captured) parses to the three closest ids" || bad "LT-19g real output" "out=$(printf '%s' "$out" | head -c 240)"
   # LT-19h: a hung binary's child process is not left behind. The children sleep through a symlink inside this
   # test's own temp folder, so the counts below match only THIS run's sleepers: `pgrep -f 'sleep 37'` also matched the sleeper of
@@ -272,7 +272,8 @@ grep -q 'okfmirror\|/l1mirror' "$TMP/o20b.txt" && bad "LT-20b2 no temp path leak
   || ok "LT-20b2 no temp path leaks into the report"
 grep -qi 'okfignore.*2 file' "$TMP/o20b.txt" && ok "LT-20c the run states how many files .okfignore excluded" \
   || bad "LT-20c excluded count" "$(grep -n -i ignore "$TMP/o20b.txt" | head -3)"
-"$CHECK" "$T20/b" --json 2>/dev/null | grep -q '"ignored":2' && ok "LT-20c2 --json reports ignored:2" || bad "LT-20c2 json ignored" "missing"
+ign_json=$("$CHECK" "$T20/b" --json 2>/dev/null); ign_rc=$?
+[ "$ign_rc" -eq 0 ] && grep -q '"ignored":2' <<<"$ign_json" && ok "LT-20c2 --json reports ignored:2" || bad "LT-20c2 json ignored" "missing"
 printf '*\n' > "$T20/b/.okfignore"
 "$CHECK" "$T20/b" >"$TMP/o20d.txt" 2>&1; rc=$?
 { [ "$rc" -eq 2 ] && grep -qi 'excludes every' "$TMP/o20d.txt"; } \
@@ -450,7 +451,8 @@ t17 UV_HAS=0.3.1 UV_SLEEP=20 OKF_INSTALL_TIMEOUT=2 UV_TOOLDIR="$T17/tooldir" UV_
 t17 UV_HAS=0.3.1 -- --install-deps --json
 grep -q "plan" "$T17/out.txt" && ok "LT-17o --json does not swallow the install plan" || bad "LT-17o json plan" "out=$(head -3 "$T17/out.txt" | tr '\n' ' ')"
 # LT-17p: --help lists the new flags.
-"$CHECK" --help 2>&1 | grep -q -- "--install-deps" && "$CHECK" --help 2>&1 | grep -q "OKF_AUTO_INSTALL" \
+help_out=$("$CHECK" --help 2>&1); help_rc=$?
+[ "$help_rc" -eq 0 ] && grep -q -- "--install-deps" <<<"$help_out" && grep -q "OKF_AUTO_INSTALL" <<<"$help_out" \
   && ok "LT-17p --help documents --preflight, --install-deps, --yes, --latest, OKF_AUTO_INSTALL" \
   || bad "LT-17p help" "flags missing from --help"
 
@@ -911,7 +913,7 @@ sys.exit(1 if n["bad"] else 0)
 PY
 mkdir -p "$TMP/ce7"
 _ce7=$(python3 "$TMP/ce7.py" "$HERE" "$TMP/ce7" "${OKF_CE_TREES:-300}" 2>&1); _ce7rc=$?
-{ [ "$_ce7rc" -eq 0 ] && printf '%s' "$_ce7" | grep -q ' mismatches 0$'; } \
+{ [ "$_ce7rc" -eq 0 ] && grep -q ' mismatches 0$' <<<"$_ce7"; } \
   && ok "LT-CE7 case_exact equals the case-sensitive reference on random trees: $(printf '%s' "$_ce7" | tail -1)" \
   || bad "LT-CE7 differential" "rc=$_ce7rc $(printf '%s' "$_ce7" | head -6 | tr '\n' ' ')"
 
@@ -983,6 +985,34 @@ _q=$(bash -c '. "$1/plugin/scripts/l3-lib.sh"; awk "$L3_AWK_LIB"'\''BEGIN { prin
 [ "$_q" = "10" ] || miss="$miss d:single-quotes($_q)"
 [ -z "$miss" ] && ok "LT-SV3 an unreadable STATUS_VALUES stops okf-check (exit 2) and the hook (named); single quotes are read" \
   || bad "LT-SV3 status list errors" "$miss"
+
+# S41-BM: derived L3 reads a note that starts with a byte order mark as it reads the same note without one. It tested
+# text.startswith("---") on the raw text, so the BOM note got no `L3 derived` line at all. Each case compares the two lines.
+BM="$TMP/bm"; mkbundle "$BM"; echo x > "$BM/src.txt"
+_bm_note() {   # <file> <bom|plain> <resource>
+  { [ "$2" = bom ] && printf '\357\273\277'
+    printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nsources:\n  - resource: %s\n    last_modified: "2000-01-01"\n---\nbody\n' "$3"; } > "$BM/$1"
+}
+_bm_case() {   # <id> <resource> <what>: the BOM note's L3 line equals the BOM-free note's, and it is there
+  _bm_note b.md bom "$2"; _bm_note p.md plain "$2"; "$CHECK" "$BM" > "$TMP/bm.txt" 2>&1
+  _b=$(grep 'L3 derived       b.md: ' "$TMP/bm.txt" | sed 's/b\.md: /X: /'); _p=$(grep 'L3 derived       p.md: ' "$TMP/bm.txt" | sed 's/p\.md: /X: /')
+  { [ -n "$_p" ] && [ "$_b" = "$_p" ]; } && ok "$1 a BOM note with $3 gets the line the same note without a BOM gets" \
+    || bad "$1 BOM note, $3" "bom=[$_b] plain=[$_p]"
+}
+_bm_case S41-BM-01 src.txt "a stale source"
+_bm_case S41-BM-02 gone.txt "a source that is not a local file"
+# S41-BM-03/04: the other readers of a note's first fence that give a verdict. L2 counts a BOM note's type for the index total
+# (it was "not derivable", 0 matched); okf-verify skips the frontmatter of a BOM note (a fence line in it was "an unclosed code fence").
+BM3="$TMP/bm3"; mkdir -p "$BM3"; printf -- '# I\n\n**1 Lesson**\n' > "$BM3/index.md"
+printf '\357\273\277---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\n---\nbody\n' > "$BM3/c.md"
+"$CHECK" "$BM3" 2>&1 | grep -a 'L2 index' > "$TMP/bm3.txt"
+grep -q 'PASS   1 declared count(s) match' "$TMP/bm3.txt" \
+  && ok "S41-BM-03 a BOM note is counted by its type in the index total" || bad "S41-BM-03 BOM note and the index count" "$(cat "$TMP/bm3.txt")"
+BM4="$TMP/bm4"; mkdir -p "$BM4"
+printf '\357\273\277---\ntype: Lesson\ntitle: T\ndescription: |\n  ```\n  code\nstatus: stable\n---\nbody\n' > "$BM4/c.md"
+"$HERE/okf-verify" "$BM4" > "$TMP/bm4.txt" 2>&1; bm4rc=$?
+[ "$bm4rc" = 0 ] && ! grep -aq 'unclosed code fence' "$TMP/bm4.txt" \
+  && ok "S41-BM-04 okf-verify skips the frontmatter of a BOM note (no false unclosed code fence)" || bad "S41-BM-04 okf-verify BOM frontmatter" "rc=$bm4rc $(grep -a 'fence' "$TMP/bm4.txt" | head -1)"
 
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

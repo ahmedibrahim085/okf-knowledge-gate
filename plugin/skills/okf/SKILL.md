@@ -132,8 +132,8 @@ A citation with a quoted anchor (`decision-12.md:94 "shadow, canary"`) whose tex
 ## One note: `--file`
 
 `okf-check <bundle> --file <note>` checks only that note, L1 and Trust, in well under a second: one line per
-finding (`<note>: L1 error: ...`, `L1 warning`, `Trust warning`), nothing when the note is clean. Exit codes keep
-their meaning (1 an L1 error, or a Trust finding under `--strict-trust`; 2 could not run; 64 the note is not a `.md`
+finding (`<note>: L1 error: ...`, `L1 warning`, `Trust warning`, `Trust error` for a note the loader refuses for its size), nothing when the note is clean. Exit codes keep
+their meaning (1 an L1 error, a Trust error, or a Trust finding under `--strict-trust`; 2 could not run; 64 the note is not a `.md`
 inside the bundle). It is meant for an edit hook; the full run is still the gate.
 
 The plugin ships that hook, OFF by default: `okf_check: {edit_hook: true}` in a bundle's `okf-base.yaml` (or
@@ -161,7 +161,7 @@ empty, inside the vault, or cannot be written). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.43`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.44`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

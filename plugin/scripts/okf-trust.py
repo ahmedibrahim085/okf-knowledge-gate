@@ -6,7 +6,8 @@ line itself. This reports the cases where the claim is visibly unsafe to trust. 
 identity (only repository review metadata can); it names what is checkable offline.
 
 Usage: okf-trust.py <bundle> <findings.json>
-stdout: one line per finding, `W|<note>: <message>` (warning) or `A|<note>: <message>` (advisory).
+stdout: one line per finding, `W|<note>: <message>` (warning) or `A|<note>: <message>` (advisory), and
+`T|<note>: <message>` for a note the frontmatter loader refused for its size (its trust claims were not checked).
 <findings.json>: [{"file", "entry", "severity", "reason"}, ...]. Always written.
 
 Per `verified` entry whose actor starts with `human:` (exact lowercase, spec §5.3), the FIRST row wins:
@@ -27,7 +28,7 @@ import yaml
 
 sys.dont_write_bytecode = True   # a direct run must not leave scripts/__pycache__ in the installed plugin (plugin.test.sh Z-2)
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
-from okf_validate import load_frontmatter, split_frontmatter  # noqa: E402  (the validator's own splitter, so both agree)
+from okf_validate import AliasBombError, load_frontmatter, split_frontmatter  # noqa: E402  (the validator's own splitter, so both agree)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from okf_guard import read_note, shown  # noqa: E402  (bounded read)
 
@@ -167,6 +168,9 @@ def main():
             # utf-8-sig: a BOM would hide the opening fence, and L1 counts such a note.
             raw, _ = split_frontmatter(read_note(path, "utf-8-sig", "strict"))
             meta = load_frontmatter(raw) if raw is not None else None
+        except AliasBombError as e:   # the loader's size cap: a trust claim in this note is unread, which is not "no finding" (L1 reports the cap too)
+            print(f"T|{shown(path.relative_to(bundle).as_posix())}: the note was too large to read, so its trust claims were not checked: {e}")
+            continue
         except (OSError, UnicodeDecodeError, yaml.YAMLError, ValueError):
             continue  # L1 reports an unreadable or malformed note; this layer has nothing to add
         if not isinstance(meta, dict):

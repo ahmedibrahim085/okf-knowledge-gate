@@ -257,7 +257,7 @@ for w in yes on; do
   badnote "$BY/bad.md"
   rc=$(fire "$BY/bad.md")
   out=$("$REALPY" "$HERE/okf-verify" "$BY" --check-config 2>&1); crc=$?
-  { silent "$rc" && [ "$crc" = 2 ] && printf '%s' "$out" | grep -q "okf_check.edit_hook must be true or false.*write true or false, not $w"; } \
+  { silent "$rc" && [ "$crc" = 2 ] && grep -q "okf_check.edit_hook must be true or false.*write true or false, not $w" <<<"$out"; } \
     && ok "SH-12 edit_hook: $w (unquoted) leaves the hook off and --check-config exits 2 naming it" \
     || bad "SH-12 edit_hook: $w" "rc=$rc crc=$crc out: $(printf '%s' "$out" | head -2 | tr '\n' '|')"
 done

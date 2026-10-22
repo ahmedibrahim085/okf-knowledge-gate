@@ -79,7 +79,7 @@ fi
 printf '#!/usr/bin/env bash\n. "$OKF_LIB"\nok a\nskip b "install the thing"\nokf_test_summary\n[ "$FAIL" -eq 0 ] || exit 1\n' > "$TMP/rem.test.sh"
 OKF_LIB="$LIB" bash "$TMP/rem.test.sh" > "$TMP/rem.txt" 2>&1
 last=$(awk 'NF { l = $0 } END { print l }' "$TMP/rem.txt")
-if printf '%s\n' "$last" | grep -Eq '^ *1 passed, 0 failed, 1 SKIPPED' && grep -q 'install the thing' "$TMP/rem.txt"; then
+if grep -Eq '^ *1 passed, 0 failed, 1 SKIPPED' <<<"$last" && grep -q 'install the thing' "$TMP/rem.txt"; then
   ok "TS-5 the summary is the last line, after the skipped-coverage remedies"
 else
   bad "TS-5 summary last" "last line: $last"

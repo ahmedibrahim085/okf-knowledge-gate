@@ -392,7 +392,7 @@ expect_exit 1 "E-7c half-written file fails CLOSED" -- "$CHECK" "$E7C"
 E7D="$TMP/e7d"; mkbundle "$E7D"
 E7DB="$TMP/e7dbin"; mk_racing_stat "$E7DB"
 out=$(PATH="$E7DB:$PATH" "$CHECK" "$E7D" 2>&1)
-printf '%s' "$out" | grep -qi 'changed during\|CONCURRENT' \
+grep -qi 'changed during\|CONCURRENT' <<<"$out" \
   && ok "E-7d a bundle changed mid-scan is REPORTED" \
   || bad "E-7d a mid-scan change went unreported" \
          "the two fingerprints differed and the report still claimed a stable verdict"
@@ -526,7 +526,7 @@ if [ -f "$HOOK" ]; then
   P7="$TMP/p7bundle"; mkdir -p "$P7"
   printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n---\nb\n' > "$P7/old.md"
   out=$(OKF_BUNDLE_DIR="$P7" bash "$HOOK" 2>&1)
-  printf '%s' "$out" | grep -q 'old.md' && ok "P-7 OKF_BUNDLE_DIR redirects the hook to another bundle" \
+  grep -q 'old.md' <<<"$out" && ok "P-7 OKF_BUNDLE_DIR redirects the hook to another bundle" \
     || bad "P-7 OKF_BUNDLE_DIR is honoured" "hook did not report old.md: $(printf '%s' "$out" | head -2 | tr '\n' ' ')"
   out=$(OKF_BUNDLE_DIR="$TMP/does-not-exist" bash "$HOOK" 2>&1); rc=$?
   [ -z "$out" ] && [ "$rc" -eq 0 ] && ok "P-7 a missing OKF_BUNDLE_DIR exits quietly (fail-open by design)" \
@@ -535,8 +535,8 @@ if [ -f "$HOOK" ]; then
   P7C="$TMP/p7crlf"; mkdir -p "$P7C"
   printf -- '---\r\ntype: Lesson\r\nstale_after: "2000-01-01"\r\n---\r\nb\r\n' > "$P7C/crlf-expired.md"
   out=$(OKF_BUNDLE_DIR="$P7C" bash "$HOOK" 2>&1)
-  printf '%s' "$out" | grep -q 'missing OKF frontmatter' && bad "LT-02b CRLF note is not reported as missing frontmatter" "$(printf '%s' "$out" | head -3 | tr '\n' ' ')" \
-    || { printf '%s' "$out" | grep -q 'crlf-expired.md (stale_after' && ok "LT-02b CRLF note is parsed and its expiry reported" \
+  grep -q 'missing OKF frontmatter' <<<"$out" && bad "LT-02b CRLF note is not reported as missing frontmatter" "$(printf '%s' "$out" | head -3 | tr '\n' ' ')" \
+    || { grep -q 'crlf-expired.md (stale_after' <<<"$out" && ok "LT-02b CRLF note is parsed and its expiry reported" \
     || bad "LT-02b CRLF note expiry reported" "$(printf '%s' "$out" | head -3 | tr '\n' ' ')"; }
   # LT-03f..i: the hook parses values like okf-check L3 does (one shared lib, l3-lib.sh).
   P7V="$TMP/p7vals"; mkdir -p "$P7V"
@@ -545,25 +545,25 @@ if [ -f "$HOOK" ]; then
   printf -- '---\ntype: Lesson\nstatus: stable\nstale_after: "2026-9-3"\n---\nb\n' > "$P7V/unpad.md"
   printf -- '---\ntype: Lesson\nstatus: stable\nstale_after: soon\n---\nb\n' > "$P7V/soon.md"
   out=$(OKF_TODAY=2026-10-14 OKF_BUNDLE_DIR="$P7V" bash "$HOOK" 2>&1)
-  printf '%s' "$out" | grep -q 'cmt.md (status' && bad "LT-03f hook: trailing comment is not part of status" "$(printf '%s' "$out" | head -6 | tr '\n' ' ')" || ok "LT-03f hook: trailing comment is not part of status"
-  printf '%s' "$out" | grep -q 'q.md (status: stable # x)' && ok "LT-03g hook: quoted value keeps its ' #'" || bad "LT-03g hook: quoted value keeps its ' #'" "$(printf '%s' "$out" | head -6 | tr '\n' ' ')"
-  printf '%s' "$out" | grep -q 'unpad.md (stale_after 2026-09-03)' && ok "LT-03h hook: non-padded date is normalised and flagged" || bad "LT-03h hook: non-padded date flagged" "$(printf '%s' "$out" | head -6 | tr '\n' ' ')"
-  printf '%s' "$out" | grep -q 'soon.md.*not a date' && ok "LT-03i hook: non-date stale_after is reported" || bad "LT-03i hook: non-date stale_after reported" "$(printf '%s' "$out" | head -6 | tr '\n' ' ')"
+  grep -q 'cmt.md (status' <<<"$out" && bad "LT-03f hook: trailing comment is not part of status" "$(printf '%s' "$out" | head -6 | tr '\n' ' ')" || ok "LT-03f hook: trailing comment is not part of status"
+  grep -q 'q.md (status: stable # x)' <<<"$out" && ok "LT-03g hook: quoted value keeps its ' #'" || bad "LT-03g hook: quoted value keeps its ' #'" "$(printf '%s' "$out" | head -6 | tr '\n' ' ')"
+  grep -q 'unpad.md (stale_after 2026-09-03)' <<<"$out" && ok "LT-03h hook: non-padded date is normalised and flagged" || bad "LT-03h hook: non-padded date flagged" "$(printf '%s' "$out" | head -6 | tr '\n' ' ')"
+  grep -q 'soon.md.*not a date' <<<"$out" && ok "LT-03i hook: non-date stale_after is reported" || bad "LT-03i hook: non-date stale_after reported" "$(printf '%s' "$out" | head -6 | tr '\n' ' ')"
   # LT-07 (ticket 08): hook via a symlink and under CDPATH.
   P7L="$TMP/p7link"; mkdir -p "$P7L/bin"; ln -s "$HOOK" "$P7L/bin/hook.sh"
   out=$(OKF_BUNDLE_DIR="$P7" bash "$P7L/bin/hook.sh" 2>&1)
-  printf '%s' "$out" | grep -q 'old.md' && ok "LT-07a hook run through a symlink still reports expiries" || bad "LT-07a hook via symlink" "$(printf '%s' "$out" | head -3 | tr '\n' ' ')"
+  grep -q 'old.md' <<<"$out" && ok "LT-07a hook run through a symlink still reports expiries" || bad "LT-07a hook via symlink" "$(printf '%s' "$out" | head -3 | tr '\n' ' ')"
   out=$(cd "$HERE/.." && OKF_BUNDLE_DIR="$P7" CDPATH="$PWD" bash scripts/lessons-staleness-check.sh 2>&1)
-  printf '%s' "$out" | grep -q 'old.md' && ok "LT-07b hook survives an exported CDPATH" || bad "LT-07b hook under CDPATH" "$(printf '%s' "$out" | head -3 | tr '\n' ' ')"
+  grep -q 'old.md' <<<"$out" && ok "LT-07b hook survives an exported CDPATH" || bad "LT-07b hook under CDPATH" "$(printf '%s' "$out" | head -3 | tr '\n' ' ')"
   # LT-08 (ticket 10): status list matches okf-check (stable|draft|deprecated).
   P7S="$TMP/p7status"; mkdir -p "$P7S"
   printf -- '---\ntype: Lesson\nstatus: draft\n---\nb\n' > "$P7S/d.md"
   printf -- '---\ntype: Lesson\nstatus: deprecated\n---\nb\n' > "$P7S/dep.md"
   printf -- '---\ntype: Lesson\nstatus: weird\n---\nb\n' > "$P7S/w.md"
   out=$(OKF_BUNDLE_DIR="$P7S" bash "$HOOK" 2>&1)
-  printf '%s' "$out" | grep -qE '(d|dep)\.md \(status' && bad "LT-08a hook accepts draft and deprecated" "$(printf '%s' "$out" | head -4 | tr '\n' ' ')" || ok "LT-08a hook accepts draft and deprecated"
-  printf '%s' "$out" | grep -q 'not marked stable' && bad "LT-08c hook label does not claim 'not marked stable' for a list that allows draft" "label is stale" || ok "LT-08c hook label matches its status list"
-  printf '%s' "$out" | grep -q 'w.md (status: weird)' && ok "LT-08b hook still reports an unknown status" || bad "LT-08b hook reports unknown status" "$(printf '%s' "$out" | head -4 | tr '\n' ' ')"
+  grep -qE '(d|dep)\.md \(status' <<<"$out" && bad "LT-08a hook accepts draft and deprecated" "$(printf '%s' "$out" | head -4 | tr '\n' ' ')" || ok "LT-08a hook accepts draft and deprecated"
+  grep -q 'not marked stable' <<<"$out" && bad "LT-08c hook label does not claim 'not marked stable' for a list that allows draft" "label is stale" || ok "LT-08c hook label matches its status list"
+  grep -q 'w.md (status: weird)' <<<"$out" && ok "LT-08b hook still reports an unknown status" || bad "LT-08b hook reports unknown status" "$(printf '%s' "$out" | head -4 | tr '\n' ' ')"
 fi
 
 # N-16: okflint installed but at a version the gate was never verified against
@@ -709,15 +709,17 @@ RG2="$TMP/rg2"; mkbundle "$RG2"
   || bad "R-9 second bundle argument not silently dropped" "exit 0 — the failing bundle was never examined"
 
 # R-10 LOW: exit 6 and --fail-on-change were absent from --help.
-"$CHECK" --help 2>&1 | grep -q 'fail-on-change' \
+r10_help=$("$CHECK" --help 2>&1); r10_rc=$?
+[ "$r10_rc" -eq 0 ] && grep -q 'fail-on-change' <<<"$r10_help" \
   && ok "R-10 --help documents --fail-on-change" || bad "R-10 --help documents --fail-on-change" "absent"
-"$CHECK" --help 2>&1 | grep -qE '^#?\s*6\s' \
+[ "$r10_rc" -eq 0 ] && grep -qE '^#?\s*6\s' <<<"$r10_help" \
   && ok "R-10 --help documents exit code 6" || bad "R-10 --help documents exit 6" "EXIT CODES block stops at 5"
 # R-10b: --help is the script's whole header comment, and its EXIT CODES block lists every code the README table names and
 # every `exit N` / EXIT_*=N the script holds. A fixed window (lines 2-40) left out exit 64 and the usage lines.
-# The help goes to a file and grep reads the file: no `printf | grep -q` under pipefail, where grep leaving at its first match
-# can end the writer with SIGPIPE and fail the pipe. R-10b failed once on CI's gawk job (missing: 1) and passed in 5 other
-# environments and on the same tree in two later runs; this removes the one race the test had (UNPROVEN as the cause).
+# The help goes to a file and grep reads the file: no `printf | grep -q` under pipefail. Proven mechanism: bash's printf builtin
+# writes one write() per line, `grep -q` exits at its first match, a writer still running dies of SIGPIPE and pipefail makes
+# the pipe's status 141 although the pattern matched; with strace delaying one write by 20 ms the old form failed 6 of 6 runs.
+# R-10b failed once on CI's gawk job (missing: 1) and passed in 5 other environments. tools/check-tests.sh now refuses the form.
 "$CHECK" --help > "$TMP/help.txt" 2>&1; miss=""
 for c in $( { sed -n 's/^| \([0-9][0-9]*\) |.*/\1/p' "$HERE/../../README.md"
               grep -o -E 'exit [0-9]+|EXIT_[A-Z]+=[0-9]+' "$CHECK" | sed 's/.*[ =]//'; } | sort -un); do
@@ -753,7 +755,7 @@ G1="$TMP/g1"; mkbundle "$G1"; printf 'no frontmatter\n' > "$G1/broken.md"
 G1B="$TMP/g1b"; mkbundle "$G1B"; printf 'no frontmatter\n' > "$G1B/broken.md"
 G1BB="$TMP/g1bbin"; mk_racing_stat "$G1BB"
 out=$(PATH="$G1BB:$PATH" "$CHECK" "$G1B" --fail-on-change 2>&1); rc=$?
-if printf '%s' "$out" | grep -qi 'changed during\|CONCURRENT'; then
+if grep -qi 'changed during\|CONCURRENT' <<<"$out"; then
   [ "$rc" -eq 1 ] \
     && ok "G-1b a conformance error outranks a mid-scan change (exit 1, not 6)" \
     || bad "G-1b conformance outranks mid-scan change" "exit $rc — the §11 error was masked by exit 6"
@@ -1006,7 +1008,7 @@ elif ! command -v jq >/dev/null 2>&1; then
 else
   # positive: a NEW .md in a guarded location must produce a reminder
   out=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s/.claude/lessons/u5-brand-new.md","content":"x"}}' "$HOME" | bash "$GUARD" 2>&1)
-  printf '%s' "$out" | grep -q 'hookSpecificOutput' \
+  grep -q 'hookSpecificOutput' <<<"$out" \
     && ok "U-5 the guard fires on a new lesson file" \
     || bad "U-5 guard fires on a new lesson" "no hookSpecificOutput: $(printf '%s' "$out" | head -1)"
   # and its stdout must be JSON Claude Code can actually parse
@@ -1219,9 +1221,9 @@ PATH="$Z1SB:$PATH" "$CHECK" "$Z1S" >"$TMP/z1s.txt" 2>&1; got=$?
 # is portability, and hardcoding one distribution's layout would be the same
 # mistake in miniature.
 gnu_stat_bin=""
-if command -v gstat >/dev/null 2>&1 && gstat --version 2>/dev/null | head -1 | grep -q 'GNU coreutils'; then
+if command -v gstat >/dev/null 2>&1 && grep -q 'GNU coreutils' <<<"$(gstat --version 2>/dev/null | head -1)"; then
   gnu_stat_bin=$(command -v gstat)
-elif command -v stat >/dev/null 2>&1 && stat --version 2>/dev/null | head -1 | grep -q 'GNU coreutils'; then
+elif command -v stat >/dev/null 2>&1 && grep -q 'GNU coreutils' <<<"$(stat --version 2>/dev/null | head -1)"; then
   gnu_stat_bin=$(command -v stat)
 fi
 if [ -z "$gnu_stat_bin" ]; then
@@ -1263,9 +1265,9 @@ fi
 # it behaves identically, and this keeps that true. Located by search, like
 # Z-1, so no Homebrew path is baked in.
 gnu_find_bin=""
-if command -v gfind >/dev/null 2>&1 && gfind --version 2>/dev/null | head -1 | grep -q 'GNU findutils'; then
+if command -v gfind >/dev/null 2>&1 && grep -q 'GNU findutils' <<<"$(gfind --version 2>/dev/null | head -1)"; then
   gnu_find_bin=$(command -v gfind)
-elif command -v find >/dev/null 2>&1 && find --version 2>/dev/null | head -1 | grep -q 'GNU findutils'; then
+elif command -v find >/dev/null 2>&1 && grep -q 'GNU findutils' <<<"$(find --version 2>/dev/null | head -1)"; then
   gnu_find_bin=$(command -v find)
 fi
 if [ -z "$gnu_find_bin" ]; then
@@ -2031,7 +2033,7 @@ $(vent human:dana 2026-02-01)"; i=$((i+1)); done
 { [ "$(grep -c 'cannot prove who a person is' "$TMP/c4_five.txt")" -eq 1 ] && grep -q '5 warning(s), 0 advisory' "$TMP/c4_five.txt"; } \
   && ok "LT-26o S11-E1 five findings: the identity line prints once" || bad "LT-26o S11-E1" "$(grep -c 'prove' "$TMP/c4_five.txt")"
 # S11-N1 is LT-26b (quiet case has no identity line). S6-N1: a clean bundle prints no C4 line.
-"$CHECK" "$W0" 2>&1 | grep -Eq '^ +[^ ]+\.md: verified\[' && bad "LT-26p S6-N1" "clean bundle printed a C4 line" || ok "LT-26p S6-N1 a bundle with no C4 case prints no C4 finding line"
+grep -Eq '^ +[^ ]+\.md: verified\[' <<<"$("$CHECK" "$W0" 2>&1)" && bad "LT-26p S6-N1" "clean bundle printed a C4 line" || ok "LT-26p S6-N1 a bundle with no C4 case prints no C4 finding line"
 
 # S2-N1 (carried from T1): 0 L1 warnings and 2 advisories: each counter keeps its own meaning.
 D2="$TMP/c4_two"; mkbundle "$D2"; rm -f "$D2/c.md"
@@ -2092,7 +2094,8 @@ assert (f[0]["file"], f[0]["entry"], f[0]["severity"]) == ("n.md", "verified[0].
 assert d["exit"] == 0 and "warnings" in d and "l1_warnings" in d
 PY
 [ $? -eq 0 ] && ok "LT-26q S13-H1 --json carries trust_findings objects {file, entry, severity, reason}" || bad "LT-26q S13-H1" "$(head -2 "$TMP/c4jsonerr.txt" | tr '\n' ' ')"
-"$CHECK" --json "$W0" 2>/dev/null | grep -q '"trust_findings":\[\]' && ok "LT-26r S13-N1 --json on a clean bundle has an empty trust_findings list" || bad "LT-26r S13-N1" "missing or non-empty"
+c4_json=$("$CHECK" --json "$W0" 2>/dev/null); c4_rc=$?
+[ "$c4_rc" -eq 0 ] && grep -q '"trust_findings":\[\]' <<<"$c4_json" && ok "LT-26r S13-N1 --json on a clean bundle has an empty trust_findings list" || bad "LT-26r S13-N1" "missing or non-empty"
 
 # --- 0.9.0 T3: --strict-trust (cases S7, S8, S9-H1) ---
 section "0.9.0 T3"
@@ -2557,7 +2560,7 @@ printf -- '---\ntype: Lesson\nstatus: stable\nstale_after: "2000-01-01"\n---\nb\
 printf -- '---\ntype: Lesson\nstatus: stable\nstale_after: "2099-01-01"\n---\nb\n' > "$N48/odd
 name/fine.md"
 out=$(OKF_TODAY=2026-10-14 OKF_BUNDLE_DIR="$N48" bash "$HK48" 2>&1)
-printf '%s' "$out" | grep -q 'old.md (stale_after' \
+grep -q 'old.md (stale_after' <<<"$out" \
   && ok "LT-48a the staleness hook still reports an expired lesson when a directory name contains a newline" \
   || bad "LT-48a newline-named directory" "hook printed: $(printf '%s' "$out" | head -c 120)"
 # (b) With an active .okfignore, a note reachable only through a SYMLINKED DIRECTORY was checked by no layer: the ignore
@@ -2615,9 +2618,9 @@ section "LT-50 (0.9.2, okf-knowledge-gate#7)"
 # The hint needs a search binary (`okf`) that okf-check never installs; without it the hint was off with no word anywhere.
 O50="$TMP/o50"; mkdir -p "$O50/empty"; printf '#!/bin/sh\nexit 0\n' > "$O50/okf"; chmod +x "$O50/okf"
 out=$(env OKF_SEARCH_BIN= PATH="/usr/bin:/bin" "$CHECK" --doctor 2>&1)
-printf '%s' "$out" | grep -Eq 'okf search +absent' && ok "LT-50a --doctor reports the missing search binary and what it switches off" || bad "LT-50a doctor absent" "$(printf '%s' "$out" | grep -n 'okf search' | head -1)"
+grep -Eq 'okf search +absent' <<<"$out" && ok "LT-50a --doctor reports the missing search binary and what it switches off" || bad "LT-50a doctor absent" "$(grep -n 'okf search' <<<"$out" | head -1)"
 out=$(env OKF_SEARCH_BIN="$O50/okf" "$CHECK" --doctor 2>&1)
-printf '%s' "$out" | grep -Eq 'okf search +present' && ok "LT-50b --doctor names the search binary when it is configured" || bad "LT-50b doctor present" "$(printf '%s' "$out" | grep -n 'okf search' | head -1)"
+grep -Eq 'okf search +present' <<<"$out" && ok "LT-50b --doctor names the search binary when it is configured" || bad "LT-50b doctor present" "$(grep -n 'okf search' <<<"$out" | head -1)"
 
 # --- LT-51 (0.9.4, cases S4-*): okf-check's own options live in one okf_check: block of okf-base.yaml -----------
 section "LT-51 (0.9.4, cases S4-*)"
@@ -2751,7 +2754,7 @@ L55_DER=$(grep -A1 '^  L3 (derived staleness):' "$TMP/lt55.txt" | grep -c 'FIRED
   && ok "LT-55a S3-H1 --selftest has an L3 derived-staleness probe that fires on a healthy install" \
   || bad "LT-55a S3-H1 L3 derived probe" "rc=$rcl $(grep -n 'L3' "$TMP/lt55.txt" | tr '\n' ' ')"
 r=$(lt55_dead derived 's/if mtime > rec:/if False:/')
-{ [ "$r" = "rc=5" ] && grep -A1 '^  L3 (derived staleness):' "$TMP/lt55-derived.txt" | grep -q 'NOT FIRED'; } \
+{ [ "$r" = "rc=5" ] && grep -q 'NOT FIRED' <<<"$(grep -A1 '^  L3 (derived staleness):' "$TMP/lt55-derived.txt")"; } \
   && ok "LT-55b S3-N1 with L3 derived staleness disabled, its probe reports NOT FIRED and --selftest exits 5" \
   || bad "LT-55b S3-N1 dead L3 derived" "$r $(grep -n 'L3\|SELFTEST' "$TMP/lt55-derived.txt" | tr '\n' ' ')"
 L55_IDX=$(grep -A1 '^  L2 (index):' "$TMP/lt55.txt" | grep -c 'FIRED  *index.md count wrong')
@@ -2759,7 +2762,7 @@ L55_IDX=$(grep -A1 '^  L2 (index):' "$TMP/lt55.txt" | grep -c 'FIRED  *index.md 
   && ok "LT-55c S3-H1 --selftest has an L2 index probe that fires on a healthy install" \
   || bad "LT-55c S3-H1 L2 index probe" "rc=$rcl $(grep -n 'L2' "$TMP/lt55.txt" | tr '\n' ' ')"
 r=$(lt55_dead index 's/(good if n == actual else bad)/good/')
-{ [ "$r" = "rc=5" ] && grep -A1 '^  L2 (index):' "$TMP/lt55-index.txt" | grep -q 'NOT FIRED'; } \
+{ [ "$r" = "rc=5" ] && grep -q 'NOT FIRED' <<<"$(grep -A1 '^  L2 (index):' "$TMP/lt55-index.txt")"; } \
   && ok "LT-55d with the L2 index check disabled, its probe reports NOT FIRED and --selftest exits 5" \
   || bad "LT-55d dead L2 index" "$r $(grep -n 'L2\|SELFTEST' "$TMP/lt55-index.txt" | tr '\n' ' ')"
 L55_L0=$(grep -A1 '^  L0 (doctor):' "$TMP/lt55.txt" | grep -c 'FIRED  *validator missing')
@@ -2767,7 +2770,7 @@ L55_L0=$(grep -A1 '^  L0 (doctor):' "$TMP/lt55.txt" | grep -c 'FIRED  *validator
   && ok "LT-55e S3-H1 --selftest has an L0 doctor probe that fires on a healthy install" \
   || bad "LT-55e S3-H1 L0 probe" "rc=$rcl $(grep -n 'L0' "$TMP/lt55.txt" | tr '\n' ' ')"
 r=$(lt55_dead l0 's/if \[ -f "\$VALIDATOR" \]; then/if true; then/')
-{ [ "$r" = "rc=5" ] && grep -A1 '^  L0 (doctor):' "$TMP/lt55-l0.txt" | grep -q 'NOT FIRED'; } \
+{ [ "$r" = "rc=5" ] && grep -q 'NOT FIRED' <<<"$(grep -A1 '^  L0 (doctor):' "$TMP/lt55-l0.txt")"; } \
   && ok "LT-55f with the L0 validator check disabled, its probe reports NOT FIRED and --selftest exits 5" \
   || bad "LT-55f dead L0" "$r $(grep -n 'L0\|SELFTEST' "$TMP/lt55-l0.txt" | tr '\n' ' ')"
 # S3-E1: okflint absent. The okflint probes are SKIPPED with the reason, and the verdict line must not call them fired.
@@ -2831,7 +2834,7 @@ r=$(lt53 val "" "deprecated_requires: superseded-by")
 "$CHECK" --selftest >"$TMP/lt53g.txt" 2>&1; rcl=$?
 L53=$(grep -A1 '^  Successor (deprecated_requires):' "$TMP/lt53g.txt" | grep -c 'FIRED  *deprecated, no superseded_by')
 r=$(lt55_dead succ 's/    if m.get("status") != "deprecated":/    if True:/')
-{ [ "$rcl" -eq 0 ] && [ "$L53" -eq 1 ] && [ "$r" = "rc=5" ] && grep -A1 '^  Successor (deprecated_requires):' "$TMP/lt55-succ.txt" | grep -q 'NOT FIRED'; } \
+{ [ "$rcl" -eq 0 ] && [ "$L53" -eq 1 ] && [ "$r" = "rc=5" ] && grep -q 'NOT FIRED' <<<"$(grep -A1 '^  Successor (deprecated_requires):' "$TMP/lt55-succ.txt")"; } \
   && ok "LT-53g --selftest has a Successor probe that fires, and a copy with the rule disabled reports NOT FIRED and exits 5" \
   || bad "LT-53g Successor selftest probe" "healthy rc=$rcl fired=$L53; crippled $r $(grep -n 'Successor\|SELFTEST' "$TMP/lt55-succ.txt" 2>/dev/null | tr '\n' ' ')"
 # Markdown links with a title or in angle brackets are links too (CommonMark): [x](new.md "t") and [x](<new.md>).
@@ -2945,7 +2948,7 @@ done
 "$CHECK" --selftest >"$TMP/lt54j.txt" 2>&1; rcl=$?
 L54=$(grep -A1 '^  Owner (require_owner):' "$TMP/lt54j.txt" | grep -c 'FIRED  *note without an owner')
 r=$(lt55_dead owner 's/^    if not own:$/    if False:/')
-{ [ "$rcl" -eq 0 ] && [ "$L54" -eq 1 ] && [ "$r" = "rc=5" ] && grep -A1 '^  Owner (require_owner):' "$TMP/lt55-owner.txt" | grep -q 'NOT FIRED'; } \
+{ [ "$rcl" -eq 0 ] && [ "$L54" -eq 1 ] && [ "$r" = "rc=5" ] && grep -q 'NOT FIRED' <<<"$(grep -A1 '^  Owner (require_owner):' "$TMP/lt55-owner.txt")"; } \
   && ok "LT-54j --selftest has an Owner probe that fires, and a copy with the rule disabled reports NOT FIRED and exits 5" \
   || bad "LT-54j Owner selftest probe" "healthy rc=$rcl fired=$L54; crippled $r $(grep -n 'Owner\|SELFTEST' "$TMP/lt55-owner.txt" 2>/dev/null | tr '\n' ' ')"
 # G-1 (0.9.8 review): a note that starts with a UTF-8 BOM is read like L1 reads it (the owner and the status are seen).
@@ -3137,7 +3140,7 @@ mk56 m '  deprecated_requires: superseded_by\n'; "$D56M/plugin/scripts/okf-check
 "$CHECK" --selftest >"$TMP/lt56n.txt" 2>&1; rcl=$?
 L56=$(grep -A1 '^  Duplicates (--duplicates):' "$TMP/lt56n.txt" | grep -c 'FIRED  *same title')
 r=$(lt55_dead dup 's/    if a\["title"\] and a\["title"\] == b\["title"\]:/    if False:/' okf-duplicates.py)
-{ [ "$rcl" -eq 0 ] && [ "$L56" -eq 1 ] && [ "$r" = "rc=5" ] && grep -A1 '^  Duplicates (--duplicates):' "$TMP/lt55-dup.txt" | grep -q 'NOT FIRED'; } \
+{ [ "$rcl" -eq 0 ] && [ "$L56" -eq 1 ] && [ "$r" = "rc=5" ] && grep -q 'NOT FIRED' <<<"$(grep -A1 '^  Duplicates (--duplicates):' "$TMP/lt55-dup.txt")"; } \
   && ok "LT-56n --selftest has a Duplicates probe that fires, and a copy with the title signal disabled reports NOT FIRED and exits 5" \
   || bad "LT-56n Duplicates selftest probe" "healthy rc=$rcl fired=$L56; crippled $r $(grep -n 'Duplicates\|SELFTEST' "$TMP/lt55-dup.txt" 2>/dev/null | tr '\n' ' ')"
 # A note that starts with a UTF-8 BOM is read like L1 reads it (0.9.8 review G-1, the shared okf_notes.py reader).
@@ -3200,7 +3203,7 @@ OKF_DUP_TIME_LIMIT=0.000001 "$CHECK" "$D" --duplicates-body >"$D.txt" 2>&1; rcl=
 "$CHECK" --selftest >"$TMP/lt57h.txt" 2>&1; rcl=$?
 L57=$(grep -A1 '^  Duplicates (--duplicates-body):' "$TMP/lt57h.txt" | grep -c 'FIRED  *same body')
 r=$(lt55_dead body 's/            if jb >= body_threshold:/            if False:/' okf-duplicates.py)
-{ [ "$rcl" -eq 0 ] && [ "$L57" -eq 1 ] && [ "$r" = "rc=5" ] && grep -A1 '^  Duplicates (--duplicates-body):' "$TMP/lt55-body.txt" | grep -q 'NOT FIRED'; } \
+{ [ "$rcl" -eq 0 ] && [ "$L57" -eq 1 ] && [ "$r" = "rc=5" ] && grep -q 'NOT FIRED' <<<"$(grep -A1 '^  Duplicates (--duplicates-body):' "$TMP/lt55-body.txt")"; } \
   && ok "LT-57h --selftest has a Duplicates-body probe that fires, and a copy with the body signal disabled reports NOT FIRED and exits 5" \
   || bad "LT-57h Duplicates-body selftest probe" "healthy rc=$rcl fired=$L57; crippled $r $(grep -n 'Duplicates\|SELFTEST' "$TMP/lt55-body.txt" 2>/dev/null | tr '\n' ' ')"
 # A BOM-prefixed note's body is its text after the frontmatter, as for any note.
@@ -3629,12 +3632,12 @@ ow=$(grep -A2 '^  Owner' "$TMP/st.txt")
 { [ "$sz" -lt 20000 ] && [ "$rc" -eq 1 ] && grep -q '^  L1 conformance .*FAIL' "$TMP/st.txt" && grep -q 'more than 1000000 items' "$TMP/st.txt"; } \
   && ok "S38-ST-O0 the fixture is a ${sz}-byte note the loader refuses for its size (L1 says: more than 1000000 items), exit 1" \
   || bad "S38-ST-O0 fixture" "size=$sz rc=$rc $(grep -E 'L1|Owner' "$TMP/st.txt" | head -3 | tr '\n' '|')"
-{ printf '%s\n' "$ow" | grep -q '^  Owner  *FAIL' && printf '%s\n' "$ow" | grep -q 'big.md: .*too large to read' && printf '%s\n' "$ow" | grep -q 'items' \
-  && ! printf '%s\n' "$ow" | grep -q 'not valid YAML\|every note needs an owner\|no owner'; } \
+{ grep -q '^  Owner  *FAIL' <<<"$ow" && grep -q 'big.md: .*too large to read' <<<"$ow" && grep -q 'items' <<<"$ow" \
+  && ! grep -q 'not valid YAML\|every note needs an owner\|no owner' <<<"$ow"; } \
   && ok "S38-ST-O1 Owner names the note as too large to read and the item cap; it does not say invalid YAML or no owner" \
   || bad "S38-ST-O1 owner text" "$(printf '%s' "$ow" | tr '\n' '|')"
 got=$("$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print([e for e in d["errors"] if e.startswith("big.md") and "owner" in e])' "$TMP/st.json" 2>&1)
-{ echo "$got" | grep -q 'too large to read' && ! echo "$got" | grep -q 'not valid YAML\|no owner'; } \
+{ grep -q 'too large to read' <<<"$got" && ! grep -q 'not valid YAML\|no owner' <<<"$got"; } \
   && ok "S38-ST-O2 --json errors[] carry the same words for the note" || bad "S38-ST-O2 owner json" "$got"
 # O3: the old words stay for the notes they were true of: an invalid YAML note and a note with no owner, next to the large one.
 B="$TMP/st-o3"; st_bundle "$B"; printf 'okf_check:\n  require_owner: true\n' >> "$B/okf-base.yaml"; cp "$TMP/st-o1/big.md" "$B/big.md"
@@ -3642,7 +3645,7 @@ printf -- '---\ntype: Lesson\ntitle: [\n---\nbody\n' > "$B/yaml.md"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nbody\n' > "$B/noowner.md"
 rm "$B/c.md"; "$CHECK" "$B" >"$TMP/st.txt" 2>&1; ow=$(grep -A4 '^  Owner' "$TMP/st.txt")
 { grep -q 'yaml.md: the frontmatter is not valid YAML' "$TMP/st.txt" && grep -q 'noowner.md: no owner' "$TMP/st.txt" && grep -q 'big.md: .*too large to read' "$TMP/st.txt" \
-  && grep -Eq '^  Owner +FAIL +.*every note needs an owner' "$TMP/st.txt" && ! printf '%s\n' "$ow" | grep -q 'big.md: .*\(not valid YAML\|no owner\)'; } \
+  && grep -Eq '^  Owner +FAIL +.*every note needs an owner' "$TMP/st.txt" && ! grep -q 'big.md: .*\(not valid YAML\|no owner\)' <<<"$ow"; } \
   && ok "S38-ST-O3 next to the large note, an invalid YAML note still reads 'not valid YAML' and a note with no owner still reads 'no owner'" \
   || bad "S38-ST-O3 old words" "$(grep -A4 '^  Owner' "$TMP/st.txt" | tr '\n' '|')"
 # S38-ST-S1..S2: the Successor layer. A deprecated note the loader refuses for its size is not "no deprecated notes", and a
@@ -3656,14 +3659,14 @@ sys.stdout.write(head + "generated:\n  by: human:t\n  at: \"2026-01-01\"\nstale_
 B="$TMP/st-s1"; st_bundle "$B"; printf 'okf_check:\n  deprecated_requires: superseded_by\n' >> "$B/okf-base.yaml"; rm "$B/c.md"; st_big "$B/big.md" deprecated
 "$CHECK" "$B" >"$TMP/st.txt" 2>&1; rc=$?; "$CHECK" --json "$B" >"$TMP/st.json" 2>/dev/null
 sc=$(awk '/^  Successor/{f=1;print;next} f&&/^                   /{print;next} {f=0}' "$TMP/st.txt")
-{ [ "$rc" -eq 1 ] && printf '%s\n' "$sc" | grep -q '^  Successor  *FAIL' && printf '%s\n' "$sc" | grep -q 'big.md: .*too large to read.*successor was not checked' \
-  && ! printf '%s\n' "$sc" | grep -q 'PASS\|no deprecated notes'; } \
+{ [ "$rc" -eq 1 ] && grep -q '^  Successor  *FAIL' <<<"$sc" && grep -q 'big.md: .*too large to read.*successor was not checked' <<<"$sc" \
+  && ! grep -q 'PASS\|no deprecated notes' <<<"$sc"; } \
   && ok "S38-ST-S1 a deprecated note the loader refuses for its size: Successor FAILS naming it as too large to read, never 'PASS no deprecated notes' (exit 1)" \
   || bad "S38-ST-S1 successor text" "rc=$rc $(printf '%s' "$sc" | tr '\n' '|')"
 B="$TMP/st-s2"; st_bundle "$B"; printf 'okf_check:\n  deprecated_requires: superseded_by\n' >> "$B/okf-base.yaml"; rm "$B/c.md"; st_big "$B/big.md" stable
 printf -- '---\ntype: Lesson\ntitle: Old\ndescription: D\nstatus: deprecated\ntags: [t]\nsuperseded_by: "[[big]]"\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nbody\n' > "$B/old.md"
 "$CHECK" "$B" >"$TMP/st.txt" 2>&1; rc=$?; sc=$(awk '/^  Successor/{f=1;print;next} f&&/^                   /{print;next} {f=0}' "$TMP/st.txt")
-{ printf '%s\n' "$sc" | grep -q '^  Successor  *FAIL' && printf '%s\n' "$sc" | grep -q 'old.md: superseded_by .*big.*too large to read' && ! printf '%s\n' "$sc" | grep -q 'PASS'; } \
+{ grep -q '^  Successor  *FAIL' <<<"$sc" && grep -q 'old.md: superseded_by .*big.*too large to read' <<<"$sc" && ! grep -q 'PASS' <<<"$sc"; } \
   && ok "S38-ST-S2 a successor the loader refuses for its size is named as too large to read: whether it is deprecated is not known, so no PASS" \
   || bad "S38-ST-S2 successor target" "rc=$rc $(printf '%s' "$sc" | tr '\n' '|')"
 # S38-ST-D1..D2: --duplicates names the note it could not read, and says the list is partial; --json carries unread[] and complete false.
@@ -3687,6 +3690,49 @@ got=$("$REALPY" -c 'import json,sys; print([("reason" in json.load(open(f))) for
 { [ "$rc" -eq 0 ] && [ "$rc2" -eq 0 ] && [ "$got" = "[False, False]" ]; } && ok "S38-ST-E1 a healthy bundle's --json and --duplicates --json carry no reason (exit 0)" \
   || bad "S38-ST-E1 healthy documents" "rc=$rc/$rc2 reason keys=$got"
 # S38-ST end
+# S40-CP begin
+# A note the loader refuses for its size is named in the Trust layer, in the scoped --file check and in the derived L3 snippet: none of them
+# reads it as a clean note. Fixture: st_big (the 5 KB note, 1000 aliases of a 1000-item list).
+# S40-CP-T1..T3: the Trust layer fails, names the note and counts it; a trust finding in a healthy note still prints.
+B="$TMP/cp-t1"; st_bundle "$B"; rm "$B/c.md"; st_big "$B/big.md" stable
+"$CHECK" "$B" >"$TMP/cp.txt" 2>&1; rc=$?; "$CHECK" --json "$B" >"$TMP/cp.json" 2>/dev/null
+tr_=$(awk '/^  Trust/{f=1;print;next} f&&/^                   /{print;next} {f=0}' "$TMP/cp.txt")
+{ [ "$rc" -eq 1 ] && grep -q '^  Trust (C4) *FAIL' <<<"$tr_" && grep -q 'big.md: .*too large to read.*trust.*not checked' <<<"$tr_" \
+  && ! grep -q 'PASS' <<<"$tr_"; } \
+  && ok "S40-CP-T1 Trust FAILS naming the note the loader refuses for its size as too large to read, never 'PASS' (exit 1)" \
+  || bad "S40-CP-T1 trust text" "rc=$rc $(printf '%s' "$tr_" | tr '\n' '|')"
+got=$("$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print([e for e in d["errors"] if e.startswith("big.md") and "trust" in e])' "$TMP/cp.json" 2>&1)
+grep -q 'too large to read' <<<"$got" && ok "S40-CP-T3 --json errors[] carry the same words for the note" || bad "S40-CP-T3 trust json" "$got"
+B="$TMP/cp-t2"; st_bundle "$B"; rm "$B/c.md"; st_big "$B/big.md" stable
+printf -- '---\ntype: Lesson\ntitle: D\ndescription: D\nstatus: draft\ntags: [t]\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - by: human:t\n    at: "2026-02-01"\nstale_after: "2099-01-01"\n---\nbody\n' > "$B/draft.md"
+"$CHECK" "$B" >"$TMP/cp.txt" 2>&1; tr_=$(awk '/^  Trust/{f=1;print;next} f&&/^                   /{print;next} {f=0}' "$TMP/cp.txt")
+{ grep -q '1 note(s) too large to read' <<<"$tr_" && grep -q 'draft.md: verified\[0\].by' <<<"$tr_"; } \
+  && ok "S40-CP-T2 the Trust line counts the note, and the finding in the healthy draft note still prints" \
+  || bad "S40-CP-T2 trust count" "$(printf '%s' "$tr_" | tr '\n' '|')"
+# S40-CP-F1: okf-check --file prints a Trust error line for the note and exits 1 (the L1 error alone was the only sign).
+"$CHECK" "$B" --file "$B/big.md" >"$TMP/cp.txt" 2>"$TMP/cp.err"; rc=$?
+{ [ "$rc" -eq 1 ] && grep -q '^big.md: Trust error: the note was too large to read, so its trust claims were not checked' "$TMP/cp.txt"; } \
+  && ok "S40-CP-F1 --file names the note as too large to read for Trust (a Trust error line), exit 1" \
+  || bad "S40-CP-F1 scoped" "rc=$rc $(tr '\n' '|' < "$TMP/cp.txt" | head -c 300)"
+# S40-CP-F2: okf-scoped.py on its own (a caller that is not okf-check) says the same and exits 1, even when the note is the only line.
+B="$TMP/cp-t1"; PYTHONPATH="$HERE/../vendor/pyyaml" "$REALPY" "$HERE/okf-scoped.py" "$B" big.md >"$TMP/cp.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'big.md: Trust error: .*too large to read' "$TMP/cp.txt"; } \
+  && ok "S40-CP-F2 okf-scoped.py run directly: the same line, exit 1" || bad "S40-CP-F2 scoped direct" "rc=$rc $(tr '\n' '|' < "$TMP/cp.txt" | head -c 300)"
+# S40-CP-L1..L2: the derived L3 snippet names the note it could not read; the layer fails (exit 1), also without --fail-stale.
+B="$TMP/cp-l1"; st_bundle "$B"; rm "$B/c.md"; st_big "$B/big.md" stable
+"$CHECK" "$B" >"$TMP/cp.txt" 2>&1; rc=$?; "$CHECK" --json "$B" >"$TMP/cp.json" 2>/dev/null
+l3=$(awk '/^  L3 derived/{f=1;print;next} f&&/^                   /{print;next} {f=0}' "$TMP/cp.txt")
+{ [ "$rc" -eq 1 ] && grep -q '^  L3 derived  *FAIL' <<<"$l3" && grep -q 'big.md: .*too large to read.*sources were not compared' <<<"$l3"; } \
+  && ok "S40-CP-L1 derived L3 FAILS naming the note as too large to read (its sources were not compared), exit 1" \
+  || bad "S40-CP-L1 derived text" "rc=$rc $(printf '%s' "$l3" | tr '\n' '|')"
+got=$("$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print([e for e in d["errors"] if e.startswith("big.md") and "sources" in e])' "$TMP/cp.json" 2>&1)
+grep -q 'too large to read' <<<"$got" && ok "S40-CP-L2 --json errors[] carry the same words for the note" || bad "S40-CP-L2 derived json" "$got"
+# S40-CP-H1: a healthy bundle keeps its words: Trust PASS, no L3 derived line, exit 0.
+B="$TMP/cp-h1"; st_bundle "$B"; "$CHECK" "$B" >"$TMP/cp.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 0 ] && grep -q '^  Trust (C4) *PASS   no unauthenticated human verification' "$TMP/cp.txt" && ! grep -q 'L3 derived\|too large' "$TMP/cp.txt"; } \
+  && ok "S40-CP-H1 a healthy bundle: Trust PASS as before, no L3 derived line, no too-large line (exit 0)" \
+  || bad "S40-CP-H1 healthy" "rc=$rc $(grep -E 'Trust|L3 derived|too large' "$TMP/cp.txt" | tr '\n' '|')"
+# S40-CP end
 
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

@@ -1416,7 +1416,7 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False, since: tup
         if not f.is_file():
             continue   # a dangling link
         try:
-            text = guard.read_note(f, "utf-8", "strict")
+            text = guard.read_note(f, "utf-8-sig", "strict")   # a BOM before the fence is no content, so frontmatter_end finds the fence
         except (OSError, UnicodeDecodeError):
             results.append({"concept": rel, "kind": "file", "claim": str(f),
                             "verdict": UNRESOLVED, "detail": "unreadable"})

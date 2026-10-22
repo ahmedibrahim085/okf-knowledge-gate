@@ -286,6 +286,16 @@ and the brand-new machine this tool targets does not have it.
 | S38-ST-D1 | `--duplicates` over a note the loader refuses for its size | the note is named (too large to read, not compared); `no candidate duplicates among the notes read`; exit 0 (advisory) | ✅ |
 | S38-ST-D2 | the same with `--json` | `unread[]` (rel, why); `complete` false; absent on a healthy bundle (S38-ST-D3) | ✅ |
 | S38-ST-E1 | a healthy bundle, `--json` and `--duplicates --json` | no `reason` key, exit 0 | ✅ |
+| S40-CP-T1 | a 5 KB note the loader refuses for its size, the Trust layer | Trust FAIL: the note was too large to read, its trust claims were not checked; never `PASS`; exit 1 | ✅ |
+| S40-CP-T2 | the same note beside a draft note with a human verifier | the Trust line counts `1 note(s) too large to read` and the draft note's warning still prints | ✅ |
+| S40-CP-T3 | the same with `--json` | `errors[]` names the note as too large to read for Trust | ✅ |
+| S40-CP-F1 | `--file` on that note | a `<note>: Trust error: the note was too large to read...` line, exit 1 | ✅ |
+| S40-CP-F2 | `okf-scoped.py` run directly on that note | the same line, exit 1 | ✅ |
+| S40-CP-L1 | the same note, derived L3 | `L3 derived` FAIL: the note was too large to read, its sources were not compared; exit 1 | ✅ |
+| S40-CP-L2 | the same with `--json` | `errors[]` names the note as too large to read for its sources | ✅ |
+| S40-CP-H1 | a healthy bundle | `Trust (C4)       PASS` as before, no `L3 derived` line, no too-large line, exit 0 | ✅ |
+| S41-BM-01/02 | a note starting with a byte order mark, its source stale or not a local file | the `L3 derived` line is the one the same note without the BOM gets | ✅ |
+| S41-BM-03/04 | a BOM note: the L2 index type count; `okf-verify` and a fence line in its frontmatter | the note is counted by its type; no false unclosed code fence | ✅ |
 | LT-20p | `.okfignore` that excludes nothing | same verdict and exit as no file (also with notes behind a symlinked dir) | ✅ |
 | LT-20q | `**/x.md` | also matches `x.md` at the bundle root | ✅ |
 | LT-20q2 | `/**/x.md` | behaves like `**/x.md` | ✅ |

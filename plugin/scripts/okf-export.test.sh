@@ -1920,7 +1920,7 @@ rc=$?
 # The README sits above the plugin folder: a copy of the plugin alone has none, which is shown as a SKIP.
 for doc in "$HERE/../skills/okf/SKILL.md" "$HERE/../../README.md"; do
   if [ ! -f "$doc" ]; then printf '  SKIP  S10-PO-25 %s not found\n' "$(basename "$doc")"; continue; fi
-  grep -qF 'a setext heading inside a block quote is not recognised' "$doc" && grep -F 'a setext heading inside a block quote is not recognised' "$doc" | grep -q 'ATX heading' \
+  grep -qF 'a setext heading inside a block quote is not recognised' "$doc" && grep -q 'ATX heading' <<<"$(grep -F 'a setext heading inside a block quote is not recognised' "$doc")" \
     && ok "S10-PO-25 $(basename "$doc") says a setext heading inside a block quote is not recognised and names the ATX heading" \
     || bad "S10-PO-25 $(basename "$doc")" "the limit sentence (setext heading inside a block quote, ATX heading) is missing"
 done

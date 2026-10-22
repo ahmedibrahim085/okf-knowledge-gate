@@ -105,13 +105,13 @@ want="./.okfignore ./a.md ./alias.pdf ./img/pic.png ./okf-base.yaml ./real/doc.p
   || bad "S12-IG-E3 mirror file set" "got=[$got] want=[$want]"
 [ -L "$D/img/pic.png" ] && [ "$(cat "$D/img/pic.png")" = "p" ] && ok "S12-IG-E4 a non-markdown file is a link to the original: no copy, the content is the original's" \
   || bad "S12-IG-E4 link, not copy" "$(ls -l "$D/img/pic.png" 2>&1)"
-printf '%s\n' "$out" | head -1 | grep -qx '1 1 1' && ok "S12-IG-E5 counts keep their meaning: 1 note kept, 1 note excluded, 1 file excluded (the ignored image is not counted)" \
+grep -qx '1 1 1' <<<"${out%%$'\n'*}" && ok "S12-IG-E5 counts keep their meaning: 1 note kept, 1 note excluded, 1 file excluded (the ignored image is not counted)" \
   || bad "S12-IG-E5 counts" "$(printf '%s' "$out" | tr '\n' ' ') (want '1 1 1 rc=0')"
 
 # S12-IG-N3: a link that cannot be made fails the mirror, naming the file (as a failed copy does).
 mkdir -p "$TMP/noln"; printf '#!/bin/sh\nexit 1\n' > "$TMP/noln/ln"; chmod +x "$TMP/noln/ln"
 out=$(PATH="$TMP/noln:$PATH" mirror "$B" "$TMP/m-fail")
-{ printf '%s' "$out" | grep -q 'rc=1' && grep -q 'cannot link' "$TMP/m-fail.err"; } \
+{ grep -q 'rc=1' <<<"$out" && grep -q 'cannot link' "$TMP/m-fail.err"; } \
   && ok "S12-IG-N3 a link that fails makes the mirror fail closed (rc 1), naming the file" \
   || bad "S12-IG-N3 failed link" "$(printf '%s' "$out" | tr '\n' ' ') err=$(cat "$TMP/m-fail.err")"
 
@@ -135,7 +135,7 @@ B="$TMP/n5/b"; mkdir -p "$B/img" "$B/archive"
 printf -- 'n\n' > "$B/a.md"; printf -- 'n\n' > "$B/archive/old.md"; printf 'archive/\n' > "$B/.okfignore"
 printf '1' > "$B/img/one.png"; printf '2' > "$B/img/two.png"; printf '3' > "$B/img/three.png"
 out=$(PATH="$TMP/halfln:$PATH" mirror "$B" "$TMP/n5/out")
-{ printf '%s' "$out" | grep -q 'rc=0' && [ "$(cat "$TMP/n5/out/img/one.png" "$TMP/n5/out/img/two.png" "$TMP/n5/out/img/three.png" 2>&1)" = "123" ]; } \
+{ grep -q 'rc=0' <<<"$out" && [ "$(cat "$TMP/n5/out/img/one.png" "$TMP/n5/out/img/two.png" "$TMP/n5/out/img/three.png" 2>&1)" = "123" ]; } \
   && ok "S12-IG-N5 a batch that links some files and then fails is retried without failing on the links already made" \
   || bad "S12-IG-N5 partly successful batch" "$(printf '%s' "$out" | tr '\n' ' ') err=$(cat "$TMP/n5/out.err")"
 

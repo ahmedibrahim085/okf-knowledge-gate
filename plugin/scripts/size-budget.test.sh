@@ -448,8 +448,8 @@ rc=$(run "$B"); "$HERE/okf-verify" "$B" --check-config >"$TMP/x5v.txt" 2>&1; rcv
 B="$TMP/j1"; mkb "$B" "$(size_cfg 100)"$'\n    exclude: ["generated/**"]'; mknote "$B/generated/reg.md" 500; mknote "$B/n.md" 10
 rc=$(runjson "$B"); got=$(jget '[(s["note"], s["body_chars"], s["max_body_chars"], s["warn_body_chars"]) for s in d["sizes"] if s["note"] == "n.md"]')
 notes=$(jget '[s["note"] for s in d["sizes"]]')
-{ [ "$rc" = 0 ] && [ "$got" = '[["n.md", 10, 100, null]]' ] && ! printf '%s' "$notes" | grep -q 'generated' \
-  && printf '%s' "$notes" | grep -q '"index.md"'; } \
+{ [ "$rc" = 0 ] && [ "$got" = '[["n.md", 10, 100, null]]' ] && ! grep -q 'generated' <<<"$notes" \
+  && grep -q '"index.md"' <<<"$notes"; } \
   && ok "S16-SB-J1 --json sizes[] gives each measured note its body size and the limits; excluded notes are absent" \
   || bad "S16-SB-J1 sizes[]" "rc=$rc got=$got notes=$notes"
 

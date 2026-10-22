@@ -8,8 +8,9 @@ parsed) and keeps only this note's findings; Trust calls okf-trust.py's findings
 result with a full run's findings for the same note, so a drift between the two shows up as a failing test.
 
 Output: one line per finding, `<rel>: L1 error: ...`, `<rel>: L1 warning: ...`, `<rel>: Trust warning: ...`,
-`<rel>: Trust advisory: ...`; nothing for a clean note. Exit 1: an L1 error, or with --strict-trust a Trust
-warning or a near-miss actor (okf-check's own --strict-trust rule). Exit 0: otherwise. Exit 2: could not run.
+`<rel>: Trust advisory: ...`, `<rel>: Trust error: ...` (the loader refused the note for its size); nothing for a clean note.
+Exit 1: an L1 error, a Trust error, or with --strict-trust a Trust warning or a near-miss actor (okf-check's own
+--strict-trust rule). Exit 0: otherwise. Exit 2: could not run.
 Run with the vendored PyYAML on the path (okf-check does this through py_with_vendor).
 """
 import importlib.util
@@ -58,11 +59,13 @@ def main(argv: list) -> int:
     errors = [m[mine:] for m in report.errors if m.startswith(rel + ": ")]
     warnings = [m[mine:] for m in report.warnings if m.startswith(rel + ": ")]
 
-    rows = []
+    rows, too_large = [], None
     if path.name not in ("index.md", "log.md"):   # Trust reads concepts only, as okf-trust.py does
         try:
             raw, _ = v.split_frontmatter(read_note(path, "utf-8-sig", "strict"))
             meta = v.load_frontmatter(raw) if raw is not None else None
+        except v.AliasBombError as e:   # the loader's size cap: its trust claims are unread, which is not "no finding" (L1 reports the cap too)
+            meta, too_large = None, str(e)
         except (OSError, UnicodeDecodeError, trust.yaml.YAMLError, ValueError):
             meta = None   # L1 already reports an unreadable or malformed note
         if isinstance(meta, dict):
@@ -72,10 +75,12 @@ def main(argv: list) -> int:
         print(f"{rel}: L1 error: {e}")
     for w in warnings:
         print(f"{rel}: L1 warning: {w}")
+    if too_large:
+        print(f"{rel}: Trust error: the note was too large to read, so its trust claims were not checked: {too_large}")
     for severity, entry, reason in rows:
         print(f"{rel}: Trust {severity}: {entry} {reason}")
     strict_hit = strict and (any(s == "warning" for s, _, _ in rows) or any(NEAR_MISS in w for w in warnings))
-    return 1 if errors or strict_hit else 0
+    return 1 if errors or too_large or strict_hit else 0
 
 
 if __name__ == "__main__":

@@ -119,7 +119,7 @@ fi
 # --- the skill has the frontmatter the loader requires -----------------------
 for s in "$PLUGIN"/skills/*/SKILL.md; do
   [ -f "$s" ] || continue
-  head -1 "$s" | grep -q '^---$' && ok "P-3 $(basename "$(dirname "$s")")/SKILL.md has frontmatter" \
+  grep -q '^---$' <<<"$(head -1 "$s")" && ok "P-3 $(basename "$(dirname "$s")")/SKILL.md has frontmatter" \
     || bad "$(basename "$(dirname "$s")")/SKILL.md has frontmatter" "must open with ---"
   # BOTH, not either. The regex was an OR while the label promised "name+
   # description", so deleting `name:` left the suite 16/16 green. (H3)
@@ -745,7 +745,7 @@ for needle in 'fenced code' 'var/folders' 'was rewritten, or' 'stale_after. is r
   grep -rq -- "$needle" "$PLUGIN/skills/okf/" || lost="$lost [$needle]"
 done
 [ -z "$lost" ] && ok "LT-31i every okf-verify, install and setup rule of the old SKILL.md is still in SKILL.md or a reference file" || bad "LT-31i rules lost in the move" "missing:$lost"
-tr '\n' ' ' < "$PLUGIN/skills/okf/SKILL.md" | grep -Eq -- '--strict. also fails on UNRESOLVED and on +notes with no checkable claim' && ok "LT-31j SKILL.md says --strict also fails on notes with no checkable claim (okf-verify D-9)" || bad "LT-31j --strict wording" "SKILL.md names only UNRESOLVED"
+grep -Eq -- '--strict. also fails on UNRESOLVED and on +notes with no checkable claim' <<<"$(tr '\n' ' ' < "$PLUGIN/skills/okf/SKILL.md")" && ok "LT-31j SKILL.md says --strict also fails on notes with no checkable claim (okf-verify D-9)" || bad "LT-31j --strict wording" "SKILL.md names only UNRESOLVED"
 grep -qi 'bin/\|on the Bash tool.s PATH\|on the Bash PATH' "$MKT_ROOT/README.md" && ok "LT-31k the README says the commands are on the Bash tool's PATH while the plugin is enabled" || bad "LT-31k README bin" "README does not mention it"
 
 # Release review round 1: the Action must not echo an input value into a workflow command (a newline in the value
@@ -771,7 +771,7 @@ VENDF="$PLUGIN/vendor/okf_validate.py"; VMD="$PLUGIN/vendor/VENDOR.md"
 # by line with a fresh run), the exit table says what exit 0 really covers, and the release notes do not claim
 # a fix that was not in the release.
 head20=$(head -20 "$README")
-{ printf '%s' "$head20" | grep -q 'OKF is' && printf '%s' "$head20" | grep -q 'A bundle is'; } \
+{ grep -q 'OKF is' <<<"$head20" && grep -q 'A bundle is' <<<"$head20"; } \
   && ok "LT-36a the first screen defines OKF and bundle for a stranger" || bad "LT-36a first screen" "OKF / bundle are not defined in the first 20 lines"
 SAMPLE_BUNDLE="$TMP_W/readme_sample"; mkdir -p "$SAMPLE_BUNDLE/notes"
 printf -- '---\nokf_version: "0.2"\n---\n# Notes\n' > "$SAMPLE_BUNDLE/notes/index.md"; printf -- '# Log\n\n## 2026-01-01\n* created\n' > "$SAMPLE_BUNDLE/notes/log.md"
@@ -856,15 +856,15 @@ tags=$(grep -oE '(okf-knowledge-gate@v|rev: v)[0-9.]+' "$README" | grep -oE 'v[0
 SKILL_MD="$PLUGIN/skills/okf/SKILL.md"
 other=$(grep -hoE '(okf-knowledge-gate@v|rev: v)[0-9.]+' "$SKILL_MD" "$MKT_ROOT/.pre-commit-hooks.yaml" | grep -oE 'v[0-9.]+$' | sort -u | tr '\n' ' ')
 { [ -n "$latest_rel" ] && [ "$other" = "v$latest_rel " ]; } && ok "LT-41a the skill's @v pin and the pre-commit hook's rev: comment equal the latest released version (v$latest_rel)" || bad "LT-41a version pins outside the README" "CHANGELOG latest=$latest_rel, found='$other'"
-! tr -s '[:space:]' ' ' < "$README" | grep -q 'says so on every run' \
+! grep -q 'says so on every run' <<<"$(tr -s '[:space:]' ' ' < "$README")" \
   && ok "LT-41b the README does not claim the Trust layer speaks 'on every run' (a clean run prints no such note)" || bad "LT-41b README on every run" "claim present"
 jsonkeys=$(tr -s '[:space:]' ' ' < "$SKILL_MD" | grep -o -- '--json.\{1,4\} carries the verdict[^.]*' | head -1)
-{ for k in 'errors\[\]' 'l2_findings\[\]' 'stale\[\]' 'skipped\[\]'; do printf '%s' "$jsonkeys" | grep -q "$k" || exit 1; done; } \
+{ for k in 'errors\[\]' 'l2_findings\[\]' 'stale\[\]' 'skipped\[\]'; do grep -q "$k" <<<"$jsonkeys" || exit 1; done; } \
   && ok "LT-41c the skill names the --json finding lists (errors, l2_findings, stale, skipped)" || bad "LT-41c skill --json scope" "sentence missing or incomplete: $jsonkeys"
 ! grep -q 'refuses to say .ALL GATES PASS' "$SKILL_MD" \
   && ok "LT-41d the skill does not claim ALL GATES PASS is refused while a layer is skipped (an opted-out L2 index still passes)" || bad "LT-41d skill ALL GATES PASS claim" "claim present"
 hf=$(grep -E "^  files:" "$MKT_ROOT/.pre-commit-hooks.yaml")
-{ echo kb/okf-base.yaml | grep -Eq "$(printf '%s' "$hf" | sed "s/^  files: '//; s/'\$//")" && echo kb/.okfignore | grep -Eq "$(printf '%s' "$hf" | sed "s/^  files: '//; s/'\$//")"; } \
+{ grep -Eq "$(printf '%s' "$hf" | sed "s/^  files: '//; s/'\$//")" <<<"kb/okf-base.yaml" && grep -Eq "$(printf '%s' "$hf" | sed "s/^  files: '//; s/'\$//")" <<<"kb/.okfignore"; } \
   && ok "LT-41e the pre-commit hook also runs when only okf-base.yaml or .okfignore changes" || bad "LT-41e hook files regex" "$hf"
 cl_ver=$(grep -o '^## \[[0-9][0-9.]*\] - [0-9-]*' "$MKT_ROOT/CHANGELOG.md" | head -1)
 case "$cl_ver" in *' - 20'*) ok "LT-37g the latest CHANGELOG section is dated ($cl_ver)";; *) bad "LT-37g dated release section" "latest section: '$cl_ver'";; esac

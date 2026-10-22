@@ -59,7 +59,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.43"
+VERSION="0.9.44"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -1128,7 +1128,7 @@ PY
 # honest-looking "agent drafts, person reviews later" case as an advisory. Both count into the final
 # advisory tally; neither fails the run (exit stays 0). The identity line prints once per run.
 run_trust() {
-  local bundle="$1" out nw na why ec
+  local bundle="$1" out nw na nt sum why ec
   run_layer "Trust (C4)" "$HERE/okf-trust.py" "$bundle" "$TMP/trust.json" 2>"$TMP/trust.err"; ec=$?; out=$(<"$TMP/layer.out")
   if layer_stopped "$ec"; then TRUST_RAN=0; return $EXIT_DEP; fi
   if [ "$ec" -ne 0 ]; then
@@ -1137,15 +1137,23 @@ run_trust() {
     say "  Trust (C4)       COULD NOT RUN (okf-trust.py failed${why:+: $why}; check python3 and PyYAML with: okf-check --doctor)"
     return $EXIT_DEP
   fi
-  nw=$(printf '%s\n' "$out" | grep -c '^W|'); na=$(printf '%s\n' "$out" | grep -c '^A|')
-  if [ "$nw" -eq 0 ] && [ "$na" -eq 0 ]; then
+  nw=$(printf '%s\n' "$out" | grep -c '^W|'); na=$(printf '%s\n' "$out" | grep -c '^A|'); nt=$(printf '%s\n' "$out" | grep -c '^T|')
+  if [ "$nw" -eq 0 ] && [ "$na" -eq 0 ] && [ "$nt" -eq 0 ]; then
     say "  Trust (C4)       PASS   no unauthenticated human verification"
     return 0
   fi
-  advise Trust $((nw + na)); TRUST_FINDINGS=$((nw + na))
-  say "  Trust (C4)       WARN   ${nw} warning(s), ${na} advisory(ies)"
+  [ "$((nw + na))" -eq 0 ] || { advise Trust $((nw + na)); TRUST_FINDINGS=$((nw + na)); }
+  if [ "$nt" -gt 0 ]; then
+    # T: a note the loader refused for its size, so its trust claims are unread: not "no unauthenticated human verification".
+    sum="$nt note(s) too large to read"; [ "$((nw + na))" -eq 0 ] || sum="$sum; ${nw} warning(s), ${na} advisory(ies)"
+    say "  Trust (C4)       FAIL   $sum"
+    printf '%s\n' "$out" | sed -n 's/^T|//p' | while IFS= read -r l; do record error "$l"; say "                   $l"; done
+  else
+    say "  Trust (C4)       WARN   ${nw} warning(s), ${na} advisory(ies)"
+  fi
   printf '%s\n' "$out" | sed -n 's/^[WA]|//p' | say_capped 50 "                   "
-  say "                   okf-check cannot prove who a person is. A human: entry is a claim in the file."
+  [ "$((nw + na))" -eq 0 ] || say "                   okf-check cannot prove who a person is. A human: entry is a claim in the file."
+  [ "$nt" -eq 0 ] || return $EXIT_CONFORM
   return 0
 }
 
@@ -2068,7 +2076,7 @@ concepts = [p for p in bundle.rglob("*.md") if p.name not in RESERVED and p.is_f
 
 def declared_type(p):
     try:
-        t = p.read_text(encoding="utf-8", errors="replace")
+        t = p.read_text(encoding="utf-8-sig", errors="replace")   # a BOM before the fence is no content, as L1 reads it
     except OSError:
         return None
     if not t.startswith("---"):
@@ -2185,7 +2193,7 @@ try:
     import yaml
     # The bounded loader of the vendored validator: a YAML alias bomb in sources[].resource must not expand here either.
     sys.path.insert(0, __import__("os").environ["OKF_VENDOR_DIR"])
-    from okf_validate import load_frontmatter
+    from okf_validate import AliasBombError, load_frontmatter
 except Exception:
     print("NOYAML")
     sys.exit(0)
@@ -2193,7 +2201,7 @@ except Exception:
 frozen = pathlib.Path(sys.argv[1])   # where the notes are read
 bundle = pathlib.Path(sys.argv[2])   # where sources are looked for
 RESERVED = {"index.md", "log.md"}
-stale, unmeasurable, linked = [], [], set()
+stale, unmeasurable, linked, too_large = [], [], set(), []
 # .okfignore: the notes it leaves in (NUL-separated, relative). Sources are resolved against the REAL bundle, the notes
 # are read from the frozen copy, which holds only the notes .okfignore keeps.
 import os
@@ -2211,7 +2219,7 @@ for p in sorted(frozen.rglob("*.md")):
     if keep is not None and str(p.relative_to(frozen)) not in keep:
         continue
     try:
-        text = p.read_text(encoding="utf-8", errors="replace")   # a regular file of at most the cap: the frozen copy holds nothing else
+        text = p.read_text(encoding="utf-8-sig", errors="replace")   # a regular file of at most the cap: the frozen copy holds nothing else; utf-8-sig: a BOM before the fence is no content, as L1 reads it
     except OSError:
         continue
     if not text.startswith("---"):
@@ -2221,6 +2229,9 @@ for p in sorted(frozen.rglob("*.md")):
         continue
     try:
         meta = load_frontmatter(text[3:end]) or {}
+    except AliasBombError as e:   # the loader's size cap: its sources are unread, which is not "no sources" (L1 reports the cap too)
+        too_large.append((str(p.relative_to(frozen)), str(e)))
+        continue
     except Exception:
         continue
     if not isinstance(meta, dict):
@@ -2266,6 +2277,8 @@ for rel, res, rec, mt in stale:
 for rel, res in unmeasurable:
     why = "is a link whose target is missing or spelled in another case" if (rel, res) in linked else "is not a local file"
     print(f"UNMEASURABLE {rel}: {res} {why} — freshness could not be measured")
+for rel, why in too_large:
+    print(f"TOOLARGE {rel}: the note was too large to read, so its sources were not compared: {why}")
 sys.exit(1 if stale else 0)
 PYEOF
   ec=$?; out=$(<"$TMP/layer.out")
@@ -2281,6 +2294,13 @@ PYEOF
   esac
   local n_stale
   n_stale=$(printf '%s\n' "$out" | grep -c '^STALE ' 2>/dev/null); [ -n "$n_stale" ] || n_stale=0
+  # TOOLARGE: a note the loader refused for its size, so its sources are unread: the layer fails (as Owner), --fail-stale or not.
+  local n_big
+  n_big=$(printf '%s\n' "$out" | grep -c '^TOOLARGE ' 2>/dev/null); [ -n "$n_big" ] || n_big=0
+  if [ "$n_big" -gt 0 ]; then
+    say "  L3 derived       FAIL   $n_big note(s) too large to read"
+    printf '%s\n' "$out" | sed -n 's/^TOOLARGE //p' | while IFS= read -r l; do record error "$l"; say "                   $l"; done
+  fi
   printf '%s\n' "$out" | while IFS= read -r l; do
     case "$l" in
       STALE\ *)        say "  L3 derived       ${l#STALE }" ;;
@@ -2294,6 +2314,7 @@ PYEOF
     fi
     say "                   advisory; use --fail-stale to make this blocking"
   fi
+  [ "$n_big" -eq 0 ] || return $EXIT_CONFORM
   return $EXIT_OK
 }
 

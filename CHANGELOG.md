@@ -9,6 +9,15 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.44] - 2026-10-22
+
+OKF Knowledge Gate 0.9.44 closes the last silent reads: a note too large to read and a note that starts with a byte order mark are judged like any other note, and the test suites can no longer pass or fail by a race.
+
+### Fixed
+- **A note too large to read fails Trust, `--file` and derived L3.** Trust printed PASS and lost the trust findings of a note whose frontmatter trips the loader cap; it now names the note as too large to read and not checked, and the layer fails. `okf-check --file` and derived L3 do the same.
+- **A note that starts with a byte order mark is read like any other.** Derived L3 printed nothing for its stale sources, the L2 index left it out of the declared count, and `okf-verify` reported a false "unclosed code fence".
+- **The test suites have no `producer | grep -q` race.** Under `set -o pipefail`, `grep -q` can stop reading before the producer finishes, and the pipeline then fails although the pattern matched. Every such line now reads from a here-string, and `tools/check-tests.sh` refuses a new one.
+
 ## [0.9.43] - 2026-10-22
 
 OKF Knowledge Gate 0.9.43 makes every stop and every unreadable input a named verdict: no empty `--json` document, no note that is too large to read reported as missing an owner, and the same answer for an unreadable folder on every Python. It also turns the public CI green again.
@@ -847,7 +856,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.43...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.44...HEAD
+[0.9.44]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.43...v0.9.44
 [0.9.43]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.42...v0.9.43
 [0.9.42]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.41...v0.9.42
 [0.9.41]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.40...v0.9.41

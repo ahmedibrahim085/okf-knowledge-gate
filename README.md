@@ -52,9 +52,9 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 | L1 conformance | Is this valid OKF? | the vendored OKF v0.2 validator |
 | L2 profile | Is this valid *our* OKF (house rules)? | `okflint` and the bundle's `okf-base.yaml`. `okflint` finds a wikilink by file name only, so it reports `[[sub/b]]` as broken even when `sub/b.md` exists; `okf-check` drops that finding when the file exists (from the bundle root or from the note's folder) and prints how many it dropped |
 | L2 index | Does `index.md` describe this bundle? | its bold count declaration against the files on disk |
-| Trust (C4) | Can you believe a `human:` verification? | `okf-trust.py`: a draft note, or a review dated before the change, with a human verifier is a warning; an agent-generated note with one is an advisory. It cannot prove who a person is. |
+| Trust (C4) | Can you believe a `human:` verification? | `okf-trust.py`: a draft note, or a review dated before the change, with a human verifier is a warning; an agent-generated note with one is an advisory. It cannot prove who a person is. A note the loader refuses for its size is `too large to read`: the layer fails (exit 1) instead of passing. |
 | L3 staleness | Is it still true? | `stale_after` against today, and `status` |
-| L3 derived | Has what it describes moved since? | `sources[].last_modified` against the file's mtime; a path counts only as written (case-exact, as `okf-verify`) |
+| L3 derived | Has what it describes moved since? | `sources[].last_modified` against the file's mtime; a path counts only as written (case-exact, as `okf-verify`). A note the loader refuses for its size is `too large to read`: its sources were not compared, and the layer fails (exit 1). |
 | L4 claims (`okf-verify`) | Do the cited commits and paths exist? | CONFIRMED, REFUTED or UNRESOLVED per claim |
 
 Also shipped:
@@ -427,7 +427,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.43
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.44
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -443,7 +443,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.43
+    rev: v0.9.44
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

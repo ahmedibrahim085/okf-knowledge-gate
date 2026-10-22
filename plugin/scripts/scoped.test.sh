@@ -104,7 +104,7 @@ sed -i.orig 's/m.startswith(rel + ": ")/m.startswith(rel + ":: ")/g' "$CS/script
 cmp -s "$CS/scripts/okf-scoped.py" "$CS/scripts/okf-scoped.py.orig" && echo "  (cripple changed nothing)"
 "$CS/scripts/okf-check" --selftest > "$TMP/st-silent.txt" 2>&1; rcs=$?
 { [ "$rc" = 0 ] && [ "$fired" = 1 ] && [ "$rcs" = 5 ] \
-  && grep -A1 '^  Scoped (--file):' "$TMP/st-silent.txt" | grep -q 'NOT FIRED'; } \
+  && grep -q 'NOT FIRED' <<<"$(grep -A1 '^  Scoped (--file):' "$TMP/st-silent.txt")"; } \
   && ok "SC-9 --selftest has a Scoped probe that fires, and a copy whose helper drops every finding reports NOT FIRED and exits 5" \
   || bad "SC-9 Scoped selftest probe" "healthy rc=$rc fired=$fired; crippled rc=$rcs $(grep -n 'Scoped\|SELFTEST' "$TMP/st-silent.txt" | tr '\n' ' ')"
 

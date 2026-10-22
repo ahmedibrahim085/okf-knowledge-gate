@@ -1055,7 +1055,7 @@ rc=$(run "$TMP/sp-d2" --repo "$TMP/sp-both")
   && ok "RV-27 (S2-SP-D1) identical results collapse (two UNRESOLVED readings -> one) while a differing result prints beside them" || bad "RV-27 S2-SP-D1 distinct" "exit $rc: $(sprow)"
 # S2-SP-H1 (round 2): the text `ok` line names the file it was checked against, not the cut tail
 cite "$TMP/sp-h1b" "my w.py:3 @$SP2"; rc=$(run "$TMP/sp-h1b" --repo "$TMP/sp-only-spaced")
-grep -E '^  ok  ' "$TMP/out.txt" | grep -q 'my w\.py:3' && ok "RV-27 (S2-SP-H1) the ok line names 'my w.py', the file that was checked" || bad "RV-27 S2-SP-H1 ok line" "$(sprow)"
+grep -q 'my w\.py:3' <<<"$(grep -E '^  ok  ' "$TMP/out.txt")" && ok "RV-27 (S2-SP-H1) the ok line names 'my w.py', the file that was checked" || bad "RV-27 S2-SP-H1 ok line" "$(sprow)"
 # --- RV-33 (S2-SP-E5..E8): the name is the writer's own text, not its words rejoined with one space, and any number of words may belong to it.
 # citejson <dir> <repo>: the citation results as JSON [[claim, verdict]...] (kind citation).
 citejson() { "$VERIFY" "$1" --repo "$2" --json > "$TMP/out.json" 2>/dev/null; "$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps([[r["claim"].split(" @")[0], r["verdict"]] for r in d["results"] if r["kind"] == "citation"], ensure_ascii=False))' "$TMP/out.json"; }

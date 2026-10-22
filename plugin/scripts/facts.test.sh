@@ -94,7 +94,7 @@ rc=$(run "$B" --facts nope); rc2=0
 
 # S22-DF-E3: --selftest plants a conflicting value and requires the Facts gate to fire.
 rc=$("$CHECK" --selftest >"$TMP/st.txt" 2>&1; echo $?)
-{ [ "$rc" = 0 ] && grep -A1 'Facts (okf_check.facts)' "$TMP/st.txt" | grep -q 'FIRED'; } && ok "S22-DF-E3 --selftest has a Facts probe that fires" || bad "S22-DF-E3 selftest" "rc=$rc $(grep -A1 'Facts' "$TMP/st.txt" | head -2)"
+{ [ "$rc" = 0 ] && grep -q 'FIRED' <<<"$(grep -A1 'Facts (okf_check.facts)' "$TMP/st.txt")"; } && ok "S22-DF-E3 --selftest has a Facts probe that fires" || bad "S22-DF-E3 selftest" "rc=$rc $(grep -A1 'Facts' "$TMP/st.txt" | head -2)"
 
 # S22-DF-E4 (review S4): a pattern from okf-base.yaml with catastrophic backtracking cannot hang the run: the facts step runs
 # under a time limit (OKF_FACTS_TIMEOUT, default 60 s) and reports COULD NOT RUN (exit 2) when it passes.

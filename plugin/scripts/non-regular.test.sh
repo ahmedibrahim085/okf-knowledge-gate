@@ -216,7 +216,7 @@ if grep -qxF "== $B" "$TMP/stub.log" || grep -qxF "== $live_real" "$TMP/stub.log
 # copied is refused, not copied. /dev/null is the one device the host may use: the helper is called directly with a list.
 FZ="$TMP/fz"; mkdir -p "$FZ/src" "$FZ/dst"; printf 'a\n' > "$FZ/src/ok.md"; ln -s /dev/null "$FZ/src/dev.md"
 printf 'N\tok.md\0N\tdev.md\0' | "$REALPY" "$HERE/okf_guard.py" freeze "$FZ/src" "$FZ/dst" 5242880 > "$FZ/refused.lst" 2> "$FZ/err.txt"; RC=$?
-{ [ "$RC" -eq 0 ] && [ -f "$FZ/dst/ok.md" ] && [ ! -e "$FZ/dst/dev.md" ] && tr '\0' '\n' < "$FZ/refused.lst" | grep -q 'not a regular file.*dev.md'; } \
+{ [ "$RC" -eq 0 ] && [ -f "$FZ/dst/ok.md" ] && [ ! -e "$FZ/dst/dev.md" ] && grep -q 'not a regular file.*dev.md' <<<"$(tr '\0' '\n' < "$FZ/refused.lst")"; } \
   && ok "S17-NR-R2 the copy helper refuses a device it meets while copying and copies the regular note" \
   || bad "S17-NR-R2 freeze helper" "rc=$RC $(tr '\0' '|' < "$FZ/refused.lst") $(head -1 "$FZ/err.txt") dst: $(ls "$FZ/dst" | tr '\n' ' ')"
 

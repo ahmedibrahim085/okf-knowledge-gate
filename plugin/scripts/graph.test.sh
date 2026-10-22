@@ -85,7 +85,7 @@ rc=$(PATH="$TMP/bin:$PATH" run "$B3")
 rc=$(PATH="/usr/bin:/bin" run "$B")
 "$CHECK" --json "$B" > "$TMP/out.json" 2>/dev/null
 { grep -Eq 'L2 graph +SKIPPED — okf-memory not found .*orphans and broken concept links are UNCHECKED' "$TMP/out.txt" \
-  && jget 'd["skipped"]' | grep -q 'L2 graph: okf-memory not found'; } \
+  && grep -q 'L2 graph: okf-memory not found' <<<"$(jget 'd["skipped"]')"; } \
   && ok "S27-GR-N2 opted in without okf-memory: SKIPPED naming what is unchecked; --json skipped lists it" || bad "S27-GR-N2 skipped" "$(grep -n 'L2 graph' "$TMP/out.txt")"
 # S27-GR-N3: another tool called `okf` on PATH is not okf-memory: SKIPPED, and its validate is never run.
 rm -f "$TMP/other.calls"
@@ -111,7 +111,7 @@ grep -Eq 'L2 graph +COULD NOT RUN — okf-memory exited 1 without a readable rep
 # S27-GR-E3: --doctor names okf-memory when found and says it is optional when not; --selftest probes the layer when found.
 d1=$(PATH="$TMP/bin:$PATH" "$CHECK" --doctor 2>&1 | grep 'okf-memory'); d2=$(PATH="/usr/bin:/bin:$(dirname "$REALPY")" "$CHECK" --doctor 2>&1 | grep 'okf-memory')
 PATH="$TMP/bin:$PATH" "$CHECK" --selftest > "$TMP/st.txt" 2>&1; src=$?
-{ printf '%s' "$d1" | grep -q 'v9.9.9 (stub)  (optional: L2 graph' && printf '%s' "$d2" | grep -q 'absent (optional' \
+{ grep -q 'v9.9.9 (stub)  (optional: L2 graph' <<<"$d1" && grep -q 'absent (optional' <<<"$d2" \
   && [ "$src" = 0 ] && grep -q 'FIRED      broken concept link' "$TMP/st.txt"; } \
   && ok "S27-GR-E3 --doctor reports okf-memory (found or optional), --selftest's L2 graph probe fires" \
   || bad "S27-GR-E3 doctor and selftest" "d1='$d1' d2='$d2' selftest rc=$src $(grep -n -A1 'graph' "$TMP/st.txt" | tr '\n' '|')"

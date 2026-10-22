@@ -115,7 +115,7 @@ print("cut_in=%s checked=%d total=%d per=%d bands=%s inside=%s first=%s checked_
     g["cut_in"], g["checked"], total, per, total == 32 * per, inside, first, g1["checked"]))
 PY
 fc=$("$REALPY" "$TMP/fakeclock.py" "${OKF_DUP_TOOL:-$HERE/okf-duplicates.py}" "$B4" "$HERE/../config/okf-check-block.json" "$HERE/../vendor" "$HERE" 2>&1)
-printf '%s\n' "$fc" | grep -Eq '^cut_in=body checked=[0-9]+ total=148992 per=4656 bands=True inside=True first=True checked_first=[0-9]+$' \
+grep -Eq '^cut_in=body checked=[0-9]+ total=148992 per=4656 bands=True inside=True first=True checked_first=[0-9]+$' <<<"$fc" \
   && ok "S25-DU-E4 with a fake clock the bucket loop stops inside a bucket at the limit ($fc)" || bad "S25-DU-E4 fake-clock bucket cut" "$fc"
 # S25-DU-E3: the limit is checked inside one LSH bucket: 1,200 notes with one shared body stop near the limit, not after
 # the whole bucket (0.9.10: 1,500 notes, limit 3 s, 5.1 s wall).

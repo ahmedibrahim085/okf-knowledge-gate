@@ -73,29 +73,29 @@ R="$TMP/svc"; clone "$R" "https://github.com/acme/svc.git"; B="$TMP/h1"; mkbundl
 rc2=$(runjson "$B" --repo "$R" --remote); got=$(shares); d=$(detail)
 src=$("$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print([r.get("source") for r in d["results"] if r["kind"] == "sha"][0])' "$TMP/out.json")
 { [ "$rc" = 0 ] && [ "$before" = '[["'"$RS"'", "UNRESOLVED"]]' ] && [ "$asked" = 0 ] && [ "$rc2" = 0 ] && [ "$got" = '[["'"$RS"'", "CONFIRMED"]]' ] && [ "$src" = remote ] \
-  && printf '%s' "$d" | grep -q 'on the remote github.com/acme/svc' && printf '%s' "$d" | grep -q 'fix: retry the payout job' \
-  && printf '%s' "$d" | grep -q '2026-05-01' && printf '%s' "$d" | grep -q 'local clone .* is behind'; } \
+  && grep -q 'on the remote github.com/acme/svc' <<<"$d" && grep -q 'fix: retry the payout job' <<<"$d" \
+  && grep -q '2026-05-01' <<<"$d" && grep -q 'local clone .* is behind' <<<"$d"; } \
   && ok "S24-RL-H1 --remote confirms a commit found only on GitHub, naming the repo, title and date; without it nothing is asked" || bad "S24-RL-H1 github" "rc=$rc before=$before asked=$asked rc2=$rc2 got=$got d=$d"
 
 # S24-RL-H2: a self-hosted GitLab origin (scp-like host:path form), named in OKF_GITLAB_HOSTS, and the option declared in okf-base.yaml.
 R="$TMP/infra"; clone "$R" "gitlab.example.com:team/infra.git"; B="$TMP/h2"; mkbundle "$B"; note "$B/a.md" "See commit $REMOTE_SHA."
 printf 'okf_check:\n  verify:\n    remote: true\n' > "$B/okf-base.yaml"
 rc=$(OKF_GITLAB_HOSTS=gitlab.example.com runjson "$B" --repo "$R"); got=$(shares); d=$(detail)
-{ [ "$rc" = 0 ] && [ "$got" = '[["'"$RS"'", "CONFIRMED"]]' ] && printf '%s' "$d" | grep -q 'gitlab.example.com/team/infra' && printf '%s' "$d" | grep -q 'infra: rotate keys'; } \
+{ [ "$rc" = 0 ] && [ "$got" = '[["'"$RS"'", "CONFIRMED"]]' ] && grep -q 'gitlab.example.com/team/infra' <<<"$d" && grep -q 'infra: rotate keys' <<<"$d"; } \
   && ok "S24-RL-H2 okf_check.verify.remote: true asks a GitLab origin (ssh URL, any host)" || bad "S24-RL-H2 gitlab" "rc=$rc got=$got d=$d"
 
 section "negative"
 # S24-RL-N1: not on the forge either: UNRESOLVED, and the detail says the remote was asked; never REFUTED.
 R="$TMP/svc"; B="$TMP/n1"; mkbundle "$B"; note "$B/a.md" "Fixed in commit $MISSING_SHA."
 rc=$(runjson "$B" --repo "$R" --remote); got=$(shares); d=$(detail)
-{ [ "$rc" = 0 ] && [ "$got" = '[["'"$MS"'", "UNRESOLVED"]]' ] && printf '%s' "$d" | grep -q 'not on the remote github.com/acme/svc either'; } \
+{ [ "$rc" = 0 ] && [ "$got" = '[["'"$MS"'", "UNRESOLVED"]]' ] && grep -q 'not on the remote github.com/acme/svc either' <<<"$d"; } \
   && ok "S24-RL-N1 a commit the forge does not have stays UNRESOLVED (never REFUTED), saying the remote was asked" || bad "S24-RL-N1 not found" "rc=$rc got=$got d=$d"
 
 # S24-RL-N2: the forge fails (HTTP 500) or the origin is no forge we know: UNRESOLVED, saying the lookup did not run.
 R="$TMP/boom"; clone "$R" "https://github.com/boom/x.git"; B="$TMP/n2"; mkbundle "$B"; note "$B/a.md" "Fixed in commit $MISSING_SHA."
 rc=$(runjson "$B" --repo "$R" --remote); d=$(detail)
 R2="$TMP/other"; clone "$R2" "https://example.org/x/y.git"; rc2=$(runjson "$B" --repo "$R2" --remote); d2=$(detail)
-{ [ "$rc" = 0 ] && printf '%s' "$d" | grep -q 'remote lookup on github.com/boom/x failed' && [ "$rc2" = 0 ] && printf '%s' "$d2" | grep -q 'no GitHub or GitLab origin'; } \
+{ [ "$rc" = 0 ] && grep -q 'remote lookup on github.com/boom/x failed' <<<"$d" && [ "$rc2" = 0 ] && grep -q 'no GitHub or GitLab origin' <<<"$d2"; } \
   && ok "S24-RL-N2 a failing forge, or an origin that is no known forge, is UNRESOLVED and says why" || bad "S24-RL-N2 failures" "rc=$rc d=$d rc2=$rc2 d2=$d2"
 
 section "edge"
@@ -110,8 +110,8 @@ rc=$(runjson "$B" --repo "$R" --remote); asked=$(grep -c "$local_sha" "$TMP/forg
 : > "$TMP/forge.log"; B="$TMP/e2"; mkbundle "$B"; note "$B/a.md" "Fixed in commit $REMOTE_SHA."
 GITHUB_TOKEN=gh-secret GITLAB_TOKEN=gl-secret OKF_GITLAB_HOSTS=gitlab.example.com "$VERIFY" "$B" --repo "$TMP/svc" --repo "$TMP/infra" --remote --json >/dev/null 2>&1
 gh_line=$(grep '/repos/acme/svc/' "$TMP/forge.log" | head -1); gl_line=$(grep '/api/v4/' "$TMP/forge.log" | head -1)
-{ printf '%s' "$gh_line" | grep -q 'auth=Bearer gh-secret' && ! grep -q 'gl-secret' <<< "$gh_line" \
-  && { [ -z "$gl_line" ] || { printf '%s' "$gl_line" | grep -q 'auth=gl-secret' && ! grep -q 'gh-secret' <<< "$gl_line"; }; }; } \
+{ grep -q 'auth=Bearer gh-secret' <<<"$gh_line" && ! grep -q 'gl-secret' <<< "$gh_line" \
+  && { [ -z "$gl_line" ] || { grep -q 'auth=gl-secret' <<<"$gl_line" && ! grep -q 'gh-secret' <<< "$gl_line"; }; }; } \
   && ok "S24-RL-E2 GITHUB_TOKEN goes to GitHub only and GITLAB_TOKEN to GitLab only" || bad "S24-RL-E2 tokens" "gh=$gh_line gl=$gl_line"
 
 # S24-RL-E3: the option is a boolean in the shared schema: a string is refused by both tools.
@@ -124,21 +124,21 @@ B="$TMP/e3"; mkbundle "$B"; printf 'okf_check:\n  verify:\n    remote: "yes"\n' 
 for url in "https://gitlab.com.evil.com/x/y.git" "ssh://notgitlab.attacker.io/x/y.git" "gitlab.example.com:team/infra.git"; do
   R="$TMP/lk"; rm -rf "$R"; clone "$R" "$url"; B="$TMP/e4"; rm -rf "$B"; mkbundle "$B"; note "$B/a.md" "Fixed in commit $REMOTE_SHA."
   : > "$TMP/forge.log"; GITLAB_TOKEN=gl-secret runjson "$B" --repo "$R" --remote >/dev/null; d=$(detail)
-  { [ ! -s "$TMP/forge.log" ] && printf '%s' "$d" | grep -q 'no GitHub or GitLab origin'; } \
+  { [ ! -s "$TMP/forge.log" ] && grep -q 'no GitHub or GitLab origin' <<<"$d"; } \
     && ok "S24-RL-E4 $url is not asked and gets no token" || bad "S24-RL-E4 $url" "asked: $(cat "$TMP/forge.log") d=$d"
 done
 
 # S24-RL-E5 (review): a redirect is not followed (headers would go with it): the lookup fails, UNRESOLVED.
 R="$TMP/rd"; clone "$R" "https://github.com/redir/x.git"; B="$TMP/e5"; mkbundle "$B"; note "$B/a.md" "Fixed in commit $REMOTE_SHA."
 : > "$TMP/forge.log"; rc=$(GITHUB_TOKEN=gh-secret runjson "$B" --repo "$R" --remote); got=$(shares); d=$(detail)
-{ [ "$rc" = 0 ] && [ "$got" = '[["'"$RS"'", "UNRESOLVED"]]' ] && printf '%s' "$d" | grep -q 'failed (redirect' && [ "$(grep -c 'acme/svc' "$TMP/forge.log")" = 0 ]; } \
+{ [ "$rc" = 0 ] && [ "$got" = '[["'"$RS"'", "UNRESOLVED"]]' ] && grep -q 'failed (redirect' <<<"$d" && [ "$(grep -c 'acme/svc' "$TMP/forge.log")" = 0 ]; } \
   && ok "S24-RL-E5 a redirect is refused, not followed" || bad "S24-RL-E5 redirect" "rc=$rc got=$got d=$d log=$(cat "$TMP/forge.log")"
 
 # S24-RL-E6 (review): a 200 whose body is not the commit (a list, an empty object) is a failed lookup, never CONFIRMED, never a crash.
 for who in list empty; do
   R="$TMP/m-$who"; clone "$R" "https://github.com/$who/x.git"; B="$TMP/e6"; rm -rf "$B"; mkbundle "$B"; note "$B/a.md" "Fixed in commit $REMOTE_SHA."
   rc=$(runjson "$B" --repo "$R" --remote); got=$(shares); d=$(detail)
-  { [ "$rc" = 0 ] && [ "$got" = '[["'"$RS"'", "UNRESOLVED"]]' ] && printf '%s' "$d" | grep -q 'failed'; } \
+  { [ "$rc" = 0 ] && [ "$got" = '[["'"$RS"'", "UNRESOLVED"]]' ] && grep -q 'failed' <<<"$d"; } \
     && ok "S24-RL-E6 a 200 with a $who body is a failed lookup (UNRESOLVED, exit 0)" || bad "S24-RL-E6 $who body" "rc=$rc got=$got d=$d"
 done
 
