@@ -58,6 +58,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 CONFIRMED, REFUTED, UNRESOLVED = "CONFIRMED", "REFUTED", "UNRESOLVED"
@@ -460,6 +461,35 @@ def blob_lines(repo: Path, sha: str, path: str):
     return _BLOB_LINES[key]
 
 
+def _stream_blob(repo: Path, sha: str, path: str, feed):
+    """Run `git cat-file blob` and hand its output to `feed` in 64 KB pieces, so memory does not grow with the blob.
+
+    `feed(chunk)` returns True to stop early. Returns (returncode, timed_out, stopped); a run past 15 s is killed, as `git()` is.
+    """
+    p = subprocess.Popen(["git", "-C", str(repo), "cat-file", "blob", f"{sha}:{path}"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    late = []
+
+    def kill():
+        late.append(True)
+        p.kill()
+    timer = threading.Timer(15, kill)
+    timer.start()
+    stopped = False
+    try:
+        for chunk in iter(lambda: p.stdout.read(65536), b""):
+            if feed(chunk):
+                stopped = True
+                p.kill()
+                break
+        p.wait()
+    finally:
+        timer.cancel()
+        p.kill()   # an exception in `feed` or a Ctrl-C must not leave git running
+        p.wait()
+        p.stdout.close()
+    return p.returncode, bool(late), stopped
+
+
 def _blob_lines(repo: Path, sha: str, path: str):
     """blob_lines without the memo: (count, why, answered); answered is False when git could not run to an answer."""
     # A symlink's blob is the LINK TEXT: counting it reports "1 lines" for a link to a 20-line file. The tree entry's mode says which it is.
@@ -468,19 +498,56 @@ def _blob_lines(repo: Path, sha: str, path: str):
         return None, entry, False
     if entry.split(" ", 1)[0] == "120000":
         return None, f"{path} is a symlink, so its lines cannot be checked", True
+    seen = {"bytes": 0, "newlines": 0, "last": b"", "binary": False}
+
+    def feed(chunk):
+        if seen["bytes"] < 8000 and b"\0" in chunk[:8000 - seen["bytes"]]:
+            seen["binary"] = True
+            return True
+        seen["bytes"] += len(chunk)
+        seen["newlines"] += chunk.count(b"\n")
+        seen["last"] = chunk[-1:]
+        return False
     try:
-        p = subprocess.run(["git", "-C", str(repo), "cat-file", "blob", f"{sha}:{path}"],
-                           capture_output=True, timeout=15)
-    except subprocess.TimeoutExpired:
-        return None, "git timed out", False
+        rc, late, _ = _stream_blob(repo, sha, path, feed)
     except (OSError, subprocess.SubprocessError):
         return None, "git could not be executed", False
-    if p.returncode != 0:
-        return None, f"{path} at {sha} is not a regular file", p.returncode > 0   # a negative code is a signal: git did not answer
-    data = p.stdout
-    if b"\0" in data[:8000]:
+    if late:
+        return None, "git timed out", False
+    if seen["binary"]:
         return None, f"{path} is a binary file, so its lines cannot be checked", True
-    return data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0), "", True
+    if rc != 0:
+        return None, f"{path} at {sha} is not a regular file", rc > 0   # a negative code is a signal: git did not answer
+    return seen["newlines"] + (1 if seen["bytes"] and seen["last"] != b"\n" else 0), "", True
+
+
+SPAN_LIMIT = int(os.environ.get("OKF_VERIFY_SPAN_LIMIT") or 16 * 1024 * 1024)   # bytes of the cited lines of a blob to hold for a quoted text
+
+
+def blob_span(repo: Path, sha: str, path: str, first: int, last: int):
+    """The text of lines `first`..`last` of `path` at `sha`: (text, "") or (None, why). Only those lines are kept, not the blob."""
+    out, size, at = [], [0], [1]
+
+    def feed(chunk):
+        parts = chunk.split(b"\n")
+        for i, part in enumerate(parts):
+            if i:
+                at[0] += 1
+            if at[0] > last:
+                return True
+            if at[0] >= first:
+                out.append(part + (b"\n" if i < len(parts) - 1 else b""))
+                size[0] += len(part) + 1
+        return size[0] > SPAN_LIMIT
+    try:
+        rc, late, stopped = _stream_blob(repo, sha, path, feed)
+    except (OSError, subprocess.SubprocessError):
+        return None, "git did not run"
+    if size[0] > SPAN_LIMIT:
+        return None, f"the cited lines are more than {SPAN_LIMIT} bytes"
+    if late or (rc != 0 and not stopped):
+        return None, "git did not answer"
+    return b"".join(out).decode("utf-8", "replace"), ""
 
 
 _BLANK_LINE = re.compile(r"(?s).*\n[ \t\r\f\v]*\n")   # up to the last blank line of a text: the end of the paragraph before
@@ -652,13 +719,13 @@ def check_citation(path: str, lines: str, sha: str, repos: list[Path], subjects:
             return REFUTED, (f"line part failed: {n} has {count} lines at {sha}, line {lines} "
                              f"{'does not exist (lines start at 1)' if first < 1 else 'is past the end'}")
         if anchor:
-            try:
-                p = subprocess.run(["git", "-C", str(r), "cat-file", "blob", f"{sha}:{n}"], capture_output=True, timeout=15)
-            except (OSError, subprocess.SubprocessError):
-                return UNRESOLVED, f"sha {sha} and path {n} exist in {r.name}, but the quoted text was not checked (git did not run)"
-            if p.returncode != 0:
-                return UNRESOLVED, f"sha {sha} and path {n} exist in {r.name}, but the quoted text was not checked"
-            return anchor_check(p.stdout.decode("utf-8", "replace"), lines, anchor, f"{n} at {sha}", may_move=False)[:2]
+            text, why = blob_span(r, sha, n, first, last)
+            if text is None:
+                return UNRESOLVED, f"sha {sha} and path {n} exist in {r.name}, but the quoted text was not checked ({why})"
+            want = " ".join(anchor.split())
+            if want in " ".join(text.split()):
+                return CONFIRMED, f"{n} at {sha}: the quoted text is on line {lines}"
+            return REFUTED, f"{n} at {sha}: the quoted text \"{want}\" is not on line {lines} (pinned to a commit: never moved)"
         return CONFIRMED, f"sha {sha} resolves in {r.name}; path {n} has {count} lines at that commit; line {lines} is within it"
     if cut:
         return UNRESOLVED, (f"{path} is the end of {cut[0]} at {sha}, not a whole path: the cited path may be cut at a space "
@@ -747,31 +814,31 @@ def anchor_check(text: str, lines: str, anchor: str, shown: str, may_move: bool 
 def since_check(found: Path, text: str, lines: str, since: tuple):
     """--since (okf-knowledge-gate#14, slice c): did the cited lines of `found` move or change since the ref? ("moved", [starts]), ("changed", None) or None.
 
-    The cited block is taken from `git show <ref>:<path>` (output not stripped: a stripped leading blank line would shift every
+    The cited block is taken from the blob `<ref>:<path>`, read in pieces (not stripped: a stripped leading blank line would shift every
     line number) and looked for in the file as it is now, compared with whitespace collapsed.
     """
     top, ref = since[0], since[1]
     rel = os.path.relpath(os.path.realpath(str(found)), os.path.realpath(str(top)))
     if rel.startswith(".."):
         return None
-    try:
-        p = subprocess.run(["git", "-C", str(top), "show", f"{ref}:{rel}"], capture_output=True, timeout=15)
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if p.returncode != 0:
-        return None   # the file is new since the ref: nothing to compare
-    def rows(t):
-        r = t.split("\n")
-        return r[:-1] if t.endswith("\n") else r
-    old, new = rows(p.stdout.decode("utf-8", "replace")), rows(text)
     span = line_span(lines)
     if span is None:
         return None
     first, last = span
-    if first < 1 or last > len(old):
-        return None   # the citation was already outside the file at the ref
+    count, why = blob_lines(top, ref, rel)   # streamed, and None for a file that is new since the ref: nothing to compare
+    if count is None and ("binary file" in why or "symlink" in why):
+        return ("uncompared", None)
+    if count is None or first < 1 or last > count:
+        return None   # a citation already outside the file at the ref is not compared either
+    old_text, _ = blob_span(top, ref, rel, first, last)
+    if old_text is None:
+        return None
+    def rows(t):
+        r = t.split("\n")
+        return r[:-1] if t.endswith("\n") else r
+    new = rows(text)
     norm = lambda block: [" ".join(x.split()) for x in block]
-    cited = norm(old[first - 1:last])
+    cited = norm(rows(old_text))
     if norm(new[first - 1:last]) == cited:
         return None
     span = last - first + 1
@@ -907,14 +974,19 @@ def check_line(target: str, lines: str, by_name: bool, note_dir: Path, bundle: P
         return v, d, extra
     v, d = line_range(lines, count, shown)
     # Only a citation the note already had at the ref: one the branch corrected along with the move is right as it is (B2).
-    shifted = since_check(found, text, lines, since) if since and since[2](f"{target}:{lines}") else None
-    if shifted and shifted[0] == "moved":
+    had = since[2](f"{target}:{lines}") if since else False   # None: the note at the ref was too large to read
+    shifted = since_check(found, text, lines, since) if had else None
+    if had is None:
+        extra["warning"] = f"not compared: note at {since[1]} too large to compare, so whether it cited {target}:{lines} is not known"
+    if shifted and shifted[0] == "uncompared":
+        extra["warning"] = f"not compared: binary or symlink at {since[1]}"
+    elif shifted and shifted[0] == "moved":
         first, last = line_span(lines)
         at = [str(i) if last == first else f"{i}-{i + last - first}" for i in shifted[1]]
         extra["moved_to"] = at[0]
         return MOVED, (f"{shown}: the cited text was on line {lines} at {since[1]} and is now on line "
                        f"{' or '.join(at[:3])}"), extra
-    if shifted:
+    elif shifted:
         extra["warning"] = (f"the cited line {lines} of {shown} changed since {since[1]}: check that the citation still says "
                             f"what it meant")
     return v, d, extra
@@ -1483,11 +1555,10 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False, since: tup
             """Did this note already cite `claim` at the --since ref? (Read once per note, only when asked.)"""
             if not old_note:
                 rel_top = os.path.relpath(os.path.realpath(str(f)), os.path.realpath(str(since[0])))
-                try:
-                    p = subprocess.run(["git", "-C", str(since[0]), "show", f"{since[1]}:{rel_top}"], capture_output=True, timeout=15)
-                    old_note.append(p.stdout.decode("utf-8", "replace") if p.returncode == 0 else "")
-                except (OSError, subprocess.SubprocessError):
-                    old_note.append("")
+                t, why = blob_span(since[0], since[1], rel_top, 1, 10 ** 12)   # the whole note, up to SPAN_LIMIT
+                old_note.append(t if t is not None else None if "more than" in why else "")
+            if old_note[0] is None:
+                return None
             return re.search(r"(?<![\w./-])" + re.escape(claim) + r"(?![\d-])", old_note[0]) is not None
 
         for target, lo, hi, by_name, anchor, cands, quoted, doubt in lcites:

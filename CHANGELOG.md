@@ -9,6 +9,16 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.45] - 2026-10-22
+
+OKF Knowledge Gate 0.9.45 makes `okf-verify` read a cited file without holding it in memory, and brings the register and the README up to date with every release since 0.9.40.
+
+### Fixed
+- **`okf-verify` reads a cited file in pieces.** A cited file at a commit was read whole into memory, and again for a quoted text: a 100 MB file took 220 MB (412 MB with a quote) and a 300 MB file was killed by a 1 GB memory cap. It is now read in 64 KB pieces, keeping only the cited lines (at most `OKF_VERIFY_SPAN_LIMIT` bytes, default 16 MB; over it the citation is UNRESOLVED with the reason): the peak stays at about 18 MB, with the same verdicts. `--since` reads the file and the note at the ref the same way, and says when it cannot compare a binary file, a symlink or a note too large to read.
+
+### Changed
+- README: the Release steps name `OKF_LINUX_LANG`, `okflint` and the Pythons the gates run under, and the limits of `okf-export` (a heading slug is NFC, a code span does not cross lines).
+
 ## [0.9.44] - 2026-10-22
 
 OKF Knowledge Gate 0.9.44 closes the last silent reads: a note too large to read and a note that starts with a byte order mark are judged like any other note, and the test suites can no longer pass or fail by a race.
@@ -856,7 +866,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.44...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.45...HEAD
+[0.9.45]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.44...v0.9.45
 [0.9.44]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.43...v0.9.44
 [0.9.43]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.42...v0.9.43
 [0.9.42]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.41...v0.9.42

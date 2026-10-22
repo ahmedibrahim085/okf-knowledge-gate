@@ -22,7 +22,7 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 - **One verdict you can gate on.** `okf-check` runs every layer. Exit 1 means "not valid", exit 2 means "could not run",
   and a skipped layer is printed as SKIPPED and never shown as PASS (the exit code stays 0, and the verdict line reports
   a skipped layer). `--selftest` plants one defect in each of L0 (doctor), L1, L2 (profile), L2 (index), Trust,
-  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule, the Size rule, the Facts rule, the Config check, a lookalike `human:`, `wikilink_root`, `--duplicates`, `--duplicates-body` and (when okf-memory is installed) L2 graph, and fails if a gate misses it. Without `okflint` the L2 profile probes are
+  L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule, the Size rule, the Facts rule, the Config check, a lookalike `human:`, `wikilink_root`, `--duplicates`, `--duplicates-body` and (when okf-memory is installed) L2 graph, and fails if a gate misses it (`--conserve` has no probe of its own: `conserve.test.sh` covers it). Without `okflint` the L2 profile probes are
   SKIPPED, and the verdict line names them.
 - **The same check in three places.** Claude Code (hooks, plus a skill an agent reads), a GitHub Action, and a pre-commit
   hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)).
@@ -114,7 +114,7 @@ okf-check <bundle> --duplicates    # list candidate duplicate notes (a report, a
 okf-check <bundle> --duplicates-body   # the same, plus notes whose bodies are similar
 okf-check <bundle> --facts [NAME]  # every statement of the declared facts (a dry run, always exit 0)
 okf-check <bundle> --conserve REF  # every line removed since REF must reappear: MOVED, CHANGED or LOST
-okf-check <bundle> --file <note>   # L1 + Trust for one note: one line per finding, nothing when clean (for edit hooks)
+okf-check <bundle> --file <note>   # L1 + Trust for one note (no L2, so wikilink_root does not apply): one line per finding, nothing when clean (for edit hooks)
 okf-check --doctor                 # what is installed, and does okflint behave
 okf-check --selftest               # re-prove every gate still fires
 okf-check --init-ignore <bundle>   # write a starter .okfignore (never automatic, never overwrites)
@@ -188,6 +188,11 @@ that is not a date (with the lines left out under it), undated log line, log fro
 `file:line` (the bundle is still written); exit 2 means nothing was written (`<out>` is not empty, is inside the
 vault or cannot be written, or two notes would be written to one name). A target is matched as Obsidian matches it: an exact match first, then ignoring case (two files that differ only in case are reported as ambiguous). Setext headings (a line underlined with `===` or `---`) are headings a `[[note#heading]]` link can name, except that a setext heading inside a block quote is not recognised: a link to one fails with `missing heading`, so give the quote an ATX heading (`# Title`) to link to. The vault is only read.
 
+Anchors follow the `github-slugger` package, with these limits. A heading typed in decomposed Unicode (`cafe` plus U+0301) gets the
+composed spelling (`café`) in the anchor, while `github-slugger` 2.0.0 keeps the decomposed one (measured with the package; whether
+github.com agrees is UNVERIFIED). A code span that runs over a line break is read as text, so a `[[link]]` on its second line is
+rewritten. Inline HTML and autolinks were not fuzzed against a CommonMark reader.
+
 `okf-export` leaves out dot files and folders (`.obsidian`, `.git`) and names each file it skips (exit 1). A symlink that
 leaves the vault or leads into a dot name is skipped, an absolute one without its host path (`an absolute link`). A symlink to
 a folder is not followed, so its notes are not exported, and a broken link or a loop leads nowhere: all three are named,
@@ -243,6 +248,9 @@ okf_check:
   deprecated_requires: superseded_by
 ```
 
+A relative `path` under `verify.repos` is read from the bundle folder: `.` suits a bundle at the repository root, a bundle in
+`.okf/` needs `..`.
+
 `deprecated_requires: superseded_by`: every `status: deprecated` note names its replacement in `superseded_by` (a
 path, a `[[wikilink]]`, a markdown link, or a list of them, resolved from the bundle root or the note's folder). The
 `Successor` line reports a missing `superseded_by`, a successor that is not found, a note that names itself, and a
@@ -274,8 +282,8 @@ A symlinked folder is not entered. When the target exists in a folder above `<fo
 (`hint: 1 L001 link(s) resolve from ../../.., a folder above wikilink_root ../..`; in `--json`, `l2_hint`).
 A wikilink names a note by Obsidian's rule, on every disk, here and in the Successor rule: the name spelled exactly
 so, else the one name equal to it ignoring letter case (Python `lower()`, as `okf-export` does) and the Unicode
-normalisation form (`[[New]]` names `new.md` on Linux as on macOS; macOS may store `café` decomposed; `okf-export`
-does not ignore the normalisation form yet). The rule decides, not the disk: `[[STRASSE]]` does not name `straße.md`,
+normalisation form (`[[New]]` names `new.md` on Linux as on macOS; macOS may store `café` decomposed; `okf-export` reads names the same way).
+A link into a folder whose name starts with a dot (`[[.hid/h]]`) resolves, although Obsidian does not index dot folders. The rule decides, not the disk: `[[STRASSE]]` does not name `straße.md`,
 although macOS treats the two as one name. Two names that differ only in case (`Notes.md` and `notes.md`, on a
 case-sensitive disk) make a link that matches neither exactly ambiguous: it is not resolved. A key written twice
 inside `okf_check:`, or `okf_check:` written twice, is refused too (YAML would keep the last value in silence). The key is refused (exit 2, naming the key) when it is not a string, is an absolute
@@ -427,7 +435,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.44
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.45
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -443,7 +451,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.44
+    rev: v0.9.45
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -500,8 +508,8 @@ The full behaviour contract, one row per scenario with its test, is
 
 | Platform | Status |
 |---|---|
-| macOS | The test suites pass here, on bash 3.2 and the BSD tools (0.9.37: `tools/macos-gate.sh`, 36 suites and `--selftest`). The gate was built and measured on this platform. The log of the gate names the Python it ran under (`python 3.9.6`); Python 3.14 changed what `pathlib` does with a permission error, so `okf-verify.test.sh` and `okf-export.test.sh` pass under 3.9.6 and 3.15.0 since 0.9.43. |
-| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.37 suites passed on Debian 12 (aarch64, bash 5.2.15, Python 3.12.13, gawk 5.2.1, non-root user) with `okflint` 0.5.0 and pre-commit 4.7.0 installed in a Python 3.12 environment: `tools/linux-gate.sh`, 36 suites and `--selftest`, 0 failed. Debian 12 ships Python 3.11, which cannot install `okflint`; the gate image installs Python 3.12. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). In the public repository, every pull request and every push to `main` also runs the suites and `--selftest` on GitHub's Ubuntu 24.04 runner, once with gawk and once with mawk, and runs the GitHub Action on a valid and an invalid bundle (`.github/workflows/ci.yml`). |
+| macOS | The test suites pass here, on bash 3.2 and the BSD tools (0.9.42: `tools/macos-gate.sh`, 35 suites and `--selftest`, 0 failed). The gate was built and measured on this platform. The log of the gate names the Python it ran under (`python 3.9.6`); Python 3.14 changed what `pathlib` does with a permission error, so `okf-verify.test.sh` and `okf-export.test.sh` pass under 3.9.6 and 3.15.0 since 0.9.43. |
+| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.44 suites passed on Debian 12 (aarch64, bash 5.2.15, Python 3.12.13, gawk 5.2.1, non-root user) with `okflint` 0.5.0 and pre-commit 4.7.0 installed in a Python 3.12 environment: `tools/linux-gate.sh`, 35 suites and `--selftest`, 0 failed. Debian 12 ships Python 3.11, which cannot install `okflint`; the gate image installs Python 3.12. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). In the public repository, every pull request and every push to `main` also runs the suites and `--selftest` on GitHub's Ubuntu 24.04 runner, once with gawk and once with mawk, and runs the GitHub Action on a valid and an invalid bundle (`.github/workflows/ci.yml`). |
 | Windows | There is no native Windows support: the gate is a set of bash scripts. WSL (Windows Subsystem for Linux) is the only path, and nothing has been run under it: UNVERIFIED, as are the Action and the pre-commit hook on Windows. |
 | Claude Code | The plugin form (hooks and the skill) needs Claude Code. The command line, the GitHub Action and the pre-commit hook do not. |
 
@@ -563,6 +571,10 @@ These steps run in the maintainer's private repository. The public repository sh
 `tools/export-public.allow` and the rest) and `docs/agents/safe-probe-brief.md` are not in it. From a public clone, run the
 suites with `.github/ci/run-suites.sh` (see [Develop and test](#develop-and-test)).
 
+The pre-push gate (`tools/pre-push-gate.sh`) belongs to this repository: it runs the scripts of the tree it checks, so a commit
+that deletes `tools/export-public.sh` or `tools/check-tests.sh` is not checked by them, and a copy of the hook installed in
+another repository does nothing.
+
 1. Raise the version in `plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` and `VERSION` in
    `plugin/scripts/okf-check`. A test fails if they disagree. Then move the example pins (`okf-knowledge-gate@vx.y.z`
    and `rev: vx.y.z`) in this README, `plugin/skills/okf/SKILL.md` and `.pre-commit-hooks.yaml` to the new version
@@ -570,12 +582,14 @@ suites with `.github/ci/run-suites.sh` (see [Develop and test](#develop-and-test
 2. Add a `## [x.y.z] - YYYY-MM-DD` section to [`CHANGELOG.md`](CHANGELOG.md).
 3. Run the suites and `--selftest`, on macOS and on Linux: `tools/linux-gate.sh` streams the committed tree
    into a Debian container (settings in `tools/linux-gate.conf`; Docker context from `OKF_DOCKER_CONTEXT`; the suites run
-   four at a time, the provisioned image is reused across runs with `OKF_LINUX_CACHE=1`, and `OKF_LINUX_CA_FILE` names a CA
-   bundle to trust behind a proxy that re-signs TLS: it is bind-mounted, so with a remote Docker context the same path must
-   hold it on the Docker host), and
+   four at a time, in the locale `OKF_LINUX_LANG` of that conf (`C.UTF-8`, the locale of GitHub's runners, so a failure that
+   shows only under a UTF-8 locale shows here first), the provisioned image is reused across runs with `OKF_LINUX_CACHE=1`, and
+   `OKF_LINUX_CA_FILE` names a CA bundle to trust behind a proxy that re-signs TLS: it is bind-mounted, so with a remote Docker
+   context the same path must hold it on the Docker host), and
    `tools/macos-gate.sh <log>` runs the same suite list on this Mac's working tree under the `python3` on `PATH` (the first line
-   of the log ends with `python <version>`: run it under the oldest Python the plugin supports, 3.9, and under the newest on the
-   Mac, because the verdict of a check on an unreadable folder differed between 3.9 and 3.14 and later), holding the heavy-suite lock (a lock
+   of the log ends with `python <version>`: run it under the oldest Python the plugin supports, 3.9 (Apple's, first on `PATH`),
+   and under the newest on the Mac, because the verdict of a check on an unreadable folder differed between 3.9 and 3.14 and
+   later; `okflint` must be on `PATH` too, `uv tool install okflint`, or the suites that need it fail), holding the heavy-suite lock (a lock
    left by a killed gate is taken over) and writing a machine sample every 5 s to `<log>.samples`. Both gates run each
    suite with stdin from `/dev/null` under a time limit (`OKF_GATE_SUITE_TIMEOUT`) and pass it only when it exits 0 and
    its last line is a summary of at least 1 passed and 0 failed, so a suite that stops early fails. `tools/check-tests.sh` (run by
@@ -608,6 +622,10 @@ suites with `.github/ci/run-suites.sh` (see [Develop and test](#develop-and-test
    awk '/^## \[x.y.z\]/{f=1;next} /^## \[/{f=0} f' CHANGELOG.md \
      | gh release create vx.y.z -R ahmedibrahim085/okf-knowledge-gate --title "okf x.y.z" --notes-file -
    ```
+   `tools/publish-public.sh "$EXPORT" vx.y.z [--dry-run]` does the commit, the tag, the push and this release in one run, in the
+   order that keeps the release tag on the new head: the commit and tag are pushed and the remote tag is verified before the
+   release is created. It publishes only a tree that `tools/export-public.sh` scanned and has not changed since; `gitleaks`
+   stays a separate step before it.
 7. Bring the installed plugin to the new version. `okf@ahmedmaged-okf` comes from a directory marketplace, so no
    uninstall or reinstall is needed: fast-forward the working copy that the marketplace points at
    (`git merge --ff-only origin/main`, it stays on `main`), then run `claude plugin update okf@ahmedmaged-okf`. It copies

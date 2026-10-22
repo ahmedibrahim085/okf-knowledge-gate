@@ -1274,6 +1274,87 @@ mkdir -p "$TMP/gitflaky"; printf '#!/bin/sh\nif [ ! -e "%s/flaky.once" ]; then :
 rm -f "$TMP/flaky.once"; cite "$TMP/c-p2" "src/a.py:1 @$C2 and src/a.py:2 @$C2"
 PATH="$TMP/gitflaky:$PATH" "$VERIFY" "$TMP/c-p2" --repo "$CREPO" >"$TMP/out.txt" 2>&1
 { grep -q 'CONFIRMED 1 ' "$TMP/out.txt" && grep -qE '^  unresolved ' "$TMP/out.txt" && ! grep -qE '^  REFUTED ' "$TMP/out.txt"; } && ok "RV-31 (S29-SP-N1) a git killed on its first call is not remembered: one citation UNRESOLVED, the next CONFIRMED, none REFUTED" || bad_hard "RV-31 S29-SP-N1 flaky git" "$(grep -E 'CONFIRMED|^  (ok|unresolved|REFUTED)' "$TMP/out.txt" | cut -c1-140 | tr '\n' '|')"
+# --- S43: a cited blob is read in pieces; memory does not grow with it. A git stand-in writes a 24 MB, 300000-line blob to the pipe
+# (no file of that size exists here), and the peak Python memory of the run (tracemalloc) must stay far below the blob. Real 1, 100
+# and 300 MB blobs are measured in a memory-capped container (docs/0.9.x-cases.md S43), never on this machine.
+BREPO="$TMP/brepo"; mkdir -p "$BREPO"; git -C "$BREPO" init -q 2>/dev/null
+git -C "$BREPO" config user.email t@t; git -C "$BREPO" config user.name t
+printf 'tiny\n' > "$BREPO/big.txt"; git -C "$BREPO" add big.txt
+git -C "$BREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: big.txt"
+BS=$(git -C "$BREPO" rev-parse --short HEAD)
+mkdir -p "$TMP/gitbig"
+cat > "$TMP/gitbig/git" <<'SHEOF'
+#!/bin/sh
+case "$*" in *"cat-file blob"*) exec @PY@ -c 'import sys
+w = sys.stdout.buffer.write
+for k in range(300):
+    w("".join("row %06d the quick brown fox jumps over the lazy dog and keeps running far away\n" % i for i in range(k * 1000 + 1, k * 1000 + 1001)).encode())' ;; esac
+exec @GIT@ "$@"
+SHEOF
+sed -i.bak -e "s|@PY@|$REALPY|" -e "s|@GIT@|$(command -v git)|" "$TMP/gitbig/git"; rm -f "$TMP/gitbig/git.bak"; chmod +x "$TMP/gitbig/git"
+cat > "$TMP/peak.py" <<'PYEOF'
+import os, runpy, sys, tracemalloc
+tracemalloc.start()
+sys.argv = sys.argv[1:]
+try:
+    runpy.run_path(sys.argv[0], run_name="__main__")
+except SystemExit:
+    pass
+open(os.environ["PEAKFILE"], "w").write(str(tracemalloc.get_traced_memory()[1]))
+PYEOF
+bigrun() { PEAKFILE="$TMP/peak.txt" PATH="$TMP/gitbig:$PATH" "$REALPY" "$TMP/peak.py" "$VERIFY" "$@" >"$TMP/out.txt" 2>&1; }
+cite "$TMP/bg0" "big.txt:1 @$BS"   # the same run on the 5-byte blob: what the interpreter and the module cost by themselves
+PEAKFILE="$TMP/peak0.txt" "$REALPY" "$TMP/peak.py" "$VERIFY" "$TMP/bg0" --repo "$BREPO" >"$TMP/out.txt" 2>&1; base=$(cat "$TMP/peak0.txt" 2>/dev/null || echo 0)
+cite "$TMP/bg1" "big.txt:5 @$BS and big.txt:300000 @$BS and big.txt:300001 @$BS and big.txt:5 @$BS \"row 000005 the quick\" and big.txt:6 @$BS \"row 000005 the quick\" and big.txt:299999-300000 @$BS \"row 300000 the\""
+bigrun "$TMP/bg1" --repo "$BREPO"; peak=$(cat "$TMP/peak.txt" 2>/dev/null || echo 999999999)
+[ "$base" -gt 0 ] && [ "$peak" -lt $((base + 2000000)) ] && ok "S43-H1 a 24 MB cited blob is read in pieces: peak Python memory $peak bytes, $((peak - base)) over a 5-byte blob (limit 2 MB)" || bad_hard "S43-H1 peak memory" "peak $peak bytes for a 24 MB blob, $base for a 5-byte one"
+{ grep -q 'CONFIRMED 4 ' "$TMP/out.txt" && grep -q 'REFUTED 2 ' "$TMP/out.txt"; } && ok "S43-H2 verdicts on the streamed blob: lines in range CONFIRMED, line 300001 REFUTED, a quoted text on its line CONFIRMED and on another line REFUTED" || bad_hard "S43-H2 verdicts" "$(grep -E '^  (ok  |REFUTED|unresolved)' "$TMP/out.txt" | cut -c1-120 | tr '\n' '|')"
+cite "$TMP/bg2" "big.txt:5-100 @$BS \"row 000099 the\""
+OKF_VERIFY_SPAN_LIMIT=1000 bigrun "$TMP/bg2" --repo "$BREPO"
+{ grep -qE '^  unresolved ' "$TMP/out.txt" && ! grep -qE '^  REFUTED ' "$TMP/out.txt" && grep -q 'more than 1000 bytes' "$TMP/out.txt"; } && ok "S43-N1 cited lines above the byte limit are UNRESOLVED with the reason, never REFUTED" || bad_hard "S43-N1 span limit" "$(grep -E '^  (ok  |REFUTED|unresolved)' "$TMP/out.txt" | cut -c1-160 | tr '\n' '|')"
+
+# S43-H3: --since reads the cited file at the ref in pieces too. The note and a 9-line decision.md are committed; decision.md at the ref
+# is replaced, by a git stand-in, with the 24 MB blob; in the working tree one line was added above the cited text (row 5 is now on
+# line 6). The run must say MOVED to line 6, and stay within 2 MB of the same run on a small file at the ref.
+SN="$TMP/sn1"; mkb "$SN"; git -C "$SN" init -q 2>/dev/null; git -C "$SN" config user.email t@t; git -C "$SN" config user.name t
+{ for i in 1 2 3 4 5 6 7 8 9; do printf 'row %06d the quick brown fox jumps over the lazy dog and keeps running far away\n' "$i"; done; } > "$SN/decision.md"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee decision.md:5.\n' > "$SN/n.md"
+git -C "$SN" add -A; git -C "$SN" -c commit.gpgsign=false -c credential.helper= commit -qm base
+{ echo "a new first line"; cat "$SN/decision.md"; } > "$SN/d.tmp"; mv "$SN/d.tmp" "$SN/decision.md"
+PEAKFILE="$TMP/peak0.txt" "$REALPY" "$TMP/peak.py" "$VERIFY" "$SN" --since HEAD >"$TMP/out0.txt" 2>&1; base=$(cat "$TMP/peak0.txt" 2>/dev/null || echo 0)
+mkdir -p "$TMP/gitsince"; sed 's|\*"cat-file blob"\*)|*"HEAD:decision.md"*)|' "$TMP/gitbig/git" > "$TMP/gitsince/git"; chmod +x "$TMP/gitsince/git"
+PEAKFILE="$TMP/peak.txt" PATH="$TMP/gitsince:$PATH" "$REALPY" "$TMP/peak.py" "$VERIFY" "$SN" --since HEAD >"$TMP/out.txt" 2>&1; peak=$(cat "$TMP/peak.txt" 2>/dev/null || echo 999999999)
+{ grep -q 'MOVED' "$TMP/out0.txt" && grep -q 'now on line 6' "$TMP/out0.txt"; } || bad_hard "S43-H3 baseline" "$(grep -aE 'MOVED|ok  |REFUTED' "$TMP/out0.txt" | cut -c1-160 | tr '\n' '|')"
+{ [ "$base" -gt 0 ] && [ "$peak" -lt $((base + 2000000)) ] && grep -q 'now on line 6' "$TMP/out.txt"; } && ok "S43-H3 --since with a 24 MB file at the ref: MOVED to line 6, peak Python memory $((peak - base)) bytes over the small-file run (limit 2 MB)" || bad_hard "S43-H3 --since peak memory" "peak $peak bytes, $base for the small file: $(grep -aE 'MOVED|ok  |REFUTED|unresolved' "$TMP/out.txt" | cut -c1-160 | tr '\n' '|')"
+
+# S43-N2: a binary file or a symlink at the --since ref is not compared, and the report says so (it used to be compared as text).
+SB="$TMP/sn2"; mkb "$SB"; git -C "$SB" init -q 2>/dev/null; git -C "$SB" config user.email t@t; git -C "$SB" config user.name t
+printf 'one\ntwo\0three\nfour\n' > "$SB/bin.md"; printf 'one\ntwo\nthree\n' > "$SB/real.md"; ln -s real.md "$SB/lnk.md"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nSee bin.md:2 and lnk.md:2.\n' > "$SB/n.md"
+git -C "$SB" add -A; git -C "$SB" -c commit.gpgsign=false -c credential.helper= commit -qm base
+rm "$SB/lnk.md"; printf 'new\none\ntwo\nthree\n' > "$SB/lnk.md"; printf 'new\none\ntwo\nthree\n' > "$SB/bin.md"
+rc=$(run "$SB" --since HEAD)
+[ "$(grep -c 'not compared: binary or symlink at HEAD' "$TMP/out.txt")" = 2 ] && ok "S43-N2 a binary file and a symlink at the --since ref each say 'not compared', never silently" || bad_hard "S43-N2 binary or symlink at the ref" "rc=$rc $(grep -aE '^  (ok|MOVED|REFUTED|unresolved)|!' "$TMP/out.txt" | cut -c1-140 | tr '\n' '|')"
+# S43-N3: a note at the --since ref over the byte limit is named, not read as "never cited".
+rc=$(OKF_VERIFY_SPAN_LIMIT=150 "$VERIFY" "$SN" --since HEAD >"$TMP/out.txt" 2>&1; printf '%s' "$?")
+{ grep -q 'note at HEAD too large to compare' "$TMP/out.txt" && ! grep -q 'MOVED' "$TMP/out.txt"; } && ok "S43-N3 a note over the limit at the --since ref is named 'too large to compare'" || bad_hard "S43-N3 note too large at the ref" "rc=$rc $(grep -aE '^  (ok|MOVED|REFUTED|unresolved)|!' "$TMP/out.txt" | cut -c1-140 | tr '\n' '|')"
+# S43-N4: an exception inside the reader leaves no git behind (the stand-in writes its pid, sends 70000 bytes, then sleeps).
+mkdir -p "$TMP/gitkill"; printf '#!/bin/sh\ncase "$*" in *"cat-file blob"*) echo $$ > "%s/kill.pid"; head -c 70000 /dev/zero | tr "\\000" x; exec sleep 30;; esac\nexec "%s" "$@"\n' "$TMP" "$(command -v git)" > "$TMP/gitkill/git"; chmod +x "$TMP/gitkill/git"
+PATH="$TMP/gitkill:$PATH" "$REALPY" -c '
+import importlib.machinery, importlib.util, sys
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("okf_verify_t", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_verify_t", loader)); loader.exec_module(mod)
+def feed(chunk):
+    raise RuntimeError("boom")
+try:
+    mod._stream_blob(Path(sys.argv[2]), "HEAD", "decision.md", feed)
+except RuntimeError:
+    sys.exit(0)
+sys.exit(3)' "$VERIFY" "$SN" >"$TMP/out.txt" 2>&1; rc=$?
+pid=$(cat "$TMP/kill.pid" 2>/dev/null || echo 0)
+{ [ "$rc" = 0 ] && [ "$pid" -gt 0 ] && ! kill -0 "$pid" 2>/dev/null; } && ok "S43-N4 an exception raised while the blob is read leaves no git process running" || { [ "$pid" -gt 0 ] && kill "$pid" 2>/dev/null; bad_hard "S43-N4 git left running" "rc=$rc pid=$pid $(cat "$TMP/out.txt" | tail -3 | tr '\n' '|')"; }
+
 # --- RV-32 (S3-CE-1): a bundle typed in another case than its folder, citing a path in the SAME typed case. case_exact judged every
 # component of the cited path from `/`, so the typed `repo` (the folder is `Repo`) made every cited path UNRESOLVED, and --strict failed.
 # Only the part below the bundle is the citation. A wrong case BELOW the bundle is still a case-variant (guard). Skipped where the
