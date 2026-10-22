@@ -9,6 +9,21 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.42] - 2026-10-22
+
+OKF Knowledge Gate 0.9.42 closes the review findings of `okf-export` and its public-export scan: every file the export leaves out is named, hidden content cannot ship through a hard link, and the heading reader no longer emits an anchor CommonMark lacks.
+
+### Fixed
+- **`okf-export` names every file it leaves out.** A symlinked folder, a broken link, a link loop, a folder that cannot be listed or entered and a file that cannot be examined are problem lines with exit 1, no longer a silent skip. An absolute symlink is reported as "an absolute link": the path of the machine that ran the export never appears in the report.
+- **A hard link to a hidden file no longer ships its content.** A visible file that has the same identity as a file under a dot folder or a dot name (`.git`, `.obsidian`, `.env`) is refused and named, and a file with a second name is refused while a folder cannot be listed to rule such a link out. A hard link to a file outside the vault is a documented limit.
+- **Notes whose names differ only in Unicode normalisation no longer overwrite each other.** `café` in NFC and in NFD are one file on macOS (APFS); the pair is decided from the names before anything is written, on every disk, and the export stops with exit 2 naming both notes.
+- **The heading reader emits no anchor CommonMark lacks.** A lone `#`, indented code after a list item in a block quote and a tab in a block-quote prefix no longer produce a heading; a heading the reader cannot decide stays a loud "missing heading". The slug follows github-slugger for marks, circled letters and tabs.
+- **A code span inside a wikilink alias converts** (`[[b|`code`]]` becomes a link with the code text), a `\|` after the alias separator stays as written, and one line of a million `>` ends in under a second instead of 6 s. The README and the plugin text state the limits that remain (no setext heading inside a quote, no heading after a tab in a quote prefix).
+- **The public-export scan is linear in the URLs of a line.** A 160 KB line of repeated ticket numbers behind a URL took 16 s; it takes 0.1 s.
+
+### Changed
+- A vault that holds the same note name in NFC and in NFD is now refused on Linux too (it exported before, and then lost a note when the folder was copied to a Mac).
+
 ## [0.9.41] - 2026-10-22
 
 OKF Knowledge Gate 0.9.41 closes the review findings of the checks and the vendored validator: citations of files with spaces, a time limit for the Python layers, notes with odd names, hidden characters in `human:`, and a symlink target spelled in another case.
@@ -818,7 +833,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.41...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.42...HEAD
+[0.9.42]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.41...v0.9.42
 [0.9.41]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.40...v0.9.41
 [0.9.40]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.39...v0.9.40
 [0.9.39]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.38...v0.9.39

@@ -15,7 +15,7 @@ CHECK="$HERE/okf-check"
 REALPY=$(command -v python3)
 PASS=0; FAIL=0
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t okfexport)
-trap 'rm -rf "$TMP"' EXIT
+trap 'chmod -R u+rwx "$TMP" 2>/dev/null; rm -rf "$TMP"' EXIT   # a case below leaves a folder nobody may list
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -1193,24 +1193,6 @@ V="$TMP/po14/vault"; rc=$(run "$V" "$TMP/po15e/out")
 { grep -q '^leak.md' "$TMP/out.txt" && grep -qF '../outside/s.md' "$TMP/out.txt" && ! grep -qF "$TMP" "$TMP/out.txt"; } \
   && ok "S10-PO-15e the outside-the-vault line names leak.md and its link text, no host path" || bad "S10-PO-15e skip line" "$(grep leak "$TMP/out.txt" | cut -c1-200)"
 
-# 15f: two files whose names differ only in Unicode normalisation (on a disk that keeps both): an ambiguous link names
-# them in an escaped form and says so, instead of two names that look the same.
-V="$TMP/po15f/vault"; mkdir -p "$V"
-python3 - "$V" <<'PY'
-import sys, unicodedata
-for form in ('NFC', 'NFD'):
-    open('%s/%s.md' % (sys.argv[1], unicodedata.normalize(form, 'café')), 'w').write('# c\n')
-PY
-if [ "$(ls "$V" | wc -l | tr -d ' ')" = 2 ]; then
-  note "$V" u.md "$(printf '[[CAF\303\211]]')"   # a case-insensitive link: exact matches none, folded matches both
-  rc=$(run "$V" "$TMP/po15f/out")
-  { [ "$rc" = 1 ] && grep -q 'ambiguous target.*differ only in Unicode normalisation' "$TMP/out.txt" && grep -qF 'caf\xe9.md' "$TMP/out.txt"; } \
-    && ok "S10-PO-15f names that differ only in normalisation are printed escaped, and the message says so" \
-    || bad "S10-PO-15f ambiguous NFC names" "rc=$rc $(grep ambiguous "$TMP/out.txt" | cut -c1-200)"
-else
-  ok "S10-PO-15f SKIPPED: this disk stores NFC and NFD names as one file"
-fi
-
 # 15g: shapes that once gave an anchor CommonMark does not have: a short dash line or a quoted list item before lazy text
 # and a bare underline, an underline after indented code in a nested quote, and lazy lines across quote levels. Each link
 # fails loudly (missing heading), none gets an anchor.
@@ -1259,6 +1241,200 @@ note "$V" u.md "[[peek]]"; rc=$(run "$V" "$TMP/po16/out2")
 [ -z "$miss" ] && ok "S10-PO-16 a symlink into a dot folder (.hidden, .git, .obsidian, a chain) is skipped and named, a visible link still exports, a link to it fails loudly" \
   || bad "S10-PO-16 symlink into a dot folder" "$miss | $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-200)"
 
+# S10-PO-26a..k (0.9.42): the heading reader never gives an anchor CommonMark lacks (tools/okf-export-oracle.py holds the
+# generated proof). 26a..d: a lone `#` is an empty ATX heading (4.2): it joins no paragraph into a setext heading, hides no
+# heading and no indented code after it. `#foo` and 7 `#` are no heading.
+V="$TMP/po26a/vault"; note "$V" n.md "#
+some
+---"; note "$V" u.md "[[n#some]] [[n#-some]]"
+rc=$(run "$V" "$TMP/po26a/out")
+{ [ "$rc" = 1 ] && grep -qF '(n.md#some)' "$TMP/po26a/out/u.md" && grep -qF 'missing heading [[n#-some]]' "$TMP/out.txt" && ! grep -qF 'missing heading [[n#some]]' "$TMP/out.txt"; } \
+  && ok "S10-PO-26a a lone # above some / --- leaves the heading some (no phantom -some)" \
+  || bad "S10-PO-26a lone # then setext" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+V="$TMP/po26b/vault"; note "$V" n.md "x
+#
+==="; note "$V" u.md "[[n#x-]] [[n#x]]"
+rc=$(run "$V" "$TMP/po26b/out")
+{ [ "$rc" = 1 ] && grep -qF 'missing heading [[n#x-]]' "$TMP/out.txt" && grep -qF 'missing heading [[n#x]]' "$TMP/out.txt"; } \
+  && ok "S10-PO-26b x / lone # / === gives no x- anchor: a lone # is no paragraph text" \
+  || bad "S10-PO-26b phantom x-" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+V="$TMP/po26c/vault"; note "$V" b.md "# B"; note "$V" n.md "#
+    [[b]]
+
+- x
+  #
+      [[b]]"; note "$V" u.md "[[b]]"
+rc=$(run "$V" "$TMP/po26c/out")
+{ [ "$rc" = 0 ] && [ "$(grep -cF '[[b]]' "$TMP/po26c/out/n.md")" = 2 ] && grep -qF '[b](b.md)' "$TMP/po26c/out/u.md"; } \
+  && ok "S10-PO-26c a 4-space line after a lone # (at the margin and inside an item) is code: [[b]] stays as written" \
+  || bad "S10-PO-26c code after lone #" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300) | $(grep -c . "$TMP/po26c/out/n.md" 2>&1)"
+V="$TMP/po26d/vault"; note "$V" e.md "#foo bar
+
+####### seven"; note "$V" u.md "[[e#foo bar]] [[e#seven]]"
+rc=$(run "$V" "$TMP/po26d/out")
+{ [ "$rc" = 1 ] && [ "$(grep -c 'missing heading \[\[e#' "$TMP/out.txt")" = 2 ]; } \
+  && ok "S10-PO-26d #foo and 7 hashes are no heading (guard: passes on the base script too)" || bad "S10-PO-26d not headings" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+# 26e: a lazy line is paragraph text of the quote's item: its indent does not make it an item's ATX heading. A heading
+# written inside the item (`>   # H`) still is one.
+V="$TMP/po26e/vault"; note "$V" q.md "> - a
+    # H"; note "$V" r.md "> - a
+>   # H"; note "$V" u.md "[[q#H]] [[r#H]]"
+rc=$(run "$V" "$TMP/po26e/out")
+{ [ "$rc" = 1 ] && grep -qF 'missing heading [[q#H]]' "$TMP/out.txt" && grep -qF '(r.md#h)' "$TMP/po26e/out/u.md"; } \
+  && ok "S10-PO-26e an indented # H lazily after a quoted list item is no heading; one inside the item is" \
+  || bad "S10-PO-26e lazy # H" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+# 26f: indented code in a quote is no paragraph text, so a line after it is no lazy line and Para/--- is a heading; with a list
+# in the quote the reader cannot tell item text from code and the line stays a quoted paragraph (z/--- gets no anchor).
+V="$TMP/po26f/vault"; note "$V" g1.md "> text
+>
+>     code
+Para
+---"; note "$V" g2.md "> - a
+>
+>     code
+z
+---"; note "$V" u.md "[[g1#Para]] [[g2#z]]"
+rc=$(run "$V" "$TMP/po26f/out")
+{ [ "$rc" = 1 ] && grep -qF '(g1.md#para)' "$TMP/po26f/out/u.md" && grep -qF 'missing heading [[g2#z]]' "$TMP/out.txt"; } \
+  && ok "S10-PO-26f Para after indented code in a quote is a heading; z after code in a quoted list is not (no phantom)" \
+  || bad "S10-PO-26f code in quote" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+# 26g: the new paths stay linear: 160 KB of lone # lines, of quoted list items with indented lines, and of lazy indented
+# lines, each read in under 0.5 s (timed in memory through the module, as 13j).
+"$REALPY" - "$EXPORT" >"$TMP/out.txt" 2>&1 <<'PY'
+import importlib.machinery, importlib.util, sys, time
+loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
+loader.exec_module(mod)
+n = 160 * 1024
+shapes = {"lone #": ["#"] * (n // 2), "quoted items + code": ["> - a", ">     code"] * (n // 14),
+          "lazy indented": ["> - a"] + ["    # H"] * (n // 8)}
+slow = []
+for name, body in shapes.items():
+    t = time.perf_counter()
+    list(mod.body_lines(body + ["after"]))
+    took = time.perf_counter() - t
+    print("%-22s %.3f s" % (name, took))
+    if took > 0.5:
+        slow.append("%s %.2f s" % (name, took))
+sys.exit(1 if slow else 0)
+PY
+rc=$?
+[ "$rc" = 0 ] && ok "S10-PO-26g 160 KB of lone #, quoted items with code, and lazy indented lines each read in under 0.5 s (guard: passes on the base script too)" \
+  || bad "S10-PO-26g linear cost" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt")"
+# 26h: a list item in a quote that holds no paragraph (empty, or its content starts a block) leaves none open, so the next
+# line without a `>` is no lazy line: the quote ends there. An HTML block or indented code then starts at that line, and
+# the quoted `# Title` after it is no heading; the indented line is code, so its link stays as written.
+V="$TMP/po26h/vault"; note "$V" b.md "# B"; note "$V" t1.md "> -
+<br>
+> # Title"; note "$V" t2.md "> 1.
+<br>
+> ## Title"; note "$V" t3.md "> - # H
+<br>
+> # T"; note "$V" t4.md ">  -   # H
+    [[b]]"
+note "$V" u.md "[[t1#Title]] [[t2#Title]] [[t3#T]] [[t3#H]] [[t4#H]]"
+rc=$(run "$V" "$TMP/po26h/out")
+{ [ "$rc" = 1 ] && [ "$(grep -c 'missing heading \[\[t[123]#' "$TMP/out.txt")" = 3 ] && grep -qF '(t3.md#h)' "$TMP/po26h/out/u.md" \
+  && grep -qF '(t4.md#h)' "$TMP/po26h/out/u.md" && grep -qF '    [[b]]' "$TMP/po26h/out/t4.md"; } \
+  && ok "S10-PO-26h an empty quoted item, or one holding only a heading, ends at the next line without a >: no heading after an HTML block, code stays code" \
+  || bad "S10-PO-26h item without paragraph" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300) | $(cat "$TMP/po26h/out/t4.md" 2>&1 | tail -2 | tr '\n' ' ')"
+# 26i: a backtick fence's info string has no backtick, and a closing fence has no info string (CommonMark 4.5): ```py inside
+# a fence does not close it, so the # Z after it is code; ``` a`b opens none, so the # Y after it is a heading.
+V="$TMP/po26i/vault"; note "$V" f1.md '```py
+```py
+  # Z'; note "$V" f2.md '``` a`b
+# Y'; note "$V" f3.md '```
+# X
+```   
+# W'; note "$V" u.md "[[f1#Z]] [[f2#Y]] [[f3#X]] [[f3#W]]"
+rc=$(run "$V" "$TMP/po26i/out")
+{ [ "$rc" = 1 ] && grep -qF 'missing heading [[f1#Z]]' "$TMP/out.txt" && grep -qF 'missing heading [[f3#X]]' "$TMP/out.txt" \
+  && grep -qF '(f2.md#y)' "$TMP/po26i/out/u.md" && grep -qF '(f3.md#w)' "$TMP/po26i/out/u.md"; } \
+  && ok "S10-PO-26i an info string closes no fence and a backtick in one opens none" \
+  || bad "S10-PO-26i fence info string" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+# 26j: a raw HTML block is literal text in CommonMark (4.6) and Obsidian reads no Markdown in it (forum.obsidian.md/t/markdown-inside-raw-html-not-rendered-correctly/40569, staff: "We don't support markdown in html blocks"), so a wikilink in one is neither rewritten nor checked; after the block's end it is a link again.
+V="$TMP/po26j/vault"; note "$V" b.md "# B"; note "$V" h.md "<div>[[b]] [[nope]]</div>
+
+[[b]]
+
+<!--
+[[b]]
+-->
+[[b]]"
+rc=$(run "$V" "$TMP/po26j/out")
+{ [ "$rc" = 0 ] && [ "$(grep -cF '[[b]]' "$TMP/po26j/out/h.md")" = 2 ] && [ "$(grep -cF '[b](b.md)' "$TMP/po26j/out/h.md")" = 2 ] \
+  && grep -qF '<div>[[b]] [[nope]]</div>' "$TMP/po26j/out/h.md"; } \
+  && ok "S10-PO-26j a wikilink inside a raw HTML block stays as written and is not checked; one after the block is rewritten" \
+  || bad "S10-PO-26j link in HTML block" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300) | $(tail -7 "$TMP/po26j/out/h.md" 2>&1 | tr '\n' ' ')"
+# 26k: inside a block quote the reader does not follow an HTML block, so there a wikilink is rewritten (a known limit, pinned).
+V="$TMP/po26k/vault"; note "$V" b.md "# B"; note "$V" q.md "> <div>[[b]]</div>"
+rc=$(run "$V" "$TMP/po26k/out")
+{ [ "$rc" = 0 ] && grep -qF '<div>[b](b.md)</div>' "$TMP/po26k/out/q.md"; } \
+  && ok "S10-PO-26k a wikilink in an HTML block inside a block quote is rewritten (the quote reader does not follow HTML blocks; guard: passes on the previous head too)" \
+  || bad "S10-PO-26k HTML in a quote" "rc=$rc $(tail -2 "$TMP/po26k/out/q.md" 2>&1 | tr '\n' ' ')"
+
+# S10-PO-27 (review round 2): the anchor drops what github-slugger drops. A tab, a control, a zero-width or soft-hyphen
+# character, a BOM and a no-break space in heading text are removed (`a<TAB>b` is `ab`, not `a-b`); a combining mark and
+# a connector punctuation (U+203F) are kept. The expected hrefs are github-slugger 2.0.0's own output.
+V="$TMP/po27/vault"; note "$V" s.md "$(printf '# a\tb\n\n# x\007y\n\n# p\342\200\213q\n\n# s\302\255t\n\n# q\314\201d\n\n# c\342\200\277d\n\n# e\357\273\277g\n\n# k\302\240l')"
+note "$V" u.md "$(printf '[[s#ab]] [[s#xy]] [[s#pq]] [[s#st]] [[s#q\314\201d]] [[s#c\342\200\277d]] [[s#eg]] [[s#kl]]')"
+rc=$(run "$V" "$TMP/po27/out")
+miss=""
+for h in 'ab' 'xy' 'pq' 'st' "$(printf 'q\314\201d')" "$(printf 'c\342\200\277d')" 'eg' 'kl'; do
+  grep -qF "(s.md#$h)" "$TMP/po27/out/u.md" || miss="$miss $h"
+done
+{ [ "$rc" = 0 ] && [ -z "$miss" ]; } \
+  && ok "S10-PO-27 heading anchors drop a tab, controls, format characters and a no-break space and keep a mark and U+203F, as github-slugger" \
+  || bad "S10-PO-27 slug" "rc=$rc missing:$miss | $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-200)"
+
+# S10-PO-28 (review round 2): inside a block quote, a line whose container prefix (the '>', spaces, tabs and list markers
+# before its text) holds a tab is not read for headings, and neither is any later line of that quote: CommonMark counts the
+# tab's columns from the container, which this reader does not follow. A link to such a heading fails loudly. A heading
+# before the first such line still resolves.
+V="$TMP/po28/vault"; note "$V" t.md "$(printf '>\t>  > >1)   \tx\ny\n      >  >  >>  3) # T')"
+note "$V" q.md "$(printf '> # A\n>\t# B\n> # C')"; note "$V" r.md "$(printf '> - a\n>\t# D')"; note "$V" p.md "> # P"
+note "$V" u.md "[[t#T]] [[q#A]] [[q#B]] [[q#C]] [[r#D]] [[p#P]]"
+rc=$(run "$V" "$TMP/po28/out")
+{ [ "$rc" = 1 ] && [ "$(grep -c 'missing heading' "$TMP/out.txt")" = 4 ] && grep -qF 'missing heading [[t#T]]' "$TMP/out.txt" \
+  && grep -qF 'missing heading [[q#B]]' "$TMP/out.txt" && grep -qF 'missing heading [[q#C]]' "$TMP/out.txt" \
+  && grep -qF 'missing heading [[r#D]]' "$TMP/out.txt" && grep -qF '(q.md#a)' "$TMP/po28/out/u.md" && grep -qF '(p.md#p)' "$TMP/po28/out/u.md"; } \
+  && ok "S10-PO-28 a tab in a quote line's container prefix: no heading from that line or after it in the quote (loud), one before it and a tab-free quote still resolve" \
+  || bad "S10-PO-28 tab in quote prefix" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+
+# S10-PO-29 (review round 3): the mute of S10-PO-28 reaches past the quote only when the quote's end is undecidable: a quote
+# that sits in a list item, or one that did not end at a blank line or the end of the note. A top-level quote that a blank
+# line ended, with a tab in its prefix (a tab-indented nested list in an Obsidian callout), leaves the headings after it
+# alone. 29a: two `>TAB- item` lines, 29b: `> - a` / `> TAB- b`, 29c: a callout with a nested list; 29d (guard): a tab in the
+# quote of a list item still mutes what follows (`c` is no heading in CommonMark), so that link fails loudly.
+po29() {   # po29 <id> <body-of-b> <link>: b.md holds the body, a.md links to it; prints the exit code
+  V="$TMP/po29$1/vault"; note "$V" b.md "$2"; note "$V" a.md "$3"; rc=$(run "$V" "$TMP/po29$1/out")
+}
+po29 a "$(printf '# Before\n\n> Quote\n>\t- item\n>\t- item\n\n# After')" "[[b#Before]] [[b#After]]"
+{ [ "$rc" = 0 ] && grep -qF '(b.md#before)' "$TMP/po29a/out/a.md" && grep -qF '(b.md#after)' "$TMP/po29a/out/a.md"; } \
+  && ok "S10-PO-29a a heading after a blank line that ends a quote with tab-indented items resolves" \
+  || bad "S10-PO-29a heading after a tabbed quote" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+po29 b "$(printf '> - a\n> \t- b\n\n# After')" "[[b#After]]"
+{ [ "$rc" = 0 ] && grep -qF '(b.md#after)' "$TMP/po29b/out/a.md"; } \
+  && ok "S10-PO-29b a heading after a quoted list whose second item has a tab after the margin resolves" \
+  || bad "S10-PO-29b heading after a tabbed quote" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+po29 c "$(printf '> [!note]\n>\t- b\n\ntext\n\n## After')" "[[b#After]]"
+{ [ "$rc" = 0 ] && grep -qF '(b.md#after)' "$TMP/po29c/out/a.md"; } \
+  && ok "S10-PO-29c a heading further down after a callout with a tab-indented list resolves" \
+  || bad "S10-PO-29c heading after a callout" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+po29 d "$(printf -- '-\t >> \t# C\n y\n\n\t\t# C\n\n# After')" "[[b#C]]"
+{ [ "$rc" = 1 ] && grep -qF 'missing heading [[b#C]]' "$TMP/out.txt"; } \
+  && ok "S10-PO-29d a tab in the quote of a list item: no heading C is read (guard: passes on the previous head too)" \
+  || bad "S10-PO-29d tab in a quote in an item" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+
+# S10-PO-29e: a note whose first line is `---` indented is no frontmatter (spec 4 and okf-check want '---' at the start of
+# the file), so the fence after it runs to the end of the note and `# H` is code: there is no heading H to link to. The
+# reader used to skip up to the next `---` line as frontmatter and read `# H` as a heading (found by the reviewer fuzz).
+V="$TMP/po29e/vault"; mkdir -p "$V"; printf '   ---\n~~~\nx\n---\n# H\n' > "$V/b.md"; note "$V" a.md "[[b#H]]"
+rc=$(run "$V" "$TMP/po29e/out")
+{ [ "$rc" = 1 ] && grep -qF 'missing heading [[b#H]]' "$TMP/out.txt"; } \
+  && ok "S10-PO-29e an indented --- on the first line is no frontmatter: the fence after it hides the heading" \
+  || bad "S10-PO-29e indented frontmatter fence" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+
 # S10-PO-13i: the block reader matches a line without its line end, so every S10-PO-11/12/13/14 vault saved with CRLF line
 # ends exports to the same report and, CRs aside, the same files as its LF copy.
 crlf_bad=""; crlf_n=0
@@ -1305,6 +1481,397 @@ PY
 rc=$?
 [ "$rc" = 0 ] && ok "S10-PO-13j deep nesting and 160 KB marker, quote, hash, backtick, space and tab lines each read in under 3 s" \
   || bad "S10-PO-13j linear cost" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt")"
+
+# S10-PO-17: two output names that differ only in Unicode normalisation (café as NFC and as NFD) are one file on macOS (APFS),
+# so the second would overwrite the first. The pair is decided from the names alone, before any write and on every disk,
+# like the other name clashes; a vault whose names are all in one spelling is not affected. The vault of 17a..17c holds a.md
+# and b.md; nfcseam gives them the two spellings as output names (a disk that keeps both spellings, or a vault that holds
+# both, cannot be made on this Mac), with the case probe faked: "never" must not run, "true"/"false" is its answer.
+# nfcseam <never|true|false> <plain|case> <vault> <out>: main() on <vault> <out>; the exit code is printed, the report is in $TMP/out.txt.
+nfcseam() {
+  "$REALPY" - "$EXPORT" "$@" >"$TMP/out.txt" 2>&1 <<'PY'
+import importlib.machinery, importlib.util, sys, unicodedata
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
+loader.exec_module(mod)
+mode, kind = sys.argv[2], sys.argv[3]
+stem = ("café", "café") if kind == "plain" else ("CAFÉ", "café")   # "case": the pair also differs in case
+names = {"a.md": unicodedata.normalize("NFC", stem[0]) + ".md", "b.md": unicodedata.normalize("NFD", stem[1]) + ".md"}
+if kind == "fold":   # one file on APFS (canonical caseless match), but NFC then casefold keeps them apart: iota with dialytika and tonos, in two spellings
+    names = {"a.md": "\u0390.md", "b.md": "\u03aa\u0301.md"}
+real = mod.vault_out_rel
+mod.vault_out_rel = lambda rel, root_name: Path(names[rel.as_posix()]) if rel.as_posix() in names else real(rel, root_name)
+def probe(folder):
+    if mode == "never":
+        raise SystemExit("probe ran")
+    return mode == "true"
+mod.case_insensitive = probe
+sys.argv = ["okf-export", *sys.argv[4:]]
+sys.exit(mod.main())
+PY
+  printf '%s' "$?"
+}
+V="$TMP/po17/vault"; O="$TMP/po17/out"; note "$V" a.md "# A"; note "$V" b.md "# B"
+rc=$(nfcseam never plain "$V" "$O")
+{ [ "$rc" = 2 ] && grep -qxF 'okf-export: b.md and a.md would be written over each other: their output names differ only in Unicode normalisation, and a disk such as macOS APFS stores both as one file; rename one of them in the vault' "$TMP/out.txt" \
+  && [ ! -e "$O" ]; } \
+  && ok "S10-PO-17a two output names that differ only in NFC/NFD stop the export (exit 2) before any write, name both, and never probe the disk" \
+  || bad "S10-PO-17a NFC/NFD pair" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+rm -rf "$O"; rc=$(nfcseam true case "$V" "$O")
+{ [ "$rc" = 2 ] && grep -qxF 'okf-export: a.md and b.md would be written over each other: '"$O"' is on a disk that does not tell upper from lower case; rename one of them in the vault' "$TMP/out.txt" \
+  && [ ! -e "$O" ]; } \
+  && ok "S10-PO-17b CAFÉ (NFC) and café (NFD) clash on a case-folding output, which also stores NFC and NFD as one (exit 2, nothing written)" \
+  || bad "S10-PO-17b case and NFC" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+rm -rf "$O"; rc=$(nfcseam false case "$V" "$O")
+{ [ "$rc" = 0 ] && [ -f "$O/CAF$(printf '\303\211').md" ]; } \
+  && ok "S10-PO-17c the same CAFÉ and café on a case-sensitive output both export (exit 0): only a normalisation pair is refused on every disk" \
+  || bad "S10-PO-17c case-sensitive output" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+# 17e: APFS matches names by canonical caseless equality, which casefolds and then renormalises; casefolding alone leaves
+# U+0390 and U+03AA U+0301 apart (casefold gives U+03B9 U+0308 U+0301 against U+03CA U+0301). Both are one file there.
+rm -rf "$O"; rc=$(nfcseam true fold "$V" "$O")
+{ [ "$rc" = 2 ] && grep -q 'would be written over each other: .* is on a disk that does not tell upper from lower case' "$TMP/out.txt" && [ ! -e "$O" ]; } \
+  && ok "S10-PO-17e U+0390 and U+03AA U+0301 (one name to APFS) clash on a case-folding output (exit 2, nothing written)" \
+  || bad "S10-PO-17e canonical caseless pair" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+rm -rf "$O"; rc=$(nfcseam false fold "$V" "$O")
+[ "$rc" = 0 ] && ok "S10-PO-17e the same two names both export on a case-sensitive output (exit 0)" \
+  || bad "S10-PO-17e case-sensitive output" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
+# 17f: the name key agrees with canonical caseless matching, NFD(casefold(NFD(x))), over U+0020..U+2FFFF alone and followed by U+0301
+# or U+0308 U+0301: strings whose canonical caseless forms are equal get one key; a miss is two names APFS holds as one file
+# that okf-export would tell apart. The always-on key (case off) must keep the fi ligature and fi apart: only a compatibility form joins them.
+"$REALPY" - "$EXPORT" >"$TMP/out.txt" 2>&1 <<'PY'
+import importlib.machinery, importlib.util, sys, unicodedata as u
+from collections import defaultdict
+loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
+loader.exec_module(mod)
+N = u.normalize
+canon = lambda s: N("NFD", N("NFD", s).casefold())   # the definition of canonical caseless matching, written out here
+groups = defaultdict(set)
+for cp in range(0x20, 0x30000):
+    c = chr(cp)
+    if u.category(c) == "Cs":
+        continue
+    for x in (c, c + "\u0301", c + "\u0308\u0301"):
+        for t in {x, N("NFD", x), N("NFC", x), x.casefold(), N("NFD", x.casefold()), N("NFC", x.casefold())}:
+            groups[canon(t)].add(t)
+misses = [sorted(g)[0] for g in groups.values() if len({mod.name_key(t) for t in g}) > 1]
+print("groups %d misses: %d" % (len(groups), len(misses)), [[hex(ord(ch)) for ch in m] for m in misses[:3]])
+apart = mod.name_key("\ufb01", case=False) != mod.name_key("fi", case=False)
+print("fi ligature apart with case off:", apart)
+sys.exit(0 if not misses and apart else 1)
+PY
+rc=$?
+[ "$rc" = 0 ] && ok "S10-PO-17f the name key gives equal keys to every canonically caseless equal string over U+0020..U+2FFFF (misses: 0), and keeps the fi ligature apart from fi when case is off" \
+  || bad "S10-PO-17f key against canonical caseless matching" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt" | cut -c1-300)"
+# 17d: a vault that really holds both spellings (a disk that keeps them, e.g. the Debian gate) is refused the same way, and the
+# two names are printed escaped, because they look alike. APFS stores them as one file: visible SKIP.
+V="$TMP/po17d/vault"; O="$TMP/po17d/out"; mkdir -p "$V"
+"$REALPY" - "$V" <<'PY'
+import sys, unicodedata
+for form in ('NFC', 'NFD'):
+    open('%s/%s.md' % (sys.argv[1], unicodedata.normalize(form, 'café')), 'w').write('# c\n')
+PY
+if [ "$(ls "$V" | wc -l | tr -d ' ')" = 2 ]; then
+  rc=$(run "$V" "$O")
+  { [ "$rc" = 2 ] && grep -qF 'cafe\u0301.md and caf\xe9.md would be written over each other' "$TMP/out.txt" && [ ! -e "$O" ]; } \
+    && ok "S10-PO-17d a vault that holds café.md in NFC and in NFD is refused (exit 2) with both names escaped, nothing written" \
+    || bad "S10-PO-17d real NFC/NFD vault" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+else
+  printf '  SKIP  S10-PO-17d a vault with café.md in NFC and in NFD: this disk stores both as one file (run on the Debian gate)\n'
+fi
+
+# S10-PO-18: a symlink that rglob lists but is_file() refuses is named, not skipped in silence: a link to a FOLDER (rglob does
+# not enter it, so its notes would vanish from the bundle), a BROKEN link and a LOOP. Each is a problem line and exit 1; a
+# dot-named link stays out like every dot name; the rest of the vault exports as before; no host path is printed.
+V="$TMP/po18/vault"; mkdir -p "$V/real" "$V/.hidden"
+note "$V" ok.md "# Ok"; note "$V" real/in.md "# In"
+ln -s real "$V/linkdir"; ln -s nowhere.md "$V/broken.md"; ln -s loop2.md "$V/loop1.md"; ln -s loop1.md "$V/loop2.md"
+ln -s real "$V/.dotlink"; ln -s nowhere.md "$V/.dotbroken.md"; ln -s ../real "$V/.hidden/inner"
+rc=$(run "$V" "$TMP/po18/out")
+miss=""
+[ "$rc" = 1 ] || miss="$miss rc=$rc (a skipped link is a problem, exit 1)"
+for n in linkdir broken.md loop1.md loop2.md; do grep -q "^$n — a symlink .*: skipped\$" "$TMP/out.txt" || miss="$miss [$n not named]"; done
+grep -q '^linkdir — a symlink to a folder' "$TMP/out.txt" || miss="$miss [linkdir not named as a folder link]"
+grep -q '^broken.md — a symlink that leads nowhere' "$TMP/out.txt" || miss="$miss [broken.md not named as leading nowhere]"
+grep -q '^\.dot\|^\.hidden' "$TMP/out.txt" && miss="$miss [a dot name was named]"
+grep -qF "$TMP" "$TMP/out.txt" && miss="$miss [host path in the report]"
+[ -e "$TMP/po18/out/linkdir" ] && miss="$miss [a symlinked folder was entered]"
+[ -f "$TMP/po18/out/ok.md" ] && [ -f "$TMP/po18/out/real/in.md" ] || miss="$miss [ok.md or real/in.md not exported]"
+[ -z "$miss" ] && ok "S10-PO-18 a symlinked folder, a broken link and a loop are named with exit 1; dot-named links stay unnamed; the rest exports" \
+  || bad "S10-PO-18 silent skips" "$miss | $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+
+# S10-PO-19: the report names a symlink by its link text, never by a path of this machine. A relative link prints its text;
+# an absolute link (whose text IS a host path) prints "an absolute link", whether it leads out of the vault or into a dot folder.
+V="$TMP/po19/vault"; mkdir -p "$V/.hidden" "$TMP/po19/ext"
+printf 'EXTSECRET\n' > "$TMP/po19/ext/out.md"; printf 'HIDDENSECRET\n' > "$V/.hidden/h.md"; note "$V" ok.md "# Ok"
+ln -s "$TMP/po19/ext/out.md" "$V/abs.md"; ln -s "$V/.hidden/h.md" "$V/abshidden.md"; ln -s ../ext/out.md "$V/rel.md"
+rc=$(run "$V" "$TMP/po19/out")
+miss=""
+[ "$rc" = 1 ] || miss="$miss rc=$rc"
+grep -q '^abs.md — a symlink to an absolute link, which leads outside the vault: skipped$' "$TMP/out.txt" || miss="$miss [abs.md line]"
+grep -q '^abshidden.md — a symlink to an absolute link, which leads into a hidden file or folder: skipped$' "$TMP/out.txt" || miss="$miss [abshidden.md line]"
+grep -q '^rel.md — a symlink to ../ext/out.md, which leads outside the vault: skipped$' "$TMP/out.txt" || miss="$miss [rel.md keeps its link text]"
+grep -qF "$TMP" "$TMP/out.txt" && miss="$miss [host path in the report]"
+grep -rqE 'EXTSECRET|HIDDENSECRET' "$TMP/po19/out" && miss="$miss [content shipped]"
+[ -z "$miss" ] && ok "S10-PO-19 an absolute symlink is reported as 'an absolute link' (no host path); a relative one keeps its link text" \
+  || bad "S10-PO-19 host path in the report" "$miss | $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+
+# S10-PO-20: a HARD link to a file under a dot name has no target to follow: it IS the hidden file. A visible file with the same
+# (device, inode) as one under a dot folder or a dot-named file is refused and named. A second name of a visible file still
+# exports; a dot-folder symlink to a visible file does not make that file hidden. LIMIT (README): a hard link to a file
+# OUTSIDE the vault looks like a file that lives here, so it is exported.
+V="$TMP/po20/vault"; mkdir -p "$V/.hidden/deep/er" "$V/.git" "$V/.obsidian" "$TMP/po20/ext"
+printf 'HIDDENSECRET md\n' > "$V/.hidden/deep/er/h.md"; printf 'HIDDENSECRET config\n' > "$V/.git/config"; printf 'HIDDENSECRET json\n' > "$V/.obsidian/ws.md"
+printf 'HIDDENSECRET dotname\n' > "$V/.dotfile.md"; printf 'EXTFILE\n' > "$TMP/po20/ext/e.md"
+note "$V" pub/real.md "# Real
+visible text"
+ln "$V/.hidden/deep/er/h.md" "$V/peek.md"; ln "$V/.git/config" "$V/gitconfig.txt"; ln "$V/.obsidian/ws.md" "$V/ws.md"
+ln "$V/peek.md" "$V/chain.md"; ln "$V/.dotfile.md" "$V/pub/dotcopy.md"
+ln "$V/pub/real.md" "$V/second.md"; ln -s ../pub/real.md "$V/.hidden/lnk.md"; ln "$TMP/po20/ext/e.md" "$V/ext.md"
+rc=$(run "$V" "$TMP/po20/out")
+miss=""
+[ "$rc" = 1 ] || miss="$miss rc=$rc"
+grep -rqF HIDDENSECRET "$TMP/po20/out" && miss="$miss [hidden content shipped: $(grep -rlF HIDDENSECRET "$TMP/po20/out" | sed "s#$TMP/po20/out/##" | tr '\n' ' ')]"
+for n in peek.md gitconfig.txt ws.md chain.md pub/dotcopy.md; do
+  grep -qxF "$n — a hard link to a hidden file or folder of the vault: skipped" "$TMP/out.txt" || miss="$miss [$n not named]"; done
+grep -qF "$TMP" "$TMP/out.txt" && miss="$miss [host path in the report]"
+for n in pub/real.md second.md ext.md; do [ -f "$TMP/po20/out/$n" ] || miss="$miss [$n not exported]"; done
+grep -qE '^(pub/real|second|ext)\.md ' "$TMP/out.txt" && miss="$miss [a visible file was named]"
+[ -z "$miss" ] && ok "S10-PO-20 a hard link to a hidden file (dot folder, dot name, chain) is refused and named; a visible file's second name exports; the outside-the-vault limit holds" \
+  || bad "S10-PO-20 hard link to a hidden file" "$miss | $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+
+# S10-PO-20b: the file identity is (device, inode), not the inode alone: inode numbers repeat across devices, and a vault can hold
+# a mount. Timed through the module with os.lstat answering that the hidden file lives on another device: not refused; on the same
+# device it is. (A hard link cannot cross devices, so a real second device cannot be built without a mount.)
+V="$TMP/po20b/vault"; mkdir -p "$V/.hidden"; printf 'HIDDENSECRET\n' > "$V/.hidden/h.md"; ln "$V/.hidden/h.md" "$V/peek.md"
+"$REALPY" - "$EXPORT" "$V" >"$TMP/out.txt" 2>&1 <<'PY'
+import importlib.machinery, importlib.util, os, sys
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
+loader.exec_module(mod)
+vault, files = Path(sys.argv[2]), [Path("peek.md")]
+print("same device:", mod.hidden_hard_links(vault, files))
+real = os.lstat
+def other_device(path, *a, **k):
+    r = real(path, *a, **k)
+    return os.stat_result((r.st_mode, r.st_ino, r.st_dev + 1, r.st_nlink, r.st_uid, r.st_gid, r.st_size, r.st_atime, r.st_mtime, r.st_ctime)) if ".hidden" in str(path) else r
+os.lstat = other_device
+other = mod.hidden_hard_links(vault, files)
+print("other device:", other)
+sys.exit(0 if other == [] else 1)
+PY
+rc=$?
+{ [ "$rc" = 0 ] && grep -q '^same device: \[(PosixPath' "$TMP/out.txt"; } \
+  && ok "S10-PO-20b the same inode on another device is not a hard link to the hidden file (the key is device and inode)" \
+  || bad "S10-PO-20b device in the key" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt" | cut -c1-300)"
+
+# S10-PO-21: a folder that cannot be listed hides what is in it, and a listing that swallows the error says nothing. 21a: a visible
+# file with a second name while a dot folder cannot be listed (mode 0300) may be a hard link to a file in it: refused and named, the
+# folder named, not shipped. 21b: a visible folder that cannot be listed is named (its notes are not exported), exit 1. 21c: an
+# unlistable dot folder with no file that has a second name loses nothing: exit 0, no line. 21d: a visible file that is gone when
+# the hard-link check looks at it is named, not a traceback. The mode is restored by the EXIT trap at the top. Not as root.
+if [ "$(id -u)" = 0 ]; then
+  printf '  SKIP  S10-PO-21 a folder that cannot be listed: root lists it anyway\n'
+else
+  V="$TMP/po21/vault"; mkdir -p "$V/.priv" "$V/pub"
+  printf 'HIDDENSECRET\n' > "$V/.priv/h.md"; ln "$V/.priv/h.md" "$V/peek.md"; note "$V" ok.md "# Ok"; note "$V" pub/in.md "# In"
+  chmod 0300 "$V/.priv" "$V/pub"
+  rc=$(run "$V" "$TMP/po21/out"); chmod 0700 "$V/.priv" "$V/pub"
+  miss=""
+  [ "$rc" = 1 ] || miss="$miss rc=$rc"
+  grep -rqF HIDDENSECRET "$TMP/po21/out" && miss="$miss [hidden content shipped]"
+  grep -q '^peek.md — a file with more than one name, while the folder \.priv cannot be listed or entered to rule out a hard link to a hidden file: skipped$' "$TMP/out.txt" || miss="$miss [peek.md not named with the folder]"
+  grep -q '^pub — a folder that cannot be listed.*: skipped$' "$TMP/out.txt" || miss="$miss [pub not named]"
+  grep -q 'Traceback' "$TMP/out.txt" && miss="$miss [traceback]"
+  grep -qF "$TMP" "$TMP/out.txt" && miss="$miss [host path in the report]"
+  [ -f "$TMP/po21/out/ok.md" ] || miss="$miss [ok.md not exported]"
+  [ -z "$miss" ] && ok "S10-PO-21a/b an unlistable dot folder refuses a file with a second name, an unlistable visible folder is named; both exit 1" \
+    || bad "S10-PO-21a/b unlistable folders" "$miss | $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+  V="$TMP/po21c/vault"; mkdir -p "$V/.priv"; printf 'x\n' > "$V/.priv/h.md"; note "$V" ok.md "# Ok"; chmod 0300 "$V/.priv"
+  rc=$(run "$V" "$TMP/po21c/out"); chmod 0700 "$V/.priv"
+  { [ "$rc" = 0 ] && [ ! -s "$TMP/out.txt" ] && [ -f "$TMP/po21c/out/ok.md" ]; } \
+    && ok "S10-PO-21c an unlistable dot folder with no file that has a second name loses nothing: exit 0, no line" \
+    || bad "S10-PO-21c unlistable dot folder, no hard link" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-200)"
+fi
+V="$TMP/po21d/vault"; mkdir -p "$V"; note "$V" ok.md "# Ok"
+"$REALPY" - "$EXPORT" "$V" >"$TMP/out.txt" 2>&1 <<'PY'
+import importlib.machinery, importlib.util, sys
+from pathlib import Path
+loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
+loader.exec_module(mod)
+got = mod.hidden_hard_links(Path(sys.argv[2]), [Path("gone.md"), Path("ok.md")])
+print(got)
+sys.exit(0 if [rel for rel, _ in got] == [Path("gone.md")] else 1)
+PY
+rc=$?
+[ "$rc" = 0 ] && ok "S10-PO-21d a visible file that is gone when the hard-link check looks at it is named, not a traceback" \
+  || bad "S10-PO-21d vanished file" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt" | cut -c1-300)"
+
+# S10-PO-22: a folder that lists but cannot be entered (mode 0400) made the file listing stop with a PermissionError traceback that
+# printed host paths, and exit 1. 22a: a visible one is named once, with its sub-folders not named again; nothing is exported from
+# it; no traceback, no host path, exit 1. 22b: under a dot name it is left out like any dot folder: exit 0, no line, no traceback.
+# 22c: with a file that has a second name, it is refused and named with that folder (as for a folder that cannot be listed), and the
+# hidden content does not ship. Not as root; the mode is restored here and by the EXIT trap.
+if [ "$(id -u)" = 0 ]; then
+  printf '  SKIP  S10-PO-22 a folder that cannot be entered: root enters it anyway\n'
+else
+  V="$TMP/po22/vault"; mkdir -p "$V/pub/sub"; note "$V" ok.md "# Ok"; note "$V" pub/a.md "# A"; note "$V" pub/sub/b.md "# B"
+  chmod 0400 "$V/pub"; rc=$(run "$V" "$TMP/po22/out"); chmod 0700 "$V/pub"
+  miss=""
+  [ "$rc" = 1 ] || miss="$miss rc=$rc"
+  grep -q '^pub — a folder that cannot be entered: its files are not exported: skipped$' "$TMP/out.txt" || miss="$miss [pub not named]"
+  [ "$(grep -c '^pub' "$TMP/out.txt")" = 1 ] || miss="$miss [pub or a sub-folder named more than once]"
+  grep -q 'Traceback' "$TMP/out.txt" && miss="$miss [traceback]"
+  grep -qF "$TMP" "$TMP/out.txt" && miss="$miss [host path in the report]"
+  [ -f "$TMP/po22/out/ok.md" ] && [ ! -e "$TMP/po22/out/pub" ] || miss="$miss [ok.md missing or pub exported]"
+  [ -z "$miss" ] && ok "S10-PO-22a a visible folder that cannot be entered is named once (exit 1), no traceback, no host path" \
+    || bad "S10-PO-22a unenterable folder" "$miss | $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+  V="$TMP/po22b/vault"; mkdir -p "$V/.priv"; printf 'HIDDENSECRET\n' > "$V/.priv/h.md"; note "$V" ok.md "# Ok"
+  chmod 0400 "$V/.priv"; rc=$(run "$V" "$TMP/po22b/out"); chmod 0700 "$V/.priv"
+  { [ "$rc" = 0 ] && [ ! -s "$TMP/out.txt" ] && [ -f "$TMP/po22b/out/ok.md" ]; } \
+    && ok "S10-PO-22b a dot folder that cannot be entered is left out like any dot folder: exit 0, no line, no traceback" \
+    || bad "S10-PO-22b unenterable dot folder" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+  V="$TMP/po22c/vault"; mkdir -p "$V/.priv"; printf 'HIDDENSECRET\n' > "$V/.priv/h.md"; ln "$V/.priv/h.md" "$V/peek.md"; note "$V" ok.md "# Ok"
+  chmod 0400 "$V/.priv"; rc=$(run "$V" "$TMP/po22c/out"); chmod 0700 "$V/.priv"
+  { [ "$rc" = 1 ] && grep -q '^peek.md — .*\.priv cannot be listed or entered .*: skipped$' "$TMP/out.txt" && ! grep -q Traceback "$TMP/out.txt" \
+      && ! grep -rqF HIDDENSECRET "$TMP/po22c/out" && [ -f "$TMP/po22c/out/ok.md" ]; } \
+    && ok "S10-PO-22c a file with a second name is refused and named while a dot folder cannot be entered; nothing hidden ships" \
+    || bad "S10-PO-22c unenterable dot folder, second name" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+fi
+
+# S10-PO-22d: a file whose stat fails in a folder access() calls enterable (NFS root_squash, FUSE, a privacy block) is not dropped
+# in silence: it is named "a file that could not be examined (<reason>)", not exported, exit 1. Driven through the module with
+# Path.is_file raising PermissionError for one name; a folder that cannot be entered is still named once, not per file.
+V="$TMP/po22d/vault"; mkdir -p "$V"; note "$V" ok.md "# Ok"; note "$V" flaky.md "# Flaky"
+"$REALPY" - "$EXPORT" "$V" "$TMP/po22d/out" >"$TMP/out.txt" 2>&1 <<'PY'
+import importlib.machinery, importlib.util, io, pathlib, sys
+from contextlib import redirect_stdout
+loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
+loader.exec_module(mod)
+real = pathlib.Path.is_file
+def flaky(self):
+    if self.name == "flaky.md":
+        raise PermissionError(13, "Permission denied", str(self))
+    return real(self)
+pathlib.Path.is_file = flaky
+out = pathlib.Path(sys.argv[3])
+sys.argv = ["okf-export", sys.argv[2], sys.argv[3]]
+buf = io.StringIO()
+with redirect_stdout(buf):
+    rc = mod.main()
+print(buf.getvalue(), end="")
+ok = rc == 1 and "flaky.md — a file that could not be examined (Permission denied): skipped" in buf.getvalue().splitlines() \
+    and not (out / "flaky.md").exists() and (out / "ok.md").exists()
+sys.exit(0 if ok else 1)
+PY
+rc=$?
+[ "$rc" = 0 ] && ok "S10-PO-22d a file whose stat fails in an enterable folder is named 'could not be examined' (exit 1) and not exported" \
+  || bad "S10-PO-22d stat fails" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt" | cut -c1-300)"
+# S10-PO-23: a code span in a wikilink alias. CommonMark binds a code span tighter than a link (markdown-it-py 3.0.0 and
+# commonmark.py 0.9.1 render `[`c`](b.md)` as a link whose text holds <code>, and `[[b|`c`]]` as plain text around <code>),
+# so a span wholly inside the alias is part of the new link text (20a). A link inside a span, or one a span cuts through
+# (starts or ends inside it), is no link for Obsidian either and stays as written (20b, 20c); none of them is a problem.
+V="$TMP/po23/vault"
+note "$V" b.md "# B"
+note "$V" a.md '[[b|`code`]] and [[b|x `c` y]] and [[b]] and [[b#B|`h`]]'
+rc=$(run "$V" "$TMP/po23/out")
+want='[`code`](b.md) and [x `c` y](b.md) and [b](b.md) and [`h`](b.md#b)'
+{ [ "$rc" = 0 ] && grep -qFx -- "$want" "$TMP/po23/out/a.md"; } \
+  && ok "S10-PO-23a a code span inside a wikilink alias is kept in the link text (rc 0, no raw [[ ]] left)" \
+  || bad "S10-PO-23a alias with a code span" "rc=$rc want line: $want | got: $(tail -1 "$TMP/po23/out/a.md" 2>/dev/null)"
+note "$V" a.md '`[[b]]` and `x [[b|c]] y`'
+rc=$(run "$V" "$TMP/po23/out2")
+{ [ "$rc" = 0 ] && grep -qFx -- '`[[b]]` and `x [[b|c]] y`' "$TMP/po23/out2/a.md"; } \
+  && ok "S10-PO-23b a wikilink inside a code span stays as written" \
+  || bad "S10-PO-23b link inside a span" "rc=$rc got: $(tail -1 "$TMP/po23/out2/a.md" 2>/dev/null)"
+note "$V" a.md '`x [[b|` y]] and [[b `c]] d` and [[b|a `c]] e `f`'
+rc=$(run "$V" "$TMP/po23/out3")
+{ [ "$rc" = 0 ] && grep -qFx -- '`x [[b|` y]] and [[b `c]] d` and [[b|a `c]] e `f`' "$TMP/po23/out3/a.md"; } \
+  && ok "S10-PO-23c a wikilink that a code span cuts through (its start or its end inside the span) stays as written" \
+  || bad "S10-PO-23c span across a link end" "rc=$rc got: $(tail -1 "$TMP/po23/out3/a.md" 2>/dev/null)"
+# 20d, 20e: a backslash escapes a backtick outside a code span (CommonMark 6.1), so in ``\`` `` only a one-backtick run is left
+# to open a span. 20d: in `\`` y [[b|`c`]]` the span is "` y [[b|`", the link starts inside it, so it is no link and stays as
+# written (both renderers find 0 links there). 20e: `\`[[b|`c`]]` has no span before the link, so it converts.
+note "$V" a.md 'p x \`` y [[b|`c`]]'
+rc=$(run "$V" "$TMP/po23/out4")
+{ [ "$rc" = 0 ] && grep -qFx -- 'p x \`` y [[b|`c`]]' "$TMP/po23/out4/a.md"; } \
+  && ok "S10-PO-23d an escaped backtick opens no span: the link inside the span the escape leaves stays as written" \
+  || bad "S10-PO-23d escaped backtick before a span" "rc=$rc got: $(tail -1 "$TMP/po23/out4/a.md" 2>/dev/null)"
+note "$V" a.md 'p \`[[b|`c`]]'
+rc=$(run "$V" "$TMP/po23/out5")
+{ [ "$rc" = 0 ] && grep -qFx -- 'p \`[`c`](b.md)' "$TMP/po23/out5/a.md"; } \
+  && ok "S10-PO-23e a link after an escaped backtick, with no span before it, is rewritten and keeps its span" \
+  || bad "S10-PO-23e escaped backtick then a link" "rc=$rc got: $(tail -1 "$TMP/po23/out5/a.md" 2>/dev/null)"
+# 23f..h: only the alias SEPARATOR is unescaped (a table cell writes it as \|); every later \| in the alias stays as written.
+# 23f: in a paragraph, `\|` inside an alias code span is literal text there, so the code text must not change. 23g, 23h: in a
+# table row the output cell must stay one cell (a bare | would split it), with the alias in a code span and outside one.
+note "$V" a.md 'p [[b#B|`\|`y`x]]'
+rc=$(run "$V" "$TMP/po23/out6")
+{ [ "$rc" = 0 ] && grep -qFx -- 'p [`\|`y`x](b.md#b)' "$TMP/po23/out6/a.md"; } \
+  && ok "S10-PO-23f a \\| inside an alias code span stays as written (the code text does not change)" \
+  || bad "S10-PO-23f bar in an alias span" "rc=$rc got: $(tail -1 "$TMP/po23/out6/a.md" 2>/dev/null)"
+note "$V" a.md '| h | k |
+|---|---|
+| [[b\|`a\|b`]] | k |
+| [[b\|a\|b]] | k |
+| [[b\|x]] | k |'
+rc=$(run "$V" "$TMP/po23/out7")
+{ [ "$rc" = 0 ] && grep -qFx -- '| [`a\|b`](b.md) | k |' "$TMP/po23/out7/a.md"; } \
+  && ok "S10-PO-23g a table cell [[b\\|\`a\\|b\`]] becomes one cell with the bar still escaped inside the span" \
+  || bad "S10-PO-23g table cell, bar in an alias span" "rc=$rc got: $(grep -F '(b.md)' "$TMP/po23/out7/a.md" 2>/dev/null | tr '\n' '~')"
+{ [ "$rc" = 0 ] && grep -qFx -- '| [a\|b](b.md) | k |' "$TMP/po23/out7/a.md" && grep -qFx -- '| [x](b.md) | k |' "$TMP/po23/out7/a.md"; } \
+  && ok "S10-PO-23h a table cell [[b\\|a\\|b]] keeps the later bar escaped, so the row keeps its cells; [[b\\|x]] is unchanged in effect" \
+  || bad "S10-PO-23h table cell, bar outside a span" "rc=$rc got: $(grep -F '(b.md)' "$TMP/po23/out7/a.md" 2>/dev/null | tr '\n' '~')"
+
+# S10-PO-24: one very long line of '>' markers is read in one pass, not once per nesting level. Timed in memory through the
+# module (no file is written). 21a: a 1 000 000 byte line of '>' raises TooDeep (as before) in under 1 s (it took 6.6 s on
+# a quiet machine, 33 s at the 5 MB note cap, because each of the 100 nested reads matched and sliced the whole line). 21b: the
+# cut-off did not move: 100 markers are read (no TooDeep), 101 are not, at the top level, behind a list marker and in a
+# quote that is already one level deep.
+"$REALPY" - "$EXPORT" >"$TMP/out.txt" 2>&1 <<'PY'
+import importlib.machinery, importlib.util, sys, time
+loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
+loader.exec_module(mod)
+def deep(lines):
+    try:
+        list(mod.body_lines(lines))
+        return False
+    except mod.TooDeep:
+        return True
+bad = []
+t = time.perf_counter()
+got = deep([">" * 1_000_000, "after"])
+took = time.perf_counter() - t
+print("1 MB '>' line: TooDeep=%s %.3f s" % (got, took))
+if not got or took > 1:
+    bad.append("1 MB line: TooDeep=%s %.1f s (want True, under 1 s)" % (got, took))
+for name, prefix, markers, want in [("top 100", "", 100, False), ("top 101", "", 101, True),
+                                    ("item 100", "- ", 100, False), ("item 101", "- ", 101, True),
+                                    ("quote+99", "> ", 99, False), ("quote+100", "> ", 100, True)]:
+    got = deep([prefix + ">" * markers + " x", "after"])
+    print("%-10s TooDeep=%s" % (name, got))
+    if got != want:
+        bad.append("%s: TooDeep=%s want %s" % (name, got, want))
+sys.exit(1 if bad else 0)
+PY
+rc=$?
+[ "$rc" = 0 ] && ok "S10-PO-24 a 1 MB line of '>' ends in TooDeep in under 1 s, and the 100-level cut-off is unchanged (top level, in a list item, in a quote)" \
+  || bad "S10-PO-24 early TooDeep" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt")"
+
+# S10-PO-25: the setext-in-quote limit is in the two texts a user reads, with the way round it: the README and the plugin's
+# SKILL.md both say a setext heading inside a block quote is not recognised, so a link to one fails, and name the ATX heading.
+# The README sits above the plugin folder: a copy of the plugin alone has none, which is shown as a SKIP.
+for doc in "$HERE/../skills/okf/SKILL.md" "$HERE/../../README.md"; do
+  if [ ! -f "$doc" ]; then printf '  SKIP  S10-PO-25 %s not found\n' "$(basename "$doc")"; continue; fi
+  grep -qF 'a setext heading inside a block quote is not recognised' "$doc" && grep -F 'a setext heading inside a block quote is not recognised' "$doc" | grep -q 'ATX heading' \
+    && ok "S10-PO-25 $(basename "$doc") says a setext heading inside a block quote is not recognised and names the ATX heading" \
+    || bad "S10-PO-25 $(basename "$doc")" "the limit sentence (setext heading inside a block quote, ATX heading) is missing"
+done
 
 echo
 echo "  $PASS passed, $FAIL failed"

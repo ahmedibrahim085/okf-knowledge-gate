@@ -174,17 +174,28 @@ citation) are in
 `okf-export` is for a team that edits in an Obsidian-style vault, whose backlinks and graph count only `[[wikilinks]]`.
 The vault stays the source; the export is a bundle `okf-check` can gate. Body `[[note]]`, `[[note|alias]]`,
 `[[note#heading]]` and `[[#heading]]` become relative Markdown links, and each target and heading is checked.
-Frontmatter and code (fenced, or indented 4 spaces or a tab) are copied unchanged. A vault's `index.md` note becomes the folder note (`dir/index.md` to
+Frontmatter, code (fenced, or indented 4 spaces or a tab) and raw HTML blocks are copied unchanged, since Obsidian renders no Markdown in HTML. Limits: inside a block quote a `[[link]]` in an HTML block, or in indented code that follows a list item, is still rewritten, and no setext heading (underlined with `===` or `---`) is recognised, nor any heading on or after a quote line whose `>`, spaces and list markers hold a tab (up to the end of the quote, and for a quote in a list item or one no blank line ended, to the end of the note); a link to one fails with `missing heading`, so name an ATX `# heading` and indent with spaces. A vault's `index.md` note becomes the folder note (`dir/index.md` to
 `dir/dir.md`, the root one to `<vault folder>.md`), and an `index.md` listing is generated in every folder that holds
 a note, with `okf_version` at the root; a rename onto an existing note stops the export. When `<out>` is on a disk
 that does not tell upper from lower case (the macOS default) and the vault is not, two names that differ only in case
-(`Notes.md`, `notes.md`) stop it too, as they would be written over each other. A vault `log.md` note becomes
+(`Notes.md`, `notes.md`) stop it too, as they would be written over each other. Two names that differ only in Unicode
+normalisation (`café` written in NFC and in NFD, which macOS stores as one file) stop it on every disk, before anything
+is written; the refusal names both notes, with the characters escaped when the two names look alike. A vault `log.md` note becomes
 the folder's log: its dated lines (`## 2026-05-22` headings or `- 2026-05-22: text` items, with their indented
 continuation lines) are grouped by date, newest first, under the note's own `# title`. Every `## ` heading must be a
 date, as spec 9 requires. Exit 1 lists each missing or ambiguous target, missing heading, malformed date, `## ` heading
 that is not a date (with the lines left out under it), undated log line, log frontmatter and log with no dated entry as
 `file:line` (the bundle is still written); exit 2 means nothing was written (`<out>` is not empty, is inside the
-vault or cannot be written, or two notes would be written to one name). A target is matched as Obsidian matches it: an exact match first, then ignoring case (two files that differ only in case are reported as ambiguous). Setext headings (a line underlined with `===` or `---`) are headings a `[[note#heading]]` link can name. The vault is only read.
+vault or cannot be written, or two notes would be written to one name). A target is matched as Obsidian matches it: an exact match first, then ignoring case (two files that differ only in case are reported as ambiguous). Setext headings (a line underlined with `===` or `---`) are headings a `[[note#heading]]` link can name, except that a setext heading inside a block quote is not recognised: a link to one fails with `missing heading`, so give the quote an ATX heading (`# Title`) to link to. The vault is only read.
+
+`okf-export` leaves out dot files and folders (`.obsidian`, `.git`) and names each file it skips (exit 1). A symlink that
+leaves the vault or leads into a dot name is skipped, an absolute one without its host path (`an absolute link`). A symlink to
+a folder is not followed, so its notes are not exported, and a broken link or a loop leads nowhere: all three are named,
+never skipped in silence. A hard link to a file under a dot name is the same file, so it is skipped and named too (it is found
+by device and inode). Limit: a hard link to a file OUTSIDE the vault cannot be told from a file that lives in it and is
+exported; use a copy or a symlink, which is refused. A symlink under a dot name (`.store -> /ext`) is not walked either, so a
+visible hard link to a file in its target is the same limit. A folder that cannot be listed is named (its files are not
+exported), and a file with a second name is skipped and named while a folder (dot or visible) cannot be listed or entered; a file that cannot be examined is named too. A folder that lists but cannot be entered is named too.
 
 A near-miss actor is a wrongly written actor such as `Human:dana`. OKF reads it as an agent, so a person's review is
 lost without any other symptom. `--strict-trust` fails on it.
@@ -412,7 +423,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.41
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.42
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -428,7 +439,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.41
+    rev: v0.9.42
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

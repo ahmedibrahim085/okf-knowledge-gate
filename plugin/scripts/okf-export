@@ -20,6 +20,7 @@ import functools
 import os
 import re
 import shutil
+import stat
 import sys
 import tempfile
 import unicodedata
@@ -40,8 +41,10 @@ WIKILINK = re.compile(r"(?<!!)\[\[([^\[\]]+)\]\]")
 
 # CommonMark: a fence opens with 3+ backticks or tildes, up to 3 spaces in, and closes on a run of the
 # same character at least as long. An ATX heading is 1-6 '#' and a space; closing '#'s are not text.
-FENCE = re.compile(r"^ {0,3}(`{3,}|~{3,})")
-ATX = re.compile(r"^ {0,3}#{1,6}[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+# The info string of a backtick fence holds no backtick, and a closing fence has no info string (4.5).
+FENCE = re.compile(r"^ {0,3}(`{3,}(?=[^`]*$)|~{3,})")
+FENCE_CLOSE = re.compile(r"^ {0,3}(`{3,}|~{3,})[ \t]*$")
+ATX = re.compile(r"^ {0,3}#{1,6}(?:[ \t]+(.*?)(?:[ \t]+#+)?)?[ \t]*$")   # the text is optional: a lone `#` is an empty heading (4.2)
 # An indented code block is 4 spaces or a tab in; it cannot interrupt a paragraph.
 INDENTED = re.compile(r"^(?: {4}| {0,3}\t)")
 LIST_ITEM = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)")
@@ -85,6 +88,38 @@ def indent_width(line: str) -> int:
 # A code span closes on a backtick run of exactly its opening length.
 # SHORTCUT: one line only; a span wrapped across lines is read as text. Track spans per paragraph if one shows up.
 CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`).+?(?<!`)\1(?!`)")
+BACKTICKS = re.compile(r"`+")
+
+
+def code_spans(line: str):
+    """(start, end) of each code span in a body line, read left to right as CommonMark 6.1 does: a backtick run opens a
+    span that the next run of the same length closes, a run with no closer is text, and a backslash escapes the backtick
+    after it outside a span (inside one it is literal). CODE_SPAN above is for a title, whose backslashes link_text doubles."""
+    runs = [m.span() for m in BACKTICKS.finditer(line)]
+    by_len = {}
+    for k, (a, b) in enumerate(runs):
+        by_len.setdefault(b - a, []).append(k)
+    spans, k = [], 0
+    while k < len(runs):
+        a, b = runs[k]
+        z = a
+        while z and line[z - 1] == "\\":   # the backslashes just before the run: an odd count escapes its first backtick
+            z -= 1
+        if (a - z) % 2:
+            a += 1
+        if a == b:
+            k += 1
+            continue
+        later = by_len.get(b - a, [])
+        at = bisect.bisect_right(later, k)
+        if at == len(later):
+            k += 1
+            continue
+        spans.append((a, runs[later[at]][1]))
+        k = later[at] + 1
+    return spans
+
+
 # A problem line quotes link text and file names from the vault, and a person or Claude reads it: control characters
 # become "?" (the edit hook's set, 0.9.13 review).
 CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
@@ -114,23 +149,39 @@ def fold(name: str) -> str:
     return unicodedata.normalize("NFC", name).lower()
 
 
+# github-slugger keeps what GitHub's Onigmo calls a word character: Alphabetic, Mark, Decimal_Number and Connector_Punctuation
+# (checked against github-slugger 2.0.0 over every code point). Alphabetic is the letters, Nl, and the circled and squared
+# Latin letters (Other_Alphabetic symbols); `\w` would drop the marks and U+203F-like characters and keep ² and ¼.
+ENCLOSED_LETTERS = re.compile("[\u24b6-\u24e9\U0001f130-\U0001f149\U0001f150-\U0001f169\U0001f170-\U0001f189]")
+
+
 def slug(heading: str) -> str:
-    """The anchor GitHub gives a heading: lower case, punctuation dropped, each space a '-'."""
-    return re.sub(r"[^\w\- ]", "", unicodedata.normalize("NFC", heading).strip().lower()).replace(" ", "-")
+    """The anchor GitHub gives a heading (github-slugger): lower case, everything dropped that is not a word character,
+    a space or '-', each space a '-'. A tab or any other control or format character is dropped, not turned into a space."""
+    def kept(c: str) -> bool:
+        cat = unicodedata.category(c)
+        return c in " -" or cat[0] in "LM" or cat in ("Nd", "Nl", "Pc") or bool(ENCLOSED_LETTERS.match(c))
+    return "".join(filter(kept, unicodedata.normalize("NFC", heading).strip().lower())).replace(" ", "-")
 
 
 def frontmatter_len(lines: list[str]) -> int:
     """Lines taken by the YAML block at the top (spec 4: '---' on its own line, then a closing '---'); 0 if none."""
-    if lines and lines[0].lstrip("\ufeff").strip() == "---":   # a byte order mark is not part of the fence line
+    if lines and lines[0].lstrip("\ufeff").rstrip() == "---":   # a byte order mark is not part of the fence line; an indented '---' is no fence
         for i in range(1, len(lines)):
             if lines[i].strip() == "---":
                 return i + 1
     return 0
 
 
+# The container prefix of a line: the run of spaces, tabs, '>' markers and list markers before its text. Only a tab in it
+# is a column count (2.2 Tabs); a tab in the text is text (a heading `a<TAB>b` is `ab`).
+PREFIX = re.compile(r"(?:[ \t]+|>|(?:[-*+]|\d{1,9}[.)])(?=[ \t]|$))*")
+
+
 def dedent(line: str, cols: int) -> str:
     """The line with up to `cols` columns of leading space taken off: its text as the list item it sits in sees it."""
-    wide = line.expandtabs(4)
+    end = PREFIX.match(line).end()
+    wide = line[:end].expandtabs(4) + line[end:]
     return wide[min(cols, indent_width(line)):]
 
 
@@ -171,12 +222,32 @@ def quote_depth(text: str):
     return (text[m.end():], m.group(0).count(">")) if m else (text, 0)
 
 
+def holds_paragraph(t: str) -> bool:
+    """Whether the content `t` of a quote line leaves a paragraph open in the list item or quote it ends in: not when the
+    item is empty or its content starts a block (a heading, a fence, a break, an HTML block) or is indented code (5 or
+    more spaces after the marker, or 4 in a quote). Tabs are already spaces here (dedent)."""
+    while True:
+        g = ITEM_CONTENT.match(t)
+        if g and LIST_ITEM.match(t) and not THEMATIC.match(t):
+            if not g.group(3) or len(g.group(2)) > 4:
+                return False
+            t = t[len(g.group(1)) + len(g.group(2)):]
+        elif QUOTE.match(t):
+            t = quote_depth(t)[0]
+        else:
+            return bool(t.strip()) and not (ATX.match(t) or FENCE.match(t) or THEMATIC.match(t) or INDENTED.match(t)
+                                            or any(h[0].match(t) for h in HTML_BLOCKS))
+
+
 def quote_block(lines: list[str], start: int, first: str, at: int):
-    """(line indexes, contents) of the block quote that starts at `start` with the quote line `first` (its text, markers
+    """(line indexes, contents, blind) of the block quote that starts at `start` with the quote line `first` (its text, markers
     included): the lines that carry a '>' (read against the item content at `at`) with one '>' taken off, and the lazy
     lines that continue a paragraph (5.1). body_lines reads the contents, so a quote in this quote is read by a nested call.
     `para` errs towards True: a line taken in that CommonMark leaves outside can only hide a heading (a loud 'missing
-    heading'), never add one.
+    heading'), never add one. `blind` is the index (in the returned lists) of the first line whose container prefix holds a
+    tab: CommonMark counts a tab's columns from the container, which is not followed here, so from that line on the quote
+    is undecidable and body_lines reports no heading in it (a link to one fails loudly), and that line leaves the
+    paragraph open and no fence open, which can only hide too.
     SHORTCUT: setext headings inside block quotes are not recognised (body_lines with nested=True); a link to one fails
     with 'missing heading'."""
     def starts_block(t):
@@ -184,6 +255,8 @@ def quote_block(lines: list[str], start: int, first: str, at: int):
 
     idx, contents = [], []
     para, fence = False, 0   # a paragraph may be open; the quote level of an open fence (0: none)
+    listed = False   # a list marker was seen: an indented line may be item text, not code, so it never ends `para`
+    blind = None
     j, text = start, first
     while True:
         if j > start:
@@ -194,26 +267,49 @@ def quote_block(lines: list[str], start: int, first: str, at: int):
                 break   # a blank line ends the quote
             text = dedent(line, at)
         inner, depth = quote_depth(text)
+        tabbed = "\t" in lines[j][:PREFIX.match(lines[j]).end()]
+        if j > start and depth and indent_width(line) < at:
+            break   # a line with its own '>' that is not indented into the item ends the item, and the quote in it
         if not depth:   # lazy: only under a paragraph, and not a line that starts a block of its own
-            if fence or not para or LIST_ITEM.match(text) or starts_block(text):
+            # a lone tag is no block start under a paragraph (7), but `para` may be wrong: the quote ends, which can only hide
+            if fence or not para or LIST_ITEM.match(text) or starts_block(text) or HTML_TAG_LINE.match(text):
                 break
         elif fence and depth >= fence:   # in the fence: its content keeps any deeper '>'
             para = False
-            if FENCE.match(re.sub(r"^(?: {0,3}>[ \t]?){%d}" % fence, "", text)):
+            if FENCE_CLOSE.match(re.sub(r"^(?: {0,3}>[ \t]?){%d}" % fence, "", text)):
                 fence = 0
         else:   # a lower level ends a deeper fence (its quote ends), so the line is read afresh
             fence = depth if FENCE.match(inner) else 0
-            para = not fence and bool(inner.strip()) and not starts_block(inner)
+            listed = listed or bool(LIST_ITEM.match(inner))
+            # an indented line with no paragraph open is code (it cannot interrupt one, 4.4), so no paragraph is open
+            # after it, unless a list is in the quote: there it may be item text, and `para` errs towards True
+            para = not fence and bool(inner.strip()) and not starts_block(inner) and (para or listed or not INDENTED.match(inner)) \
+                and (not LIST_ITEM.match(inner) or holds_paragraph(inner))
+        if tabbed:
+            blind = len(idx) if blind is None else blind
+            if depth:
+                fence, para = 0, True
         idx.append(j)
-        contents.append(re.sub(r"^ {0,3}>[ \t]?", "", text, count=1))
+        if depth:
+            contents.append(re.sub(r"^ {0,3}>[ \t]?", "", text, count=1))
+        else:   # a lazy line is paragraph text; if its indent could read as a block start of the item, it is fed as plain text
+            contents.append("x" if starts_block(text.lstrip()) or LIST_ITEM.match(text.lstrip()) else text)
         j += 1
-    return idx, contents
+    return idx, contents, len(idx) if blind is None else blind
+
+
+def item_interrupts(text: str) -> bool:
+    """Whether the list item on `text` may start a list under an open paragraph: it has content, and an ordered one
+    starts at 1 (5.2 List items)."""
+    g = ITEM_CONTENT.match(text)
+    marker = g.group(1).strip()
+    return bool(g.group(3)) and (marker in ("-", "*", "+") or int(marker[:-1]) == 1)
 
 
 def body_lines(lines: list[str], nested: bool = False, level: int = 0):
     """Yield (index, line, in_code, heading) for each body line. in_code is True inside a fence, fence lines included,
-    and on the lines of an indented code block; heading is the text of a heading that ends on this line (ATX, or the
-    underline of a setext heading), else None. Blocks are read the way CommonMark 0.31.2 reads them, inside list items
+    and on the lines of an indented code block or of an HTML block outside a quote (raw HTML holds no Markdown); heading
+    is the text of a heading that ends on this line (ATX, or the underline of a setext heading), else None. Blocks are read the way CommonMark 0.31.2 reads them, inside list items
     too (5.2): each line is matched against the content of the item it sits in, a marker line's own content included.
     A blank line is never code: it holds no link, and the log reader counts it.
 
@@ -228,17 +324,19 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
     html, html_at = False, 0  # an open HTML block: its end pattern (None: a blank line), the content indent
     code = False           # inside an indented code block
     quoted = {}            # results for the lines of a block quote read ahead: index -> (in_code, heading)
+    mute_from = len(lines)   # after a quote with a tab in a container prefix (quote_block, `blind`) that sits in an item or did not end at a blank line: no heading after its last line
     for i in range(0 if nested else frontmatter_len(lines), len(lines)):
         raw = lines[i]
         if i in quoted:
-            yield (i, raw) + quoted.pop(i)
+            c, h = quoted.pop(i)
+            yield i, raw, c, h if i < mute_from else None
             continue
         line = raw.rstrip("\r\n")   # matched without its line end: `$` in SETEXT and THEMATIC must see a CRLF line too
         w = indent_width(line)
         if (fence or html is not False) and line.strip() and w < (fence_at if fence else html_at):
             fence, html = "", False   # the item ends and its fence or HTML block with it
         if fence:
-            m = FENCE.match(dedent(line, fence_at))
+            m = FENCE_CLOSE.match(dedent(line, fence_at))
             if m and m.group(1)[0] == fence[0] and len(m.group(1)) >= len(fence):
                 fence = ""
             yield i, raw, True, None
@@ -249,7 +347,7 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
             else:
                 if html is not None and html.search(line):
                     html = False
-                yield i, raw, False, None
+                yield i, raw, not nested, None   # not nested: see the HTML block start below
                 continue
         if not line.strip():
             if empty:
@@ -262,14 +360,15 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
         if para and depth == len(items) and SETEXT.match(text) and not nested:   # not in a quote: see quote_block
             heading = " ".join(x.strip() for x in para)
             para = []
-            yield i, raw, False, heading
+            yield i, raw, False, heading if i < mute_from else None
             continue
         brk = THEMATIC.match(text)
         item = LIST_ITEM.match(text) and not brk   # `- - -` is a thematic break, not an item
         starts = [h for h in HTML_BLOCKS if h[0].match(text)]
-        interrupts = item or brk or FENCE.match(text) or ATX.match(text) or starts or QUOTE.match(text)
+        # a line outside the deepest item (depth < len(items)) is a sibling or an outer item, which a paragraph never holds
+        interrupts = (item and (depth < len(items) or item_interrupts(text))) or brk or FENCE.match(text) or ATX.match(text) or starts or QUOTE.match(text)
         if para and not interrupts:
-            para.append(text)   # a paragraph goes on, lazily too: at the margin under an item's paragraph
+            para.append(raw.strip())   # a paragraph goes on, lazily too; the text as written: a tab in it is no column count
             yield i, raw, False, None
             continue
         del items[depth:]   # the line is outside the deeper items: they end
@@ -277,7 +376,7 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
         if code and not INDENTED.match(text):
             code = False
         at = items[-1] if items else 0
-        pos, tail = 0, item and break_tail(text)   # text has no tabs: dedent expanded them
+        pos, tail = 0, item and break_tail(text)   # dedent expanded the tabs of the container prefix
         while item:   # a marker line: open the item, then read its own content as the item's first line
             g = ITEM_AT.match(text, pos)
             marker, spaces, rest = len(g.group(1)), len(g.group(2)), g.group(3)
@@ -291,13 +390,16 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
             item = LIST_AT.match(text, pos) and not break_at(text, pos, tail)
         text = text[pos:]   # one slice per line: the cost stays linear in its length
         if not empty and QUOTE.match(text):   # a block quote: read its lines with this reader, then go on after it
-            if level >= NEST_MAX:   # `level` counts nested reads; `depth` below is the list-item depth of one line
-                raise TooDeep()
-            idx, contents = quote_block(lines, i, text, at)
+            if level >= NEST_MAX or level + quote_depth(text)[1] > NEST_MAX:   # `level` counts nested reads; `depth` below is the list-item depth of one line
+                raise TooDeep()   # the second test reads the line's markers once: a line of 10^6 '>' costs one pass, not one per level
+            idx, contents, blind = quote_block(lines, i, text, at)
+            if blind < len(idx) and (items or idx[-1] + 1 < len(lines) and lines[idx[-1] + 1].strip()):
+                mute_from = min(mute_from, idx[-1] + 1)   # only a quote that a blank line or the end of the note closed, outside any item, is over
             for k, _, c, h in body_lines(contents, nested=True, level=level + 1):
-                quoted[idx[k]] = (c, h)
+                quoted[idx[k]] = (c, h if k < blind else None)
             para, code = [], False
-            yield (i, raw) + quoted.pop(i)
+            c, h = quoted.pop(i)
+            yield i, raw, c, h if i < mute_from else None
             continue
         heading, in_code = None, False
         starts = [h for h in HTML_BLOCKS if h[0].match(text)]   # again: a marker line's content may start one
@@ -308,7 +410,7 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
         elif code or INDENTED.match(text):
             code = in_code = True
         elif m:
-            heading = m.group(1)
+            heading = m.group(1) or ""   # None: a lone `#`, a heading with no text
         elif f:
             fence, fence_at, in_code = f.group(1), at, True
         elif THEMATIC.match(text) or LINK_DEF.match(text):
@@ -316,9 +418,12 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
         elif starts or HTML_TAG_LINE.match(text):
             end = starts[0][1] if starts else None
             html, html_at = (False if end is not None and end.search(text[text.index("<") + 1:]) else end), at
+            # Raw HTML holds no Markdown, so a [[link]] in it is text (4.6; Obsidian reads none either). Not inside a quote:
+            # quote_block does not follow an HTML block, so there it cannot tell the block's lines from the paragraph after it.
+            in_code = not nested
         else:
             para = [text]
-        yield i, raw, in_code, heading
+        yield i, raw, in_code, heading if i < mute_from else None
 
 
 def read_text(path: Path) -> str:
@@ -398,10 +503,18 @@ def shared_outputs(files: list[Path], root_name: str) -> list[tuple[Path, Path, 
     return [(g[0], g[1], out) for out, g in groups.items() if len(g) > 1]
 
 
-def case_clashes(files: list[Path], root_name: str) -> list[tuple[Path, Path]]:
-    """(first, second) for each two output names in one folder that differ only in case, named by their vault paths:
-    a disk that folds case (macOS, Windows) writes both to one file or folder. Two names in different folders
-    clash at the folders, so a pair is reported once, where it starts."""
+def name_key(name: str, case: bool = True) -> str:
+    """What a disk that normalises names (macOS APFS) compares: NFC; with case, also canonical caseless matching, NFC of the
+    casefold of the NFC form (casefold alone leaves U+0390 and U+03AA U+0301 apart, though APFS holds one file for both)."""
+    nfc = unicodedata.normalize("NFC", name)
+    return unicodedata.normalize("NFC", nfc.casefold()) if case else nfc
+
+
+def case_clashes(files: list[Path], root_name: str, case: bool = True) -> list[tuple[Path, Path]]:
+    """(first, second) for each two output names in one folder that differ only in Unicode normalisation (NFC against
+    NFD: macOS APFS stores both as one file) and, with case, also in case (macOS, Windows): the disk writes both to one
+    file or folder. Named by their vault paths. Two names in different folders clash at the folders, so a pair is
+    reported once, where it starts."""
     names: dict[Path, Path] = {}   # output name -> vault path; a folder keeps its name
     for rel in files:
         out = vault_out_rel(rel, root_name)
@@ -412,7 +525,7 @@ def case_clashes(files: list[Path], root_name: str) -> list[tuple[Path, Path]]:
     first: dict[tuple[Path, str], Path] = {}
     pairs = []
     for out in sorted(names):
-        key = (out.parent, out.name.casefold())
+        key = (out.parent, name_key(out.name, case))
         if key in first:
             pairs.append((names[first[key]], names[out]))
         else:
@@ -571,7 +684,77 @@ def link_refusal(vault: Path, rel: Path) -> str | None:
         where = "into a hidden file or folder"
     else:
         where = "outside the vault"
-    return f"a symlink to {os.readlink(full)}, which leads {where}" if full.is_symlink() else f"a file under a symlinked folder that leads {where}"
+    if not full.is_symlink():
+        return f"a file under a symlinked folder that leads {where}"
+    text = os.readlink(full)
+    # An absolute link's text IS a path of this machine: it is not printed.
+    return f"a symlink to {'an absolute link' if os.path.isabs(text) else text}, which leads {where}"
+
+
+def is_file(vault: Path, p: Path, failed: list) -> bool:
+    """Path.is_file(), except that a path whose stat fails is not a traceback with host paths in it. In a folder that cannot be
+    entered (mode 0400) it is not a file here: unreadable_links names that folder once. Anywhere else the file is named in
+    `failed` ("could not be examined"), never dropped in silence (NFS root_squash, FUSE, a privacy block)."""
+    try:
+        return p.is_file()
+    except OSError as err:
+        if os.access(p.parent, os.X_OK):
+            failed.append((p.relative_to(vault), f"a file that could not be examined ({err.strerror})"))
+        return False
+
+
+def unreadable_links(vault: Path) -> list[tuple[Path, str]]:
+    """Symlinks that the file listing silently drops: one to a folder (it is not entered, so its notes would vanish), a broken
+    one and a loop. Each is named instead. Dot folders are not entered and dot names are left out, as everywhere else."""
+    out = []
+    # A folder that cannot be listed is named too: rglob and os.walk both pass over it without a word, and its notes would vanish.
+    cannot_list = lambda err: out.append((Path(err.filename).relative_to(vault), "a folder that cannot be listed: its files are not exported"))
+    for top, dirs, names in os.walk(vault, onerror=cannot_list):
+        dirs[:] = [d for d in dirs if not d.startswith(".")]
+        if not os.access(top, os.X_OK):   # lists, but nothing in it can be examined (mode 0400): named once, not its sub-folders
+            out.append((Path(top).relative_to(vault), "a folder that cannot be entered: its files are not exported"))
+            dirs.clear()
+            continue
+        for name in dirs + names:
+            full = os.path.join(top, name)
+            if not name.startswith(".") and os.path.islink(full) and not os.path.isfile(full):
+                what = "a symlink to a folder: the folder is not followed, its notes are not exported" if os.path.isdir(full) \
+                    else "a symlink that leads nowhere (broken, or a loop)"
+                out.append((Path(full).relative_to(vault), what))
+    return sorted(out)
+
+
+def hidden_hard_links(vault: Path, files: list[Path]) -> list[tuple[Path, str]]:
+    """Visible files that are the same file as one under a dot name: a hard link has no target path to follow, so (device,
+    inode) is the only tell. Inode numbers repeat across devices, hence the device in the key. st_nlink > 1 is the cheap
+    pre-check: the dot names are walked only when a visible file has a second name. A hard link to a file OUTSIDE the vault
+    cannot be told from a file that lives here."""
+    multi, gone = [], []
+    for rel in files:
+        try:
+            st = os.stat(vault / rel)
+        except OSError as err:   # gone since the listing: not exported, and said so
+            gone.append((rel, f"a file that could not be examined ({err.strerror})"))
+            continue
+        if st.st_nlink > 1 and st.st_ino:   # an inode of 0 is made up by some network and FUSE volumes
+            multi.append((rel, (st.st_dev, st.st_ino)))
+    if not multi:
+        return gone
+    hidden, unlisted = set(), []
+    for top, _, names in os.walk(vault, onerror=lambda err: unlisted.append(Path(err.filename).relative_to(vault))):
+        under_dot = any(part.startswith(".") for part in Path(top).relative_to(vault).parts)
+        for name in names:
+            if under_dot or name.startswith("."):
+                try:
+                    st = os.lstat(os.path.join(top, name))   # lstat: a symlink under a dot name is not the file it points to
+                except OSError:
+                    unlisted.append(Path(top).relative_to(vault))
+                    continue
+                if stat.S_ISREG(st.st_mode):
+                    hidden.add((st.st_dev, st.st_ino))
+    # Fail closed: in a folder nobody may list, the other name of a file may be hidden, and nothing says so.
+    why = f"a file with more than one name, while the folder {min(unlisted).as_posix()} cannot be listed or entered to rule out a hard link to a hidden file" if unlisted else ""
+    return gone + [(rel, "a hard link to a hidden file or folder of the vault" if ident in hidden else why) for rel, ident in multi if ident in hidden or why]
 
 
 def main() -> int:
@@ -591,7 +774,8 @@ def main() -> int:
     if out.exists() and any(out.iterdir()):
         return fail(f"{args.out} exists and is not empty")
     # Dot files and folders hold note-tool settings (.obsidian), VCS data (.git) or OS clutter (.DS_Store), not knowledge.
-    files = sorted(rel for rel in (p.relative_to(vault) for p in vault.rglob("*") if p.is_file())
+    failed: list[tuple[Path, str]] = []
+    files = sorted(rel for rel in (p.relative_to(vault) for p in vault.rglob("*") if is_file(vault, p, failed))
                    if not any(part.startswith(".") for part in rel.parts))
     # A *.md that is not a regular file (device, pipe, folder) or is over okf_check.max_note_bytes is not exported and is
     # never opened; it is reported with the other problems. rglob("*") would list an oversize note, so it goes here.
@@ -603,6 +787,10 @@ def main() -> int:
     # The dot rule above also holds for where a link leads: one that resolves to a dot file or folder (.obsidian, .git) is left
     # out the same way, or the exclusion would be one `ln -s` away from the settings and VCS data it exists to keep out.
     refused += sorted((rel, why) for rel in files for why in [link_refusal(vault, rel)] if why)
+    refused += unreadable_links(vault)
+    refused += failed
+    named = {rel for rel, _ in refused}
+    refused += hidden_hard_links(vault, [rel for rel in files if rel not in named])
     skip = {rel for rel, _ in refused}
     files = [rel for rel in files if rel not in skip]
     fileset = set(files)
@@ -643,7 +831,15 @@ def main() -> int:
     shared = shared_outputs(files, vault.name)
     for first, second, new in shared:
         fail(f"{first.as_posix()} and {second.as_posix()} would both be written to {new.as_posix()}; rename one of them in the vault")
-    if clashes or shared:
+    # NFC and NFD spellings of one name are one file on macOS (APFS), whatever the case: decided from the names, before any
+    # write and on every disk, because a bundle that is copied there would lose a note.
+    unicode_pairs = case_clashes(files, vault.name, case=False)
+    for first, second in unicode_pairs:
+        look_alike = unicodedata.normalize("NFC", first.as_posix()) == unicodedata.normalize("NFC", second.as_posix())
+        names = " and ".join((p.as_posix().encode("ascii", "backslashreplace").decode() if look_alike else p.as_posix()) for p in (first, second))
+        fail(f"{names} would be written over each other: their output names differ only in Unicode normalisation, and a disk"
+             " such as macOS APFS stores both as one file; rename one of them in the vault")
+    if clashes or shared or unicode_pairs:
         return 2
     # A case-sensitive vault may hold Notes.md and notes.md, which a case-folding output disk (macOS, Windows) writes
     # to one file. Only there do names that differ only in case clash, so the disk is probed only for such a
@@ -689,15 +885,16 @@ def main() -> int:
             no = i + 1
 
             def link(m: re.Match) -> str:
-                ref, _, alias = m.group(1).replace("\\|", "|").partition("|")   # a table cell writes the alias bar as \|
+                # The alias separator is the first bar; a table cell writes it as \|. Only that one is unescaped: a later \| stays
+                # as written (it is literal text in a code span, and a bare bar would split a table cell).
+                body = m.group(1)
+                bar = body.find("|")
+                ref, alias = (body, "") if bar < 0 else (body[:bar - 1 if body[bar - 1:bar] == "\\" else bar], body[bar + 1:])
                 name, _, heading = ref.partition("#")
                 found = resolve(name) if name else [rel]
                 if len(found) != 1:
                     what = "ambiguous target" if found else "missing target"
                     names = ", ".join(p.as_posix() for p in found)
-                    if len({unicodedata.normalize("NFC", p.as_posix()) for p in found}) < len(found):   # they look alike
-                        names = ", ".join(p.as_posix().encode("ascii", "backslashreplace").decode() for p in found) \
-                            + " (they differ only in Unicode normalisation)"
                     problems.append(f"{rel.as_posix()}:{no}: {what} {m.group(0)}" + (f": {names}" if names else ""))
                     return m.group(0)
                 # Spec 6.1 allows a relative or a bundle-absolute (/...) link; the relative form is what the ticket
@@ -713,11 +910,14 @@ def main() -> int:
                 text = alias or (f"{name} > {heading}" if name and heading else name or heading)
                 return f"[{text}]({href})"
 
-            parts, pos = [], 0
-            for span in CODE_SPAN.finditer(line):
-                parts += [WIKILINK.sub(link, line[pos:span.start()]), span.group(0)]
-                pos = span.end()
-            lines[i] = "".join(parts) + WIKILINK.sub(link, line[pos:])
+            # A link is rewritten unless a code span cuts through it (its start or end inside a span): a span wholly inside the
+            # alias, `[[a|`b`]]`, stays in the new link text. CommonMark binds a code span tighter than a link.
+            spans = code_spans(line)
+
+            def outside(m: re.Match) -> str:
+                cut = any(s < m.start() < e or s < m.end() < e for s, e in spans)   # a boundary strictly inside a span
+                return m.group(0) if cut else link(m)
+            lines[i] = WIKILINK.sub(outside, line)
         if is_log(rel):   # spec 3.1: reserved, so never a concept; it becomes the spec 9 log
             log = build_log(rel, lines, problems)
             if log is not None:
