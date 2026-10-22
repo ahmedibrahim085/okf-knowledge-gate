@@ -100,6 +100,7 @@ rc=$("$CHECK" --selftest >"$TMP/st.txt" 2>&1; echo $?)
 # under a time limit (OKF_FACTS_TIMEOUT, default 60 s) and reports COULD NOT RUN (exit 2) when it passes.
 B="$TMP/e4"; mkb "$B" $'    f:\n      value: "1"\n      patterns: ["(a+)+$"]'; note "$B/x.md" "$(printf 'a%.0s' $(seq 40))!"   # made at run time: a 40-letter hex run reads as a commit id to the export scan
 t0=$(date +%s); rc=$(OKF_FACTS_TIMEOUT=3 run "$B"); dt=$(( $(date +%s) - t0 ))
+# wallclock-ok: a hang bound: OKF_FACTS_TIMEOUT=3 stops a pattern that never ends; 30 s only proves it did not run on
 { [ "$rc" = 2 ] && [ "$dt" -lt 30 ] && grep -Eq 'Facts +COULD NOT RUN .*timed out after 3 s' "$TMP/out.txt"; } \
   && ok "S22-DF-E4 a runaway pattern is stopped by the time limit: COULD NOT RUN, exit 2 (${dt} s)" || bad "S22-DF-E4 redos" "rc=$rc dt=$dt $(grep 'Facts' "$TMP/out.txt")"
 

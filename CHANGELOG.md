@@ -9,6 +9,15 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.46] - 2026-10-22
+
+OKF Knowledge Gate 0.9.46 adds two guards to the test tooling so that two mistakes made in this release series cannot come back.
+
+### Changed
+- `tools/check-tests.sh` (run by the pre-push gate) refuses a test that compares a measured time against a fixed number unless the line says why (`# wallclock-ok: <reason>`): a hosted runner is several times slower than a laptop. The speed tests of the export now bound how the cost grows with the input, with a quadratic control.
+- `tools/check-tests.sh` refuses a cases document with two sections of the same number or a case id defined twice.
+- README: the Release steps say to export from a worktree whose tree is the release commit.
+
 ## [0.9.45] - 2026-10-22
 
 OKF Knowledge Gate 0.9.45 makes `okf-verify` read a cited file without holding it in memory, and brings the register and the README up to date with every release since 0.9.40.
@@ -866,7 +875,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.45...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.46...HEAD
+[0.9.46]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.45...v0.9.46
 [0.9.45]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.44...v0.9.45
 [0.9.44]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.43...v0.9.44
 [0.9.43]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.42...v0.9.43

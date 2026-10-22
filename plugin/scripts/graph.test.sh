@@ -102,6 +102,7 @@ section "edge"
 # S27-GR-E1: a hung okf-memory is stopped at OKF_GRAPH_TIMEOUT: COULD NOT RUN, not a pass, and the run goes on.
 t0=$SECONDS
 rc=$(PATH="$TMP/bin:$PATH" STUB_MODE=hang OKF_GRAPH_TIMEOUT=1 run "$B"); el=$((SECONDS - t0))
+# wallclock-ok: a hang bound: the stub hangs and OKF_GRAPH_TIMEOUT=1 cuts it; 25 s only proves it did not wait for the stub
 { grep -Eq 'L2 graph +COULD NOT RUN — okf-memory timed out after 1 s \(OKF_GRAPH_TIMEOUT\); not a pass' "$TMP/out.txt" && [ "$el" -lt 25 ]; } \
   && ok "S27-GR-E1 a hung okf-memory is stopped after OKF_GRAPH_TIMEOUT=1: COULD NOT RUN, not a pass (${el} s)" || bad "S27-GR-E1 timeout" "el=$el $(grep -n 'L2 graph' "$TMP/out.txt")"
 # S27-GR-E2: output that is not its JSON report is COULD NOT RUN, never read as a clean graph.

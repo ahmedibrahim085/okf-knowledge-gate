@@ -435,7 +435,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.45
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.46
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -451,7 +451,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.45
+    rev: v0.9.46
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -604,7 +604,9 @@ another repository does nothing.
      release it with `rmdir /tmp/okf-heavy.lock` (also after a failure).
 4. Tag `vx.y.z` on the private release commit and push the tag there.
 5. Publish to the public repository (`ahmedibrahim085/okf-knowledge-gate`). It holds one squashed commit per release,
-   so do not push the private history. The examples above pin `vx.y.z`, so the tag must exist there:
+   so do not push the private history. The examples above pin `vx.y.z`, so the tag must exist there. Run
+   `tools/export-public.sh` from a worktree whose tree is the release commit (`git diff --quiet origin/main` must pass
+   first): an export from another worktree publishes that worktree's tree.
    ```bash
    bash tools/export-public.sh "$EXPORT"            # allow-list copy; the scan must pass
    gitleaks detect --no-git --source "$EXPORT"

@@ -211,6 +211,7 @@ with open(sys.argv[1], "w", newline="") as f:
 PY
     sz=$(wc -c < "$B/.okfignore" | tr -d ' ')
     t0=$SECONDS; list=$(timeout 30 bash "$HERE/ignore-lib.sh" --list "$B" | tr '\0' ' '); rc=$?; t=$((SECONDS - t0))
+    # wallclock-ok: a regression bound for a 1 MB .okfignore under timeout 30; 10 s is a generous ceiling, not a speed claim
     { [ "$sz" -lt 1048576 ] && [ "$rc" -eq 0 ] && [ "$t" -lt 10 ] && [ "$list" != "${list/a.md/}" ] && [ "$list" = "${list/archive/}" ]; } \
       && ok "S30-CF-I1 a $sz-byte .okfignore whose first line is $kind loads in ${t} s, under 10 s, and its next pattern applies" \
       || bad "S30-CF-I1 long line ($kind)" "size=$sz rc=$rc ${t} s list: $list"

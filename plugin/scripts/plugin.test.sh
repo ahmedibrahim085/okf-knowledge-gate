@@ -389,6 +389,7 @@ t0=$SECONDS; v=$(PATH="$TMP_W/p10hangbin:/usr/bin:/bin" P10_LIST_LIMIT=1 P10_PID
 # Alive means running: in a container with no init process a killed orphan stays as a zombie (state Z) that `kill -0` still sees.
 sleep 1; alive=no; st=$(ps -o stat= -p "$(cat "$TMP_W/p10hang.pid" 2>/dev/null)" 2>/dev/null | tr -d ' ')
 case "$st" in ""|Z*) ;; *) alive=yes; kill "$(cat "$TMP_W/p10hang.pid")" 2>/dev/null ;; esac
+# wallclock-ok: a hang bound: P10_LIST_LIMIT=1 stops a stub that waits 62 s; 6 s sits far below the sleep
 { [ "$t1" -lt 6 ] && [ "$alive" = no ] && case "$v" in ok$'\t'"P-10 the INSTALLED plugin matches this source tree") true;; *) false;; esac; } \
   && ok "P-10s a claude that hangs is given up on after the limit, its child is stopped too, and the cache comparison runs (${t1}s)" || bad "P-10s hung claude" "took ${t1}s, child still running: $alive (state '$st'), got: $v"
 v=$(p10_with '[{"id":"okf@mk","version":"3.0.0","enabled":false,"installPath":"x"}]' "$TMP_W/p10c1")

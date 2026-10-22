@@ -162,6 +162,7 @@ STUB
   t0=$(date +%s); out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf" STUB_SLEEP=15); t1=$(date +%s)
   # The stub hangs for 15 s. The bound is "well under the hang", not a fixed 3 s: at load 24 an honest cut-off took 5 s
   # and a fixed limit failed a correct guard (final review, CI-owner POV). A guard that does not cut off takes >= 15 s.
+  # wallclock-ok: a hang bound: the stub sleeps 15 s and a guard that does not cut off takes 15 s or more; 12 s sits below that
   { [ $((t1-t0)) -lt 12 ] && grep -q "Doc-reuse check" <<<"$out" && ! grep -q "Closest" <<<"$out"; } \
     && ok "LT-19c a hung search binary is cut off (returned in $((t1-t0))s, well under its 15 s hang) and the reminder is today's text" || bad "LT-19c timeout" "took $((t1-t0))s out=$(printf '%s' "$out" | head -c 120)"
   out=$(g19 "$T19/docs/new-note-name.md" OKF_SEARCH_BIN="$T19/bin/okf" STUB_FAIL=1); rc=$?
@@ -474,9 +475,11 @@ expect_match "bad.md: RuntimeError" "LT-14b a trailing slash on the bundle path 
 T15B="$TMP/t15bin"; mkdir -p "$T15B"
 printf '#!/bin/sh\nsleep 30\n' > "$T15B/okflint"; chmod +x "$T15B/okflint"
 t0=$(date +%s); env PATH="$T15B:$PATH" "$CHECK" "$T09" >/dev/null 2>&1; t1=$(date +%s)
+# wallclock-ok: a hang bound: the stub sleeps 30 s and a run that does not cut it off takes 30 s or more
 [ $((t1 - t0)) -lt 20 ] && ok "LT-15a a hung okflint does not stall a normal run ($((t1 - t0))s)" \
   || bad "LT-15a a hung okflint stalled a normal run" "took $((t1 - t0))s"
 t0=$(date +%s); env PATH="$T15B:$PATH" "$CHECK" --doctor >/dev/null 2>&1; t1=$(date +%s)
+# wallclock-ok: a hang bound: the stub sleeps 30 s and an unbounded --doctor takes 30 s or more
 [ $((t1 - t0)) -lt 40 ] && ok "LT-15b --doctor is bounded against a hung okflint ($((t1 - t0))s)" \
   || bad "LT-15b --doctor hung" "took $((t1 - t0))s"
 # LT-16: SIGTERM stops the gate.

@@ -303,6 +303,7 @@ rc=$(runjson "$B"); got=$(lineall)
 B="$TMP/r5"; mkbundle "$B"; note "$B/a.md" "![x](data:image/png;base64,$("$REALPY" -c 'print("iVBORw0KGgo" * 2000)'))"
 note "$B/b.md" "$("$REALPY" -c 'print(",a" * 3000)')"
 t0=$(date +%s); rc=$(run "$B"); dt=$(( $(date +%s) - t0 ))
+# wallclock-ok: a regression bound for a pass that was quadratic (it ran for minutes); 10 s is a generous ceiling, not a speed claim
 { [ "$rc" = 0 ] && [ "$dt" -lt 10 ]; } && ok "S21-LC-R5 a 20 KB line and a 6 KB comma list take ${dt} s, not minutes" || bad "S21-LC-R5 slow scan" "rc=$rc dt=$dt"
 
 # S21-LC-R6 (review S5): --since works when the bundle is reached through a symlinked folder.

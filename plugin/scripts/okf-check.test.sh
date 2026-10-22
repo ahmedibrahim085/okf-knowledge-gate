@@ -1531,6 +1531,7 @@ sleep 40
 STUB
 chmod +x "$H21/bin/okflint"
 t0=$(date +%s); env PATH="$H21/bin:$PATH" OKF_L2_TIMEOUT=3 "$CHECK" "$H21/b" >"$TMP/h21.txt" 2>&1; rc=$?; t1=$(date +%s)
+# wallclock-ok: a hang bound: OKF_L2_TIMEOUT=3 cuts a stub that sleeps; 15 s only proves it did not wait for the stub
 { [ "$rc" -eq 2 ] && [ $((t1-t0)) -lt 15 ] && grep -q "timed out after 3 s" "$TMP/h21.txt"; } \
   && ok "LT-21 a hung okflint is cut off after OKF_L2_TIMEOUT and named (exit 2 in $((t1-t0))s)" \
   || bad "LT-21 hung okflint" "rc=$rc ${t1}-${t0} $(grep -n L2 "$TMP/h21.txt" | head -2 | tr '\n' ' ')"
@@ -1573,6 +1574,7 @@ open(sys.argv[2], "w", encoding="utf-8").write(src[:-len(tail)] + "if __name__ =
 _l1stub '    import time; time.sleep(30)
 '
 t0=$(date +%s); OKF_L1_TIMEOUT=1 "$L1P/scripts/okf-check" "$H21/b" >"$TMP/l1t.txt" 2>&1; rc=$?; dt=$(( $(date +%s) - t0 ))
+# wallclock-ok: a hang bound: OKF_L1_TIMEOUT=1 cuts a validator that sleeps 30 s; 25 s sits below the sleep
 { [ "$rc" -eq 2 ] && grep -q 'L1 conformance   COULD NOT RUN — the validator timed out after 1 s (OKF_L1_TIMEOUT)' "$TMP/l1t.txt" \
   && [ "$dt" -lt 25 ]; } \
   && ok "LT-21e L1 past OKF_L1_TIMEOUT is a named COULD NOT RUN, exit 2 (a validator that sleeps 30 s; ${dt}s)" \
@@ -1602,6 +1604,7 @@ _l1stub '    import os, sys, time
 '
 L1H="$TMP/l1h"; mkbundle "$L1H"; for n in d e f; do cp "$L1H/c.md" "$L1H/$n.md"; done
 t0=$(date +%s); OKF_L1_TIMEOUT=2 "$L1P/scripts/okf-check" "$L1H" >"$TMP/l1h.txt" 2>&1; rc=$?; dt=$(( $(date +%s) - t0 ))
+# wallclock-ok: a hang bound: four notes share one OKF_L1_TIMEOUT=2 budget; six separate runs took 16 s, 10 s sits below that
 { [ "$rc" -eq 2 ] && grep -q 'L1 conformance   COULD NOT RUN — the validator timed out after 2 s (OKF_L1_TIMEOUT)' "$TMP/l1h.txt" \
   && ! grep -q 'crashed on' "$TMP/l1h.txt" && [ "$dt" -lt 10 ]; } \
   && ok "LT-21h isolating the notes shares the one OKF_L1_TIMEOUT budget (4 notes, ${dt}s, under 10 s; 6 runs of 2 s took 16 s)" \
@@ -1642,6 +1645,7 @@ t0=$(date +%s); OKF_STUB_PIDS="$TMP/ll.pids" OKF_LAYER_TIMEOUT=2 "$LLP/scripts/o
 miss=""; for l in 'Trust \(C4\)' Successor Owner Size 'L3 derived'; do
   grep -Eq "^  $l +COULD NOT RUN — .*2 s.*OKF_LAYER_TIMEOUT" "$TMP/ll1.txt" || miss="$miss [$l]"
 done
+# wallclock-ok: a hang bound: OKF_LAYER_TIMEOUT=2 cuts the stubs; 25 s sits below their sleep
 { [ "$rc" -eq 2 ] && [ -z "$miss" ] && [ "$dt" -lt 25 ]; } \
   && ok "LT-LL1 Python layers past OKF_LAYER_TIMEOUT are each a named COULD NOT RUN with the limit, exit 2 (${dt}s)" \
   || bad "LT-LL1 layer time limit" "rc=$rc ${dt}s missing:$miss $(grep -E 'COULD NOT RUN' "$TMP/ll1.txt" | head -6 | tr '\n' '|')"
@@ -1664,6 +1668,7 @@ LLR="$TMP/llreal"; mkbundle "$LLR"
 import sys
 sys.stdout.write("---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\nbig:\n" + "- {a: 1}\n" * 99000 + "generated:\n  by: human:t\n  at: \"2026-01-01\"\nstale_after: \"2099-01-01\"\n---\n\nbody\n")' > "$LLR/c.md"
 t0=$(date +%s); OKF_L1_TIMEOUT=1 OKF_LAYER_TIMEOUT=2 "$CHECK" "$LLR" >"$TMP/ll5.txt" 2>&1; rc=$?; dt=$(( $(date +%s) - t0 ))
+# wallclock-ok: a hang bound: OKF_LAYER_TIMEOUT=2 cuts the stub; 25 s sits below its sleep
 { [ "$rc" -eq 2 ] && grep -Eq '^  Trust \(C4\) +COULD NOT RUN — .*2 s.*OKF_LAYER_TIMEOUT' "$TMP/ll5.txt" && [ "$dt" -lt 25 ]; } \
   && ok "LT-LL5 a real 0.9 MB frontmatter note: Trust is a named COULD NOT RUN at OKF_LAYER_TIMEOUT=2, exit 2 (${dt}s)" \
   || bad "LT-LL5 real note" "rc=$rc ${dt}s size=$(wc -c < "$LLR/c.md") $(grep -E 'Trust|COULD' "$TMP/ll5.txt" | head -3 | tr '\n' '|')"
@@ -1676,10 +1681,12 @@ OKF_STUB_PIDS="$TMP/ll.pids" OKF_LAYER_TIMEOUT=2 "$LLP/scripts/okf-check" "$LLB"
   || bad "LT-LL7 duplicates time limit" "rc=$rc $(grep -E 'COULD|Duplic' "$TMP/ll7.txt" | head -3 | tr '\n' '|')"
 # LT-LL8/9/10: the scoped check (`--file`, what the edit hook runs) is under the same limit. A stub, then the real note.
 t0=$(date +%s); OKF_STUB_PIDS="$TMP/ll8.pids" OKF_LAYER_TIMEOUT=2 "$LLP/scripts/okf-check" "$LLB" --file "$LLB/c.md" >"$TMP/ll8.txt" 2>&1; rc=$?; dt=$(( $(date +%s) - t0 ))
+# wallclock-ok: a hang bound: OKF_LAYER_TIMEOUT=2 cuts the stubs; 15 s sits below their sleep
 { [ "$rc" -eq 2 ] && grep -Eq 'COULD NOT RUN — .*2 s.*OKF_LAYER_TIMEOUT' "$TMP/ll8.txt" && grep -q 'c.md was not checked' "$TMP/ll8.txt" && [ "$dt" -lt 15 ]; } \
   && ok "LT-LL8 --file past OKF_LAYER_TIMEOUT is a named COULD NOT RUN, exit 2, the note named as not checked (${dt}s)" \
   || bad "LT-LL8 scoped time limit" "rc=$rc ${dt}s $(head -3 "$TMP/ll8.txt" | tr '\n' '|')"
 t0=$(date +%s); OKF_LAYER_TIMEOUT=2 "$CHECK" "$LLR" --file "$LLR/c.md" >"$TMP/ll9.txt" 2>&1; rc=$?; dt=$(( $(date +%s) - t0 ))
+# wallclock-ok: a hang bound: OKF_LAYER_TIMEOUT=2 cuts the stub; 8 s only proves it did not wait for the stub
 { [ "$rc" -eq 2 ] && grep -Eq 'COULD NOT RUN — .*2 s.*OKF_LAYER_TIMEOUT' "$TMP/ll9.txt" && [ "$dt" -lt 8 ]; } \
   && ok "LT-LL9 --file on the real 0.9 MB note: COULD NOT RUN at OKF_LAYER_TIMEOUT=2, exit 2 (${dt}s)" \
   || bad "LT-LL9 scoped real note" "rc=$rc ${dt}s $(head -3 "$TMP/ll9.txt" | tr '\n' '|')"
@@ -3105,6 +3112,7 @@ for i in range(1000):
     open("%s/n%04d.md" % (sys.argv[1], i), "w").write('---\ntype: Lesson\ntitle: Note %d\ndescription: Topic %d covers item %d of set %d\nstatus: stable\nstale_after: "2099-01-01"\n---\nb\n' % (i, i % 37, i, i % 11))
 PY
 t0=$SECONDS; "$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?; el=$((SECONDS - t0))
+# wallclock-ok: a regression bound for a pass that was quadratic (it ran for minutes); 60 s is a generous ceiling, not a speed claim
 { [ "$rcl" -eq 0 ] && [ "$el" -lt 60 ] && ! grep -q 'CUT SHORT' "$D.txt"; } \
   && ok "LT-56h S7-E1 1,000 notes are compared in full within the 60 s default (${el} s here)" \
   || bad "LT-56h S7-E1 1,000 notes" "rc=$rcl ${el}s $(head -3 "$D.txt" | tr '\n' ' ')"
@@ -3193,6 +3201,7 @@ for i in range(1000):
     open("%s/n%04d.md" % (sys.argv[1], i), "w").write('---\ntype: Lesson\ntitle: Note %d\ndescription: Item %d\nstatus: stable\nstale_after: "2099-01-01"\n---\n%s\n' % (i, i, body))
 PY
 t0=$SECONDS; "$CHECK" "$D" --duplicates-body >"$D.txt" 2>&1; rcl=$?; el=$((SECONDS - t0))
+# wallclock-ok: a regression bound for a pass that was quadratic (it ran for minutes); 60 s is a generous ceiling, not a speed claim
 { [ "$rcl" -eq 0 ] && [ "$el" -lt 60 ] && ! grep -q 'CUT SHORT' "$D.txt"; } \
   && ok "LT-57d S7-E3 --duplicates-body on 1,000 notes of 200 words completes within the 60 s default (${el} s here)" \
   || bad "LT-57d S7-E3 1,000 bodies" "rc=$rcl ${el}s $(head -3 "$D.txt" | tr '\n' ' ')"
@@ -3344,6 +3353,7 @@ import time, yaml, okf_validate as v
 text = "".join("k%d: 1\n" % i for i in range(60000)) + "k5: 2\n"
 node = yaml.SafeLoader(text).get_single_node()
 t0 = time.time(); dups = v._duplicate_keys(node); dt = time.time() - t0
+# wallclock-ok: a regression bound for a quadratic duplicate-key walk (minutes on 60,000 keys); 10 s is a generous ceiling, not a speed claim
 print("size=%d keys=%d dups=%s seconds=%.2f ok=%s" % (len(text), len(node.value), dups, dt, dt < 10 and dups == ["k5"]))
 PY
 grep -q 'size=[0-9]* keys=60001 dups=\[.k5.\] seconds=[0-9.]* ok=True$' "$S31D/e1.txt" \
@@ -3358,6 +3368,7 @@ import sys
 sys.stdout.write("---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\nstale_after: \"2099-01-01\"\n"
                  + "".join("k%d: 1\n" % i for i in range(60000)) + "k5: 2\n---\n\nbody\n")' > "$D/n.md"
 t0=$(date +%s); "$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?; dt=$(( $(date +%s) - t0 ))
+# wallclock-ok: a regression bound for a quadratic duplicate-key walk (minutes on 60,000 keys); 90 s is a generous ceiling, not a speed claim
 { [ "$rcl" -eq 0 ] && [ "$dt" -lt 90 ] && grep -q 'n.md: .*duplicate key `k5`' "$D.txt" && ! grep -q 'COULD NOT RUN' "$D.txt"; } \
   && ok "S31-VD-E1b okf-check on a 0.59 MB note with 60,000 keys finishes in ${dt} s (under 90 s), names the duplicate k5, exit 0" \
   || bad "S31-VD-E1b okf-check on a 60,000-key note" "rc=$rcl ${dt}s $(grep -E 'n.md|COULD' "$D.txt" | head -2 | cut -c1-140 | tr '\n' ' ')"

@@ -1465,32 +1465,46 @@ done
 # S10-PO-13j: the block reader's cost is linear in line length and nesting depth. Timed in memory through the module (no
 # file is written): one marker line opening 8000 nested items then 50 000 lines, and 160 KB single lines of marker runs
 # (`- - - ... x`, `* * * ... x`, `1. 1. ... x`, markers then a break) and of `>`, `#`, backticks, spaces, tabs. A linear
-# reader takes milliseconds; the quadratic ones took 5 s to over 30 s. The limit, 3 s per shape, allows a slow runner.
+# reader takes milliseconds; the quadratic ones took 5 s to over 30 s. The bound is a RATIO, not a wall-clock number (as 26g):
+# each shape at 8 times the size must cost at most 24 times as much plus 0.25 s (best of 3 each), and a quadratic control proves the
+# check can fail.
 "$REALPY" - "$EXPORT" >"$TMP/out.txt" 2>&1 <<'PY'
 import importlib.machinery, importlib.util, sys, time
 loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
 mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
 loader.exec_module(mod)
-n = 160 * 1024
-shapes = {"8000 nested + 50000 lines": ["- " * 8000 + "x"] + ["line %d" % i for i in range(50000)],
-          "'- ' run": ["- " * (n // 2) + "x"], "'* ' run": ["* " * (n // 2) + "x"], "'1. ' run": ["1. " * (n // 3) + "x"],
-          "markers then a break": ["- " * (n // 4) + "* " * (n // 4)], "'>' run": [">" * n], "'#' run": ["#" * n],
-          "backticks": ["`" * n], "spaces": [" " * n + "x"], "tabs": ["\t" * n + "x"]}
-slow = []
-for name, body in shapes.items():
-    t = time.perf_counter()
+def shapes(n):   # n = line length in bytes; the nested shape scales both its depth and its line count
+    return {"nested + lines": ["- " * (n // 20) + "x"] + ["line %d" % i for i in range(n * 50000 // (160 * 1024))],
+            "'- ' run": ["- " * (n // 2) + "x"], "'* ' run": ["* " * (n // 2) + "x"], "'1. ' run": ["1. " * (n // 3) + "x"],
+            "markers then a break": ["- " * (n // 4) + "* " * (n // 4)], "'>' run": [">" * n], "'#' run": ["#" * n],
+            "backticks": ["`" * n], "spaces": [" " * n + "x"], "tabs": ["\t" * n + "x"]}
+def read(lines):
     try:
-        list(mod.body_lines(body + ["after"]))
+        list(mod.body_lines(lines + ["after"]))
     except mod.TooDeep:   # the '>' run: one nested read per level, stopped at the cap
         pass
-    took = time.perf_counter() - t
-    print("%-28s %.3f s" % (name, took))
-    if took > 3:
-        slow.append("%s %.1f s" % (name, took))
+def best(fn, lines):
+    runs = []
+    for _ in range(3):
+        t = time.perf_counter(); fn(lines); runs.append(time.perf_counter() - t)
+    return min(runs)
+def too_slow(fn, make, small, big):
+    t1, t8 = best(fn, make(small)), best(fn, make(big))
+    return t8 > 24 * t1 + 0.25, t1, t8
+def quadratic(lines):          # the control: a reader that rescans everything before each line
+    for i in range(len(lines)): lines[:i].count("x")
+bad_control, c1, c8 = too_slow(quadratic, lambda n: ["l"] * n, 3000, 24000)
+print("control quadratic     %.3f s -> %.3f s  %s" % (c1, c8, "caught" if bad_control else "NOT CAUGHT"))
+slow = [] if bad_control else ["the quadratic control was not caught"]
+for name in shapes(1):
+    flag, t1, t8 = too_slow(read, lambda n: shapes(n)[name], 20 * 1024, 160 * 1024)
+    print("%-22s %.3f s -> %.3f s" % (name, t1, t8))
+    if flag:
+        slow.append("%s %.2f s -> %.2f s" % (name, t1, t8))
 sys.exit(1 if slow else 0)
 PY
 rc=$?
-[ "$rc" = 0 ] && ok "S10-PO-13j deep nesting and 160 KB marker, quote, hash, backtick, space and tab lines each read in under 3 s" \
+[ "$rc" = 0 ] && ok "S10-PO-13j deep nesting and 160 KB marker, quote, hash, backtick, space and tab lines each cost linear time: 8 times the size costs at most 24 times as much plus 0.25 s (a quadratic control is caught)" \
   || bad "S10-PO-13j linear cost" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt")"
 
 # S10-PO-17: two output names that differ only in Unicode normalisation (café as NFC and as NFD) are one file on macOS (APFS),
@@ -1900,6 +1914,7 @@ t = time.perf_counter()
 got = deep([">" * 1_000_000, "after"])
 took = time.perf_counter() - t
 print("1 MB '>' line: TooDeep=%s %.3f s" % (got, took))
+# wallclock-ok: linear takes about 0.06 s here (measured 2026-10-22) for the 1 MB line, 16 times under the 1 s bound; the quadratic reader took 33 s at the 5 MB cap
 if not got or took > 1:
     bad.append("1 MB line: TooDeep=%s %.1f s (want True, under 1 s)" % (got, took))
 for name, prefix, markers, want in [("top 100", "", 100, False), ("top 101", "", 101, True),

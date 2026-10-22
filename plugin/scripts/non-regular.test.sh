@@ -313,6 +313,7 @@ sig = getattr(signal, "SIG" + sys.argv[1])
 p = subprocess.Popen([sys.argv[2], sys.argv[3]], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                      preexec_fn=lambda: signal.signal(signal.SIGINT, signal.SIG_DFL))
 t0 = time.time()
+# wallclock-ok: a deadline for the poll that waits for the stub to start (60 s), not an assertion on speed
 while not os.path.exists(os.environ["STUB_STARTED"]) and time.time() - t0 < 60 and p.poll() is None:
     time.sleep(0.2)
 p.send_signal(sig)
@@ -354,6 +355,7 @@ B="$TMP/p4"; mkb "$B"; : > "$B/mem-trigger"
 t0=$SECONDS; PATH="$MEMBIN:$PATH" OKF_L2_MAX_RSS_MB=25 timeout 90 "$CHECK" "$B" > "$TMP/o.txt" 2>&1; RC=$?; dt=$((SECONDS-t0))
 left=$(procs 'bytearray(b"x")')
 if [ "$left" = SKIP ]; then skip "S17-NR-P4 no way to list processes here"
+# wallclock-ok: a hang bound: the memory cap kills the stub, the run is under timeout 90; 30 s only proves it did not run to the limit
 elif [ "$RC" -eq 2 ] && [ "$dt" -lt 30 ] && [ "$left" -eq 0 ] && grep -q 'COULD NOT RUN — okflint exceeded 25 MB' "$TMP/o.txt"; then
   ok "S17-NR-P4 a stub holding 80 MB is stopped at OKF_L2_MAX_RSS_MB=25: COULD NOT RUN, exit 2, ${dt} s, nothing left"
 else bad "S17-NR-P4 memory watchdog" "rc=$RC ${dt}s left=$left $(grep -n 'L2' "$TMP/o.txt" | head -2 | tr '\n' ' ')"; pkill -f 'bytearray(b"x")' 2>/dev/null; fi

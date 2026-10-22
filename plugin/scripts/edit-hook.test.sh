@@ -235,8 +235,9 @@ start=$("$REALPY" -c 'import time; print(time.time())')
 "$REALPY" -c 'import json,sys; print(json.dumps({"tool_name":"Edit","tool_input":{"file_path":sys.argv[1]}}))' "$B/sub/bad.md" \
   | boxed 20 env OKF_EDIT_HOOK_TIMEOUT=60 "$REALPY" "$CP2/scripts/okf-edit-hook.py" >"$TMP/out.txt" 2>"$TMP/err.txt"; rc=$?
 took=$("$REALPY" -c "import time; print('%.1f' % (time.time() - $start))")
-{ silent "$rc" && "$REALPY" -c "import sys; sys.exit(0 if float('$took') < 5.0 else 1)"; } \
-  && ok "SH-10 OKF_EDIT_HOOK_TIMEOUT=60 is capped: the box fired after ${took} s, under the 5 s platform timeout" \
+# wallclock-ok: the cap fires at 4.5 s and the uncapped run ends at the 20 s box; 10 s sits between them, with 5 s of slack over the cap
+{ silent "$rc" && "$REALPY" -c "import sys; sys.exit(0 if float('$took') < 10.0 else 1)"; } \
+  && ok "SH-10 OKF_EDIT_HOOK_TIMEOUT=60 is capped: the box fired after ${took} s (cap 4.5 s; uncapped it runs to the 20 s box)" \
   || bad "SH-10 cap" "rc=$rc took=${took} s"
 pkill -f "$MARK2" 2>/dev/null
 
