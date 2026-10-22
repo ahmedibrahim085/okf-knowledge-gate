@@ -9,6 +9,9 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+### Fixed
+- **L3 lists every note it counts, under a UTF-8 locale too.** A note whose name holds a byte that is not UTF-8 was counted ("3 concept(s) need attention") but missing from the list below the count and from `--json` `stale[]`. Under a UTF-8 locale, GNU grep reads such a line as binary and drops it, while `grep -c` still counts it. The L3 filters read their input as text (`grep -a`). GitHub's runner defaults to `C.UTF-8`, so S30-CF-L1 failed in CI and passed under the C locale; S30-CF-L1u runs the same notes under a UTF-8 locale.
+
 ## [0.9.39] - 2026-10-20
 
 OKF Knowledge Gate 0.9.39 closes the leftovers of the overnight review: the public-export scan, `okf-export` anchors and links, and the `okf-check` time limit and path rules.

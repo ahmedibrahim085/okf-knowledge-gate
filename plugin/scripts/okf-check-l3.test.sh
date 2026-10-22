@@ -519,6 +519,22 @@ else
     && ok "S30-CF-L1 three expired notes named with a space, ESC and a non-UTF-8 byte: L3 lists all three (exit 0)" \
     || bad "S30-CF-L1 odd names" "rc=$rc $(grep -c '(stale_after' "$TMP/t29.txt") listed; $(grep -E 'L3|COULD' "$TMP/t29.txt" | cat -v | tr '\n' ' ')"
 fi
+# S30-CF-L1u: the same three notes under a UTF-8 locale. GNU grep reads a line with a byte that is not UTF-8 as binary
+# and drops it, while grep -c still counts it: L3 said "3 concept(s) need attention" and listed 2, in the text and in
+# --json stale[]. GitHub's runner defaults to C.UTF-8, so S30-CF-L1 failed there and passed under the C locale.
+U8=$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.utf-?8$' | head -1)
+if [ "$(find "$T29" -name '*.md' | wc -l | tr -d ' ')" -ne 6 ]; then
+  skip "S30-CF-L1u this disk refuses a note name that is not UTF-8 (run on Linux)"
+elif [ -z "$U8" ]; then
+  skip "S30-CF-L1u no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  LC_ALL="$U8" "$CHECK" "$T29" >"$TMP/t29u.txt" 2>&1; rc=$?
+  LC_ALL="$U8" "$CHECK" --json "$T29" >"$TMP/t29u.json" 2>/dev/null
+  nj=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['stale']))" "$TMP/t29u.json" 2>/dev/null)
+  { [ "$rc" -eq 0 ] && [ "$(LC_ALL=C grep -c '(stale_after' "$TMP/t29u.txt")" -eq 3 ] && [ "$nj" = 3 ]; } \
+    && ok "S30-CF-L1u under LC_ALL=$U8 L3 lists all three odd-named notes, in the text and in --json stale[] (exit 0)" \
+    || bad "S30-CF-L1u odd names under $U8" "rc=$rc $(LC_ALL=C grep -c '(stale_after' "$TMP/t29u.txt") listed, --json stale[] ${nj:-?}"
+fi
 
 # LT-CE1/CE2: L3 derived measures a cited sources[].resource only when it exists with the case as written (the citation
 # rule of okf-verify, D-11). On a case-insensitive disk SRC.txt used to be measured through src.txt, and on Linux it was

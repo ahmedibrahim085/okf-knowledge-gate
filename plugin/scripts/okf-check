@@ -2199,20 +2199,22 @@ run_staleness() {
   # finding that L1 also warns about: counting it as "need attention" beside the expired notes made 4 overdue notes read as
   # 84, and made --fail-stale exit 4 on a bundle in which nothing had expired (okf-knowledge-gate#3).
   local n_stale n_status
-  n_stale=$(printf '%s\n' "$report" | grep -Ec '^ +(expired|malformed) '); n_status=$(printf '%s\n' "$report" | grep -Ec '^ +status ')
+  # grep -a: a note name may hold a byte that is not UTF-8. Under a UTF-8 locale grep reads that line as binary and
+  # drops it from its output while -c still counts it: "3 concept(s) need attention" listed 2 (S30-CF-L1u).
+  n_stale=$(printf '%s\n' "$report" | grep -aEc '^ +(expired|malformed) '); n_status=$(printf '%s\n' "$report" | grep -aEc '^ +status ')
   advise L3 $((n_stale + n_status))
   if [ "$n_stale" -gt 0 ]; then
     say "  L3 staleness     ${n_stale} concept(s) need attention"
     # through say(), or --json is corrupted by the detail lines (R-3)
-    printf '%s\n' "$report" | grep -E '^ +(expired|malformed) ' | sed 's/^ *//' | while IFS= read -r _e; do record stale "$_e"; done
-    printf '%s\n' "$report" | grep -E '^ +(expired|malformed) ' | say_capped 10 ""
+    printf '%s\n' "$report" | grep -aE '^ +(expired|malformed) ' | sed 's/^ *//' | while IFS= read -r _e; do record stale "$_e"; done
+    printf '%s\n' "$report" | grep -aE '^ +(expired|malformed) ' | say_capped 10 ""
   else
     say "  L3 staleness     PASS   nothing expired"
   fi
   if [ "$n_status" -gt 0 ]; then
     say "  L3 lifecycle     ${n_status} concept(s) have a status outside ${L3_STATUS//,/, } (OKF 5.4; L1 warns about them too)"
-    printf '%s\n' "$report" | grep -E '^ +status ' | sed 's/^ *//' | while IFS= read -r _e; do record lifecycle "$_e"; done
-    printf '%s\n' "$report" | grep -E '^ +status ' | say_capped 10 ""
+    printf '%s\n' "$report" | grep -aE '^ +status ' | sed 's/^ *//' | while IFS= read -r _e; do record lifecycle "$_e"; done
+    printf '%s\n' "$report" | grep -aE '^ +status ' | say_capped 10 ""
   fi
   [ "$FAIL_STALE" -eq 1 ] && [ "$n_stale" -gt 0 ] && return $EXIT_STALE
   return 0
