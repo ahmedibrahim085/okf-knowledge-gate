@@ -6,14 +6,24 @@ points at. Needs the vendored okf_validate on sys.path (its bounded loader refus
 import os
 
 from okf_guard import NoteRefused, note_cap, obsidian_path, read_note, refusal, shown  # noqa: F401  (re-exported: one reader for every tool)
-from okf_validate import load_frontmatter, split_frontmatter
+from okf_validate import AliasBombError, load_frontmatter, split_frontmatter
 
 
 INVALID = object()   # pass as meta(p, invalid=INVALID) to tell "not valid YAML" from "no frontmatter"
 
 
-def meta(p, invalid=None):
-    """The frontmatter of note `p` as a dict; {} when it has none, `invalid` (default {}) when it does not parse."""
+class TooLarge:
+    """meta(p, too_large=True) returns one when the loader refused the frontmatter for its size (an item, character, single-scalar or nesting cap: any AliasBombError),
+    not for being invalid YAML. `why` is the loader's own message."""
+
+    def __init__(self, why):
+        self.why = why
+
+
+def meta(p, invalid=None, too_large=False):
+    """The frontmatter of note `p` as a dict; {} when it has none, `invalid` (default {}) when it does not parse.
+
+    With too_large=True a frontmatter the loader's size cap refused (AliasBombError) is a TooLarge, not `invalid`."""
     try:
         # utf-8-sig: a note that starts with a BOM is read as L1 reads it (0.9.8 review G-1)
         t = read_note(p, "utf-8-sig", "replace")
@@ -24,6 +34,10 @@ def meta(p, invalid=None):
         return {}
     try:
         m = load_frontmatter(t[3:end])
+    except AliasBombError as e:
+        if too_large:
+            return TooLarge(str(e))
+        return {} if invalid is None else invalid
     except Exception:
         return {} if invalid is None else invalid
     return m if isinstance(m, dict) else {}

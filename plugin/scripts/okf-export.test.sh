@@ -1299,27 +1299,38 @@ rc=$(run "$V" "$TMP/po26f/out")
   && ok "S10-PO-26f Para after indented code in a quote is a heading; z after code in a quoted list is not (no phantom)" \
   || bad "S10-PO-26f code in quote" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
 # 26g: the new paths stay linear: 160 KB of lone # lines, of quoted list items with indented lines, and of lazy indented
-# lines, each read in under 0.5 s (timed in memory through the module, as 13j).
+# lines. The bound is a RATIO, not a wall-clock number (a hosted CI runner is several times slower than a laptop): the same
+# shape at 8 times the size must cost at most 24 times as much plus 0.25 s (best of 3 each; linear is about 8, quadratic
+# about 64). A quadratic control proves the check can fail. Timed in memory through the module, as 13j.
 "$REALPY" - "$EXPORT" >"$TMP/out.txt" 2>&1 <<'PY'
 import importlib.machinery, importlib.util, sys, time
 loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
 mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
 loader.exec_module(mod)
-n = 160 * 1024
-shapes = {"lone #": ["#"] * (n // 2), "quoted items + code": ["> - a", ">     code"] * (n // 14),
-          "lazy indented": ["> - a"] + ["    # H"] * (n // 8)}
-slow = []
-for name, body in shapes.items():
-    t = time.perf_counter()
-    list(mod.body_lines(body + ["after"]))
-    took = time.perf_counter() - t
-    print("%-22s %.3f s" % (name, took))
-    if took > 0.5:
-        slow.append("%s %.2f s" % (name, took))
+shapes = {"lone #": lambda n: ["#"] * (n // 2), "quoted items + code": lambda n: ["> - a", ">     code"] * (n // 14),
+          "lazy indented": lambda n: ["> - a"] + ["    # H"] * (n // 8)}
+def best(fn, lines):
+    runs = []
+    for _ in range(3):
+        t = time.perf_counter(); fn(lines); runs.append(time.perf_counter() - t)
+    return min(runs)
+def too_slow(fn, make, small, big):
+    t1, t8 = best(fn, make(small)), best(fn, make(big))
+    return t8 > 24 * t1 + 0.25, t1, t8
+def quadratic(lines):          # the control: a reader that rescans everything before each line
+    for i in range(len(lines)): lines[:i].count("x")
+bad_control, c1, c8 = too_slow(quadratic, lambda n: ["l"] * n, 3000, 24000)
+print("control quadratic     %.3f s -> %.3f s  %s" % (c1, c8, "caught" if bad_control else "NOT CAUGHT"))
+slow = [] if bad_control else ["the quadratic control was not caught"]
+for name, make in shapes.items():
+    flag, t1, t8 = too_slow(lambda ls: list(mod.body_lines(ls + ["after"])), make, 40 * 1024, 320 * 1024)
+    print("%-22s %.3f s -> %.3f s" % (name, t1, t8))
+    if flag:
+        slow.append("%s %.2f s -> %.2f s" % (name, t1, t8))
 sys.exit(1 if slow else 0)
 PY
 rc=$?
-[ "$rc" = 0 ] && ok "S10-PO-26g 160 KB of lone #, quoted items with code, and lazy indented lines each read in under 0.5 s (guard: passes on the base script too)" \
+[ "$rc" = 0 ] && ok "S10-PO-26g lone #, quoted items with code and lazy indented lines cost linear time: 8 times the size costs at most 24 times as much plus 0.25 s (a quadratic control is caught; guard: passes on the base script too)" \
   || bad "S10-PO-26g linear cost" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt")"
 # 26h: a list item in a quote that holds no paragraph (empty, or its content starts a block) leaves none open, so the next
 # line without a `>` is no lazy line: the quote ends there. An HTML block or indented code then starts at that line, and
@@ -1744,7 +1755,8 @@ fi
 
 # S10-PO-22d: a file whose stat fails in a folder access() calls enterable (NFS root_squash, FUSE, a privacy block) is not dropped
 # in silence: it is named "a file that could not be examined (<reason>)", not exported, exit 1. Driven through the module with
-# Path.is_file raising PermissionError for one name; a folder that cannot be entered is still named once, not per file.
+# os.stat raising PermissionError for one name (Path.is_file() answers False for that since Python 3.14, so the module asks okf_guard);
+# a folder that cannot be entered is still named once, not per file.
 V="$TMP/po22d/vault"; mkdir -p "$V"; note "$V" ok.md "# Ok"; note "$V" flaky.md "# Flaky"
 "$REALPY" - "$EXPORT" "$V" "$TMP/po22d/out" >"$TMP/out.txt" 2>&1 <<'PY'
 import importlib.machinery, importlib.util, io, pathlib, sys
@@ -1752,17 +1764,19 @@ from contextlib import redirect_stdout
 loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
 mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
 loader.exec_module(mod)
-real = pathlib.Path.is_file
-def flaky(self):
-    if self.name == "flaky.md":
-        raise PermissionError(13, "Permission denied", str(self))
-    return real(self)
-pathlib.Path.is_file = flaky
+import os
+real = os.stat
+def flaky(path, *a, **k):
+    if str(path).endswith("flaky.md"):
+        raise PermissionError(13, "Permission denied", str(path))
+    return real(path, *a, **k)
+os.stat = flaky
 out = pathlib.Path(sys.argv[3])
 sys.argv = ["okf-export", sys.argv[2], sys.argv[3]]
 buf = io.StringIO()
 with redirect_stdout(buf):
     rc = mod.main()
+os.stat = real   # the checks below ask Path.exists(), which raises on 3.10 to 3.13 for the name made to fail
 print(buf.getvalue(), end="")
 ok = rc == 1 and "flaky.md — a file that could not be examined (Permission denied): skipped" in buf.getvalue().splitlines() \
     and not (out / "flaky.md").exists() and (out / "ok.md").exists()
@@ -1771,6 +1785,44 @@ PY
 rc=$?
 [ "$rc" = 0 ] && ok "S10-PO-22d a file whose stat fails in an enterable folder is named 'could not be examined' (exit 1) and not exported" \
   || bad "S10-PO-22d stat fails" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt" | cut -c1-300)"
+# S39-PY: Python 3.14 stopped raising from Path.exists(), is_dir() and is_file() (a permission error is a plain False there). A vault or
+# an output folder under a folder nobody may enter is said to be unreadable, never "not a folder", on every Python. Run as the Python in use
+# is, and with those predicates forced to answer False for an OSError (a sitecustomize on PYTHONPATH), so 3.9 and 3.12 prove the 3.14 behaviour.
+if [ "$(id -u)" != 0 ]; then
+  mkdir -p "$TMP/py314"
+  cat > "$TMP/py314/sitecustomize.py" <<'PYEOF'
+import pathlib
+def _quiet(f):
+    def g(self, *a, **k):
+        try:
+            return f(self, *a, **k)
+        except OSError:
+            return False
+    return g
+for _n in ("exists", "is_dir", "is_file"):
+    setattr(pathlib.Path, _n, _quiet(getattr(pathlib.Path, _n)))
+PYEOF
+  mkdir -p "$TMP/py39/lk/vault" "$TMP/py39/v2" "$TMP/py39/lk2"; note "$TMP/py39/lk/vault" a.md "# A"; note "$TMP/py39/v2" b.md "# B"
+  py_export() { # <label>
+    local lbl="$1" rc
+    chmod 000 "$TMP/py39/lk"; rc=$(run "$TMP/py39/lk/vault" "$TMP/py39/o1"); chmod 755 "$TMP/py39/lk"
+    { [ "$rc" = 2 ] && grep -q 'lk/vault cannot be read: Permission denied' "$TMP/out.txt" && ! grep -q 'Traceback\|not a folder' "$TMP/out.txt"; } \
+      && ok "S39-PY-06 $lbl: a vault under a folder nobody may enter is 'cannot be read' (exit 2), not 'not a folder' and no traceback" \
+      || bad "S39-PY-06 $lbl" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+    chmod 000 "$TMP/py39/lk2"; rc=$(run "$TMP/py39/v2" "$TMP/py39/lk2/out"); chmod 755 "$TMP/py39/lk2"
+    { [ "$rc" = 2 ] && grep -q 'cannot write to .*lk2/out: Permission denied' "$TMP/out.txt" && ! grep -q Traceback "$TMP/out.txt"; } \
+      && ok "S39-PY-07 $lbl: an output under a folder nobody may enter is 'cannot write to' (exit 2), no traceback" \
+      || bad "S39-PY-07 $lbl" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+    mkdir -p "$TMP/py39/out0"; chmod 000 "$TMP/py39/out0"; rc=$(run "$TMP/py39/v2" "$TMP/py39/out0"); chmod 755 "$TMP/py39/out0"
+    { [ "$rc" = 2 ] && grep -q "^okf-export: cannot write to .*py39/out0: Permission denied" "$TMP/out.txt" && ! grep -q Traceback "$TMP/out.txt"; } \
+      && ok "S39-PY-13 $lbl: an existing output folder nobody may enter is 'cannot write to' (exit 2), no traceback (it was a traceback and exit 1, the 'files skipped' exit)" \
+      || bad "S39-PY-13 $lbl" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+  }
+  py_export "as run"
+  PYTHONPATH="$TMP/py314${PYTHONPATH:+:$PYTHONPATH}" py_export "with Path predicates that answer False for an OSError (3.14 behaviour)"
+else
+  printf '  SKIP  S39-PY a folder nobody may enter: root enters it anyway\n'
+fi
 # S10-PO-23: a code span in a wikilink alias. CommonMark binds a code span tighter than a link (markdown-it-py 3.0.0 and
 # commonmark.py 0.9.1 render `[`c`](b.md)` as a link whose text holds <code>, and `[[b|`c`]]` as plain text around <code>),
 # so a span wholly inside the alias is part of the new link text (20a). A link inside a span, or one a span cuts through

@@ -80,6 +80,18 @@ rc=$(fire "$B/sub/bad.md")
   || bad "S9-H1 one warning line" "rc=$rc err: $(head -3 "$TMP/err.txt" | tr '\n' '|') out: $(head -2 "$TMP/out.txt" | tr '\n' '|')"
 silent() { [ "$1" = 0 ] && [ ! -s "$TMP/out.txt" ] && [ ! -s "$TMP/err.txt" ]; }
 
+# --- S39-PY-15: a bundle folder nobody may enter makes the scoped check stop (exit 2), and the hook is fail-open: exit 0, nothing printed ---
+if [ "$(id -u)" != 0 ]; then
+  BU="$TMP/unreadable"; bundle "$BU" 'okf_check:
+  edit_hook: true'
+  badnote "$BU/bad.md"; mkdir -p "$BU/locked"; chmod 000 "$BU/locked"
+  rc=$(fire "$BU/bad.md"); chmod 755 "$BU/locked"
+  silent "$rc" && ok "S39-PY-15 edit_hook: true, a bundle folder nobody may enter, a note with an L1 error: exit 0 and no output (fail-open: the scoped check stops with exit 2, the hook says nothing)" \
+    || bad "S39-PY-15 fail-open on an unreadable folder" "rc=$rc err: $(head -2 "$TMP/err.txt" | tr '\n' '|')"
+else
+  skip "S39-PY-15 a folder nobody may enter: root enters it anyway"
+fi
+
 # --- S9-N1: off by default: no key, no env -> nothing runs, nothing printed --------------------
 B0="$TMP/off"; bundle "$B0" ''
 badnote "$B0/bad.md"

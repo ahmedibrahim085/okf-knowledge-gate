@@ -666,6 +666,21 @@ chmod 755 "$RU"
 [ "$got" -ne 0 ] && ok "R-6 an unreadable bundle directory fails CLOSED" \
   || bad "R-6 unreadable bundle directory fails CLOSED" "exit 0 — a permission problem read as a pass"
 
+# S39-PY-12: a bundle below a folder nobody may enter is not "not a directory" (bash [ -d ] cannot tell the two apart): the same
+# "not readable" line and exit 2 as an unreadable bundle, for the full run and for --fingerprint. A path that is missing stays exit 64.
+if [ "$(id -u)" != 0 ]; then
+  mkdir -p "$TMP/pyun/outer"; mkbundle "$TMP/pyun/outer/b"; chmod 000 "$TMP/pyun/outer"
+  "$CHECK" "$TMP/pyun/outer/b" >"$TMP/pyun1.txt" 2>&1; rc1=$?
+  "$CHECK" --fingerprint "$TMP/pyun/outer/b" >"$TMP/pyun2.txt" 2>&1; rc2=$?
+  chmod 755 "$TMP/pyun/outer"
+  { [ "$rc1" = 2 ] && [ "$rc2" = 2 ] && grep -q '^error: .*outer/b is not readable' "$TMP/pyun1.txt" && grep -q '^error: .*outer/b is not readable' "$TMP/pyun2.txt" \
+      && ! grep -q 'not a directory' "$TMP/pyun1.txt" "$TMP/pyun2.txt"; } \
+    && ok "S39-PY-12 a bundle below a folder nobody may enter is 'not readable' (exit 2), in the full run and in --fingerprint, not 'not a directory'" \
+    || bad "S39-PY-12 bundle under an unreadable folder" "rc=$rc1/$rc2 $(head -2 "$TMP/pyun1.txt" | tr '\n' '|' | cut -c1-200) $(head -2 "$TMP/pyun2.txt" | tr '\n' '|' | cut -c1-200)"
+else
+  skip "S39-PY-12 a bundle below a folder nobody may enter — running as root, chmod 000 does not stop the read (skip, not a pass)"
+fi
+
 # R-7 MEDIUM: a newline in the bundle path silently disabled L3 (`tr '\n' '\0'`
 # split the path). Same class as E-2b, which covered spaces only.
 RN="$TMP/nl
@@ -3528,6 +3543,150 @@ LY="$TMP/on-ly"; mkbundle "$LY"; printf -- '---\ntitle: T\n---\nbody\n' > "$LY/b
   && grep -qE '^                   bad\.md: ' "$TMP/on-ly.txt" && ! grep -qF '\x0a' "$TMP/on-ly.txt"; } \
   && ok "S36-ON-LY an ASCII bundle's text report keeps its layout: indent, and the blank line before FAILED (exit 1)" \
   || bad "S36-ON-LY report layout" "rc=$rcl $(cat -v "$TMP/on-ly.txt" | head -6 | tr '\n' '|')"
+
+
+# S38-ST begin
+# A stop never leaves a mode's document empty, and Owner tells a note that is too large from one that is invalid or ownerless.
+# Fixtures: a plugin copy with a stub, symlinks, a chmod 000 folder and a PATH without python: nothing that reads a device or
+# allocates memory. The "too large" note is 5 KB: 1000 aliases of one 1000-item list expand to 1,001,000 items, above the
+# loader's MAX_EXPANDED_ITEMS (1,000,000), with no file near 1 MB.
+STP="$TMP/st-plug"; cp -R "$HERE/.." "$STP"; STC="$STP/scripts/okf-check"
+st_bundle() {   # <dir>: a conformant bundle with a manifest
+  mkbundle "$1"; sed 's/^  name: CHANGE ME/  name: T/' "$HERE/../config/okf-base.yaml.template" > "$1/okf-base.yaml"
+}
+st_doc() {   # <file> <text the reason must hold>: "<exit> <layers_not_run> <reason holds the text>", or NOT-JSON
+  "$REALPY" -c 'import json, sys
+try:
+    d = json.load(open(sys.argv[1]))
+except Exception as e:
+    print("NOT-JSON", type(e).__name__); sys.exit()
+print(d.get("exit"), d.get("layers_not_run"), sys.argv[2] in str(d.get("reason", d.get("error", ""))))' "$1" "$2"
+}
+st_run() {   # <label> <want doc> <text in the reason> <cmd...>: stdout is one document, stderr holds the reason, exit 2
+  local lbl="$1" want="$2" txt="$3" rc doc; shift 3
+  "$@" >"$TMP/st.out" 2>"$TMP/st.err"; rc=$?
+  doc=$(st_doc "$TMP/st.out" "$txt")
+  { [ "$rc" -eq 2 ] && [ "$doc" = "$want" ] && grep -q -- "$txt" "$TMP/st.err"; } \
+    && ok "$lbl: one JSON document ($doc), the reason on stderr, exit 2" \
+    || bad "$lbl" "rc=$rc doc=[$doc] want=[$want] stdout=$(wc -c < "$TMP/st.out" | tr -d ' ')B stderr=$(head -c 160 "$TMP/st.err" | tr '\n' '|')"
+}
+
+# S38-ST-N1..N3: --duplicates --json, three stops that printed nothing on stdout.
+B="$TMP/st-n1"; st_bundle "$B"; printf 'okf_check: [\n' >> "$B/okf-base.yaml"
+st_run "S38-ST-N1 --duplicates --json with a manifest that does not parse" "2 ['Config'] True" "okf-base.yaml" "$CHECK" "$B" --duplicates --json
+B="$TMP/st-n2"; st_bundle "$B"; mkdir "$B/.okfignore"
+st_run "S38-ST-N2 --duplicates --json with an .okfignore that is a folder" "2 ['Duplicates'] True" ".okfignore" "$CHECK" "$B" --duplicates --json
+B="$TMP/st-n3"; st_bundle "$B"; STP3="$TMP/st-plug3"; cp -R "$HERE/.." "$STP3"; printf 'import sys\nsys.exit(3)\n' > "$STP3/scripts/okf-duplicates.py"
+st_run "S38-ST-N3 --duplicates --json when okf-duplicates.py exits 3" "2 ['Duplicates'] True" "exited 3" "$STP3/scripts/okf-check" "$B" --duplicates --json
+# S38-ST-N4: the manifest is a link to a device: refused up front (stat only, never opened).
+B="$TMP/st-n4"; st_bundle "$B"; rm "$B/okf-base.yaml"; ln -s /dev/null "$B/okf-base.yaml"
+st_run "S38-ST-N4 --duplicates --json with a manifest that is a link to a device" "2 ['Config'] True" "okf-base.yaml" "$CHECK" "$B" --duplicates --json
+# S38-ST-N5: the same document for the stops every mode shares before it starts: an .okfignore that is a folder and a folder that
+# cannot be read, in the main --json, --duplicates --json, --conserve --json and --fingerprint --json.
+B="$TMP/st-n5"; st_bundle "$B"; git -C "$B" init -q; git -C "$B" add -A; git -C "$B" -c user.name=t -c user.email=t@e -c commit.gpgsign=false commit -qm x
+mkdir "$B/.okfignore"
+st_run "S38-ST-N5a the main --json with an .okfignore that is a folder" "2 ['IGNORE'] True" ".okfignore" "$CHECK" --json "$B"
+rmdir "$B/.okfignore"
+if [ "$(id -u)" = 0 ]; then
+  skip "S38-ST-N5b..e a folder that cannot be read: this user is root, chmod 000 changes nothing"
+else
+  mkdir "$B/locked"; chmod 000 "$B/locked"
+  st_run "S38-ST-N5b the main --json with a folder that cannot be read" "2 ['Bundle read'] True" "cannot read" "$CHECK" --json "$B"
+  st_run "S38-ST-N5c --duplicates --json with a folder that cannot be read" "2 ['Bundle read'] True" "cannot read" "$CHECK" "$B" --duplicates --json
+  st_run "S38-ST-N5d --conserve HEAD --json with a folder that cannot be read" "2 None True" "cannot read" "$CHECK" "$B" --conserve HEAD --json
+  st_run "S38-ST-N5e --fingerprint --json with a folder that cannot be read" "2 None True" "cannot read" "$CHECK" --fingerprint --json "$B"
+  chmod 755 "$B/locked"; rmdir "$B/locked"
+fi
+# S38-ST-N6: no python3 on PATH. The main --json and --duplicates --json still print a document (written by hand: no encoder).
+NOPY="$TMP/st-nopy"; mkdir -p "$NOPY"
+for d in /usr/bin /bin; do for f in "$d"/*; do case "${f##*/}" in python*|pypy*) ;; *) [ -e "$NOPY/${f##*/}" ] || ln -s "$f" "$NOPY/${f##*/}" 2>/dev/null ;; esac; done; done
+B="$TMP/st-n6"; st_bundle "$B"
+env PATH="$NOPY" "$(command -v bash)" -c 'command -v python3' >/dev/null 2>&1 && skip "S38-ST-N6 this machine has python3 in a place the probe PATH cannot hide" \
+  || {
+    st_run "S38-ST-N6a the main --json with no python3" "2 ['Doctor'] True" "python3" env PATH="$NOPY" "$(command -v bash)" "$CHECK" --json "$B"
+    st_run "S38-ST-N6b --duplicates --json with no python3" "2 ['Doctor'] True" "python3" env PATH="$NOPY" "$(command -v bash)" "$CHECK" "$B" --duplicates --json
+  }
+# S38-ST-N7: --facts and --doctor have no JSON document; --json made their report silent (say is quiet under --json), so a bad
+# manifest stopped --facts with nothing on either stream. Both print their text report whatever --json says.
+B="$TMP/st-n7"; st_bundle "$B"; printf 'okf_check: [\n' >> "$B/okf-base.yaml"
+"$CHECK" "$B" --facts --json >"$TMP/st.out" 2>"$TMP/st.err"; rc=$?
+{ [ "$rc" -eq 2 ] && grep -q 'COULD NOT RUN' "$TMP/st.out"; } && ok "S38-ST-N7a --facts --json with a manifest that does not parse: the text report names the stop, exit 2" \
+  || bad "S38-ST-N7a facts json" "rc=$rc stdout=$(wc -c < "$TMP/st.out" | tr -d ' ')B stderr=$(head -c 100 "$TMP/st.err")"
+"$CHECK" "$B" --doctor --json >"$TMP/st.out" 2>"$TMP/st.err"; rc=$?
+{ [ "$rc" -eq 0 ] && grep -q 'python3' "$TMP/st.out"; } && ok "S38-ST-N7b --doctor --json prints the doctor report" \
+  || bad "S38-ST-N7b doctor json" "rc=$rc stdout=$(wc -c < "$TMP/st.out" | tr -d ' ')B"
+
+# S38-ST-O1..O4: the Owner layer. A note the loader refuses for its size is "too large to read", not invalid and not ownerless.
+B="$TMP/st-o1"; st_bundle "$B"; printf 'okf_check:\n  require_owner: true\n' >> "$B/okf-base.yaml"
+"$REALPY" -c '
+import sys
+head = "---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\nowner: human:t\nbase: &a [" + ",".join(["x"] * 1000) + "]\nmany: [" + ",".join(["*a"] * 1000) + "]\n"
+sys.stdout.write(head + "generated:\n  by: human:t\n  at: \"2026-01-01\"\nstale_after: \"2099-01-01\"\n---\n\nbody\n")' > "$B/big.md"
+rm "$B/c.md"
+sz=$(wc -c < "$B/big.md" | tr -d ' ')
+"$CHECK" "$B" >"$TMP/st.txt" 2>&1; rc=$?; "$CHECK" --json "$B" >"$TMP/st.json" 2>/dev/null
+ow=$(grep -A2 '^  Owner' "$TMP/st.txt")
+{ [ "$sz" -lt 20000 ] && [ "$rc" -eq 1 ] && grep -q '^  L1 conformance .*FAIL' "$TMP/st.txt" && grep -q 'more than 1000000 items' "$TMP/st.txt"; } \
+  && ok "S38-ST-O0 the fixture is a ${sz}-byte note the loader refuses for its size (L1 says: more than 1000000 items), exit 1" \
+  || bad "S38-ST-O0 fixture" "size=$sz rc=$rc $(grep -E 'L1|Owner' "$TMP/st.txt" | head -3 | tr '\n' '|')"
+{ printf '%s\n' "$ow" | grep -q '^  Owner  *FAIL' && printf '%s\n' "$ow" | grep -q 'big.md: .*too large to read' && printf '%s\n' "$ow" | grep -q 'items' \
+  && ! printf '%s\n' "$ow" | grep -q 'not valid YAML\|every note needs an owner\|no owner'; } \
+  && ok "S38-ST-O1 Owner names the note as too large to read and the item cap; it does not say invalid YAML or no owner" \
+  || bad "S38-ST-O1 owner text" "$(printf '%s' "$ow" | tr '\n' '|')"
+got=$("$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print([e for e in d["errors"] if e.startswith("big.md") and "owner" in e])' "$TMP/st.json" 2>&1)
+{ echo "$got" | grep -q 'too large to read' && ! echo "$got" | grep -q 'not valid YAML\|no owner'; } \
+  && ok "S38-ST-O2 --json errors[] carry the same words for the note" || bad "S38-ST-O2 owner json" "$got"
+# O3: the old words stay for the notes they were true of: an invalid YAML note and a note with no owner, next to the large one.
+B="$TMP/st-o3"; st_bundle "$B"; printf 'okf_check:\n  require_owner: true\n' >> "$B/okf-base.yaml"; cp "$TMP/st-o1/big.md" "$B/big.md"
+printf -- '---\ntype: Lesson\ntitle: [\n---\nbody\n' > "$B/yaml.md"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nbody\n' > "$B/noowner.md"
+rm "$B/c.md"; "$CHECK" "$B" >"$TMP/st.txt" 2>&1; ow=$(grep -A4 '^  Owner' "$TMP/st.txt")
+{ grep -q 'yaml.md: the frontmatter is not valid YAML' "$TMP/st.txt" && grep -q 'noowner.md: no owner' "$TMP/st.txt" && grep -q 'big.md: .*too large to read' "$TMP/st.txt" \
+  && grep -Eq '^  Owner +FAIL +.*every note needs an owner' "$TMP/st.txt" && ! printf '%s\n' "$ow" | grep -q 'big.md: .*\(not valid YAML\|no owner\)'; } \
+  && ok "S38-ST-O3 next to the large note, an invalid YAML note still reads 'not valid YAML' and a note with no owner still reads 'no owner'" \
+  || bad "S38-ST-O3 old words" "$(grep -A4 '^  Owner' "$TMP/st.txt" | tr '\n' '|')"
+# S38-ST-S1..S2: the Successor layer. A deprecated note the loader refuses for its size is not "no deprecated notes", and a
+# successor it refuses is not known to be live.
+st_big() {   # <file> <status>: the 5 KB too-large note, with the given status
+  "$REALPY" -c '
+import sys
+head = "---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: " + sys.argv[1] + "\ntags: [t]\nowner: human:t\nbase: &a [" + ",".join(["x"] * 1000) + "]\nmany: [" + ",".join(["*a"] * 1000) + "]\n"
+sys.stdout.write(head + "generated:\n  by: human:t\n  at: \"2026-01-01\"\nstale_after: \"2099-01-01\"\n---\n\nbody\n")' "$2" > "$1"
+}
+B="$TMP/st-s1"; st_bundle "$B"; printf 'okf_check:\n  deprecated_requires: superseded_by\n' >> "$B/okf-base.yaml"; rm "$B/c.md"; st_big "$B/big.md" deprecated
+"$CHECK" "$B" >"$TMP/st.txt" 2>&1; rc=$?; "$CHECK" --json "$B" >"$TMP/st.json" 2>/dev/null
+sc=$(awk '/^  Successor/{f=1;print;next} f&&/^                   /{print;next} {f=0}' "$TMP/st.txt")
+{ [ "$rc" -eq 1 ] && printf '%s\n' "$sc" | grep -q '^  Successor  *FAIL' && printf '%s\n' "$sc" | grep -q 'big.md: .*too large to read.*successor was not checked' \
+  && ! printf '%s\n' "$sc" | grep -q 'PASS\|no deprecated notes'; } \
+  && ok "S38-ST-S1 a deprecated note the loader refuses for its size: Successor FAILS naming it as too large to read, never 'PASS no deprecated notes' (exit 1)" \
+  || bad "S38-ST-S1 successor text" "rc=$rc $(printf '%s' "$sc" | tr '\n' '|')"
+B="$TMP/st-s2"; st_bundle "$B"; printf 'okf_check:\n  deprecated_requires: superseded_by\n' >> "$B/okf-base.yaml"; rm "$B/c.md"; st_big "$B/big.md" stable
+printf -- '---\ntype: Lesson\ntitle: Old\ndescription: D\nstatus: deprecated\ntags: [t]\nsuperseded_by: "[[big]]"\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nbody\n' > "$B/old.md"
+"$CHECK" "$B" >"$TMP/st.txt" 2>&1; rc=$?; sc=$(awk '/^  Successor/{f=1;print;next} f&&/^                   /{print;next} {f=0}' "$TMP/st.txt")
+{ printf '%s\n' "$sc" | grep -q '^  Successor  *FAIL' && printf '%s\n' "$sc" | grep -q 'old.md: superseded_by .*big.*too large to read' && ! printf '%s\n' "$sc" | grep -q 'PASS'; } \
+  && ok "S38-ST-S2 a successor the loader refuses for its size is named as too large to read: whether it is deprecated is not known, so no PASS" \
+  || bad "S38-ST-S2 successor target" "rc=$rc $(printf '%s' "$sc" | tr '\n' '|')"
+# S38-ST-D1..D2: --duplicates names the note it could not read, and says the list is partial; --json carries unread[] and complete false.
+B="$TMP/st-d1"; st_bundle "$B"; st_big "$B/big.md" stable
+"$CHECK" "$B" --duplicates >"$TMP/st.txt" 2>"$TMP/st.err"; rc=$?; "$CHECK" "$B" --duplicates --json >"$TMP/st.json" 2>/dev/null
+got=$("$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["exit"], d["complete"], d["notes_read"], d["notes_total"], [u["rel"] for u in d["unread"]], "too large to read" in d["unread"][0]["why"])' "$TMP/st.json" 2>&1)
+{ [ "$rc" -eq 0 ] && grep -q 'big.md.*too large to read' "$TMP/st.txt" && grep -q 'no candidate duplicates among the notes read' "$TMP/st.txt" \
+  && ! grep -q 'no candidate duplicates$' "$TMP/st.txt"; } \
+  && ok "S38-ST-D1 --duplicates names the too-large note and does not claim 'no candidate duplicates' for all notes (exit 0, advisory)" \
+  || bad "S38-ST-D1 duplicates text" "rc=$rc $(tr '\n' '|' < "$TMP/st.txt" | head -c 300)"
+[ "$got" = "0 False 1 2 ['big.md'] True" ] && ok "S38-ST-D2 --duplicates --json: complete false, notes_read 1 of 2, unread[] names the note ($got)" \
+  || bad "S38-ST-D2 duplicates json" "got=[$got]"
+# S38-ST-D3: a healthy bundle's --duplicates --json has no unread key and stays complete.
+B="$TMP/st-d3"; st_bundle "$B"; "$CHECK" "$B" --duplicates --json >"$TMP/st.json" 2>/dev/null
+got=$("$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print("unread" in d, d["complete"])' "$TMP/st.json" 2>&1)
+[ "$got" = "False True" ] && ok "S38-ST-D3 a healthy bundle's --duplicates --json has no unread key and is complete" || bad "S38-ST-D3 healthy duplicates" "got=[$got]"
+# S38-ST-E1: a healthy run has no 'reason' key; the stop document is the only one that carries it.
+B="$TMP/st-e1"; st_bundle "$B"; "$CHECK" --json "$B" >"$TMP/st.json" 2>/dev/null; rc=$?
+"$CHECK" "$B" --duplicates --json >"$TMP/st2.json" 2>/dev/null; rc2=$?
+got=$("$REALPY" -c 'import json,sys; print([("reason" in json.load(open(f))) for f in sys.argv[1:]])' "$TMP/st.json" "$TMP/st2.json" 2>&1)
+{ [ "$rc" -eq 0 ] && [ "$rc2" -eq 0 ] && [ "$got" = "[False, False]" ]; } && ok "S38-ST-E1 a healthy bundle's --json and --duplicates --json carry no reason (exit 0)" \
+  || bad "S38-ST-E1 healthy documents" "rc=$rc/$rc2 reason keys=$got"
+# S38-ST end
 
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

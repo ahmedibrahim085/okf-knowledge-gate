@@ -164,6 +164,32 @@ def _names(folder):
     return frozenset(names), {k: tuple(v) for k, v in folded.items()}
 
 
+def stat_or_none(p):
+    """os.stat(p), or None when nothing is there (ENOENT, ENOTDIR, ELOOP, EBADF). Any other OSError (EACCES, a stat that fails)
+    is raised, on every Python: Path.exists(), is_dir() and is_file() raised it up to 3.13 and answer False since 3.14, which
+    turns "unreadable" into "not there". A caller that must tell the two apart asks here."""
+    try:
+        return os.stat(p)
+    except OSError as err:
+        if err.errno in (errno.ENOENT, errno.ENOTDIR, errno.ELOOP, errno.EBADF):
+            return None
+        raise
+
+
+def path_exists(p):
+    return stat_or_none(p) is not None
+
+
+def path_is_dir(p):
+    st = stat_or_none(p)
+    return st is not None and stat.S_ISDIR(st.st_mode)
+
+
+def path_is_file(p):
+    st = stat_or_none(p)
+    return st is not None and stat.S_ISREG(st.st_mode)
+
+
 class NoteRefused(OSError):
     """A path that must not be opened as a note. An OSError, so every reader's existing `except OSError` skips it."""
 

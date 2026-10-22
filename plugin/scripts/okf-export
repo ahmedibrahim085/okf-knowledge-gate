@@ -34,7 +34,7 @@ sys.dont_write_bytecode = True   # an import must not leave scripts/__pycache__ 
 sys.path[:0] = [str(VENDOR / "pyyaml"), str(VENDOR), str(Path(__file__).resolve().parent)]
 import yaml  # noqa: E402
 from okf_validate import OKF_VERSION, load_frontmatter, split_frontmatter  # noqa: E402  (the validator's own reader, so both agree)
-from okf_guard import read_note, refusal  # noqa: E402  (a note is opened only when regular and within the cap)
+from okf_guard import path_exists, path_is_dir, path_is_file, read_note, refusal  # noqa: E402  (a note is opened only when regular and within the cap)
 
 # `[[target#heading|alias]]`. An embed `![[x]]` transcludes x, which a Markdown link cannot say, so it is left as written.
 WIKILINK = re.compile(r"(?<!!)\[\[([^\[\]]+)\]\]")
@@ -694,9 +694,10 @@ def link_refusal(vault: Path, rel: Path) -> str | None:
 def is_file(vault: Path, p: Path, failed: list) -> bool:
     """Path.is_file(), except that a path whose stat fails is not a traceback with host paths in it. In a folder that cannot be
     entered (mode 0400) it is not a file here: unreadable_links names that folder once. Anywhere else the file is named in
-    `failed` ("could not be examined"), never dropped in silence (NFS root_squash, FUSE, a privacy block)."""
+    `failed` ("could not be examined"), never dropped in silence (NFS root_squash, FUSE, a privacy block). Path.is_file()
+    answers False for a stat that fails since Python 3.14, so the stat is asked of okf_guard, which raises on every version."""
     try:
-        return p.is_file()
+        return path_is_file(p)
     except OSError as err:
         if os.access(p.parent, os.X_OK):
             failed.append((p.relative_to(vault), f"a file that could not be examined ({err.strerror})"))
@@ -765,14 +766,22 @@ def main() -> int:
     args = ap.parse_args()
     vault, out = args.vault.resolve(), args.out.resolve()
     # Exit 2 before anything is written: the vault is only read, and <out> is never merged into.
-    if not vault.is_dir():
+    try:
+        vault_is_folder = path_is_dir(vault)
+    except OSError as err:   # a folder above it that nobody may enter: not the same as "not a folder"
+        return fail(f"{args.vault} cannot be read: {err.strerror}")
+    if not vault_is_folder:
         return fail(f"{args.vault} is not a folder")
     if out == vault or vault in out.parents:
         return fail(f"{args.out} is inside the vault {args.vault}; choose a folder outside it")
-    if out.exists() and not out.is_dir():
+    try:
+        out_exists, out_is_folder = path_exists(out), path_is_dir(out)
+        if out_exists and out_is_folder and any(out.iterdir()):   # iterdir raises for a folder nobody may enter, on every Python
+            return fail(f"{args.out} exists and is not empty")
+    except OSError as err:
+        return fail(f"cannot write to {args.out}: {err.strerror}")
+    if out_exists and not out_is_folder:
         return fail(f"{args.out} exists and is not a folder")
-    if out.exists() and any(out.iterdir()):
-        return fail(f"{args.out} exists and is not empty")
     # Dot files and folders hold note-tool settings (.obsidian), VCS data (.git) or OS clutter (.DS_Store), not knowledge.
     failed: list[tuple[Path, str]] = []
     files = sorted(rel for rel in (p.relative_to(vault) for p in vault.rglob("*") if is_file(vault, p, failed))

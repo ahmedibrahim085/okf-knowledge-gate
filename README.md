@@ -109,7 +109,7 @@ okf-check <bundle>                 # all layers
 okf-check <bundle> --fail-stale    # staleness blocks (exit 4)
 okf-check <bundle> --strict-trust  # unauthenticated human verification and near-miss actors block (exit 1)
 okf-check <bundle> --fail-on-change   # exit 6 if the bundle changes during the scan
-okf-check <bundle> --json          # machine-readable summary (`layers_not_run[]` names each layer that printed `COULD NOT RUN`, `[]` when none; `l2_findings[]` lists house-rule errors; `l2_advisories[]` the advisories behind `l2_warnings`, as `RULE file — message`, cut at 200 with a count; `warnings[]` also lists the `okf_check.size` warnings; `misplaced_keys[]` appears only when an `okf_check` option sits at the top level of `okf-base.yaml`; `sizes[]` only when `okf_check.size` is set, `facts[]` only when `okf_check.facts` is)
+okf-check <bundle> --json          # machine-readable summary (`layers_not_run[]` names each layer that printed `COULD NOT RUN`, `[]` when none; `l2_findings[]` lists house-rule errors; `l2_advisories[]` the advisories behind `l2_warnings`, as `RULE file — message`, cut at 200 with a count; `warnings[]` also lists the `okf_check.size` warnings; `misplaced_keys[]` appears only when an `okf_check` option sits at the top level of `okf-base.yaml`; `reason` appears only on a run that stopped before its layers (a folder that cannot be read, an `.okfignore` that cannot be applied, no python3), with the stop named in `layers_not_run[]` and the reason on stderr too, exit 2; `sizes[]` only when `okf_check.size` is set, `facts[]` only when `okf_check.facts` is)
 okf-check <bundle> --duplicates    # list candidate duplicate notes (a report, always exit 0)
 okf-check <bundle> --duplicates-body   # the same, plus notes whose bodies are similar
 okf-check <bundle> --facts [NAME]  # every statement of the declared facts (a dry run, always exit 0)
@@ -246,12 +246,15 @@ okf_check:
 `deprecated_requires: superseded_by`: every `status: deprecated` note names its replacement in `superseded_by` (a
 path, a `[[wikilink]]`, a markdown link, or a list of them, resolved from the bundle root or the note's folder). The
 `Successor` line reports a missing `superseded_by`, a successor that is not found, a note that names itself, and a
-successor that is deprecated too (one hop: point at the final successor). Each is a house-rule error, exit 1.
+successor that is deprecated too (one hop: point at the final successor). Each is a house-rule error, exit 1. A note, or a
+successor, the loader refuses for its size is named as `too large to read`: it is not read as a note with no `status`, and the line is
+not a PASS.
 
 `require_owner: true`: every note has an owner, an actor as in OKF section 7 (`human:dana`, `team:docs`,
 `tool/1.0`). A note's own `owner` key wins; otherwise `owners` gives folder defaults as globs (the `.okfignore`
 syntax, without negation: a pattern that starts with `!` exits 2), and the last matching pattern wins. The `Owner` line reports a note with no owner and an owner that is not an
-actor (house-rule errors, exit 1). Each L3 staleness and lifecycle finding ends with `owner <actor>`, in the text and
+actor (house-rule errors, exit 1), and a note whose frontmatter the loader refused for its size (`too large to read`: the
+owner was not checked, which is not a missing owner). Each L3 staleness and lifecycle finding ends with `owner <actor>`, in the text and
 in `--json` `stale[]` and `lifecycle[]`.
 
 ```yaml
@@ -349,7 +352,7 @@ file (device/pipe/...): skipped`, in `--json` `errors[]`), checks the other note
 out as it does any path. A *folder* named like a note is not a note and cannot hang a reader: it gets one `Skipped
 folders  WARN` line (`d.md — a folder, not a note: skipped`, counted as an advisory) and the exit code does not change.
 A device or pipe named `okf-base.yaml` is refused the same way, in every mode: `--duplicates` stops with exit 2 and
-names it, a full run exits 1. Why: a symlink to `/dev/zero` named like a note made `okflint` read for ever and grow to
+names it (with `--json`, in one JSON document: `exit`, `layers_not_run`, `reason`; so does every other stop of that mode), a full run exits 1. Why: a symlink to `/dev/zero` named like a note made `okflint` read for ever and grow to
 112 GB (2026-10-18).
 
 **What every layer reads:** `okf-check` judges the paths by `stat` first, then copies the notes and config it will read
@@ -380,7 +383,8 @@ flagged templated series, not duplicates). Each pair shows the signal and score,
 owners. Pairs linked by `superseded_by` are skipped. It is a report, not a gate: exit 0. It stops at
 `okf_check.duplicates.time_limit` seconds (default 60), which covers reading the notes too, and says `CUT SHORT` and in
 which pass (reading, the pair comparison, the body comparison) if it did. `--json` gives `duplicates[]`, and `complete`,
-`cut_in`, `notes_read` and `notes_total`.
+`cut_in`, `notes_read` and `notes_total`. A note the loader refuses for its size is named (`too large to read`, not
+compared), the report says `among the notes read`, and `--json` has `unread[]` and `complete: false`.
 `--duplicates-body` adds pairs whose bodies share 5-word shingles at or above `okf_check.duplicates.body_threshold`
 (default `0.6`; on our labelled live sample, 0.3 flagged as many unrelated notes as duplicates), found with MinHash
 and then checked exactly, within the same time limit. A body under 5 words (a stub such as `TODO`) is not compared on its
@@ -423,7 +427,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.42
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.43
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -439,7 +443,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.42
+    rev: v0.9.43
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -457,7 +461,7 @@ tool below is one the code really calls, and a test checks that the table matche
 
 | Tool | What it does for us | Needs | Source and licence |
 |---|---|---|---|
-| python3 | runs the validator, the trust layer and `okf-verify` (run on 3.9 on macOS and 3.12 on Debian 12) | Required | python.org, PSF |
+| python3 | runs the validator, the trust layer and `okf-verify` (run on 3.9 and 3.15 on macOS and 3.12 on Debian 12) | Required | python.org, PSF |
 | bash 3.2+ with awk, sed, find, stat, xargs | the gate itself (`okf-check`) | Required | your system |
 | git | `okf-verify` looks up cited commits; the pre-commit hook runs in a git repo | Required for `okf-verify` | git-scm.com, GPL-2.0 |
 | okf-skills validator | L1: the OKF v0.2 conformance check, with our local patch | Vendored in `plugin/vendor/` | [scaccogatto/okf-skills](https://github.com/scaccogatto/okf-skills), MIT |
@@ -496,7 +500,7 @@ The full behaviour contract, one row per scenario with its test, is
 
 | Platform | Status |
 |---|---|
-| macOS | The test suites pass here, on bash 3.2 and the BSD tools (0.9.37: `tools/macos-gate.sh`, 36 suites and `--selftest`). The gate was built and measured on this platform. |
+| macOS | The test suites pass here, on bash 3.2 and the BSD tools (0.9.37: `tools/macos-gate.sh`, 36 suites and `--selftest`). The gate was built and measured on this platform. The log of the gate names the Python it ran under (`python 3.9.6`); Python 3.14 changed what `pathlib` does with a permission error, so `okf-verify.test.sh` and `okf-export.test.sh` pass under 3.9.6 and 3.15.0 since 0.9.43. |
 | Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.37 suites passed on Debian 12 (aarch64, bash 5.2.15, Python 3.12.13, gawk 5.2.1, non-root user) with `okflint` 0.5.0 and pre-commit 4.7.0 installed in a Python 3.12 environment: `tools/linux-gate.sh`, 36 suites and `--selftest`, 0 failed. Debian 12 ships Python 3.11, which cannot install `okflint`; the gate image installs Python 3.12. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). In the public repository, every pull request and every push to `main` also runs the suites and `--selftest` on GitHub's Ubuntu 24.04 runner, once with gawk and once with mawk, and runs the GitHub Action on a valid and an invalid bundle (`.github/workflows/ci.yml`). |
 | Windows | There is no native Windows support: the gate is a set of bash scripts. WSL (Windows Subsystem for Linux) is the only path, and nothing has been run under it: UNVERIFIED, as are the Action and the pre-commit hook on Windows. |
 | Claude Code | The plugin form (hooks and the skill) needs Claude Code. The command line, the GitHub Action and the pre-commit hook do not. |
@@ -569,7 +573,9 @@ suites with `.github/ci/run-suites.sh` (see [Develop and test](#develop-and-test
    four at a time, the provisioned image is reused across runs with `OKF_LINUX_CACHE=1`, and `OKF_LINUX_CA_FILE` names a CA
    bundle to trust behind a proxy that re-signs TLS: it is bind-mounted, so with a remote Docker context the same path must
    hold it on the Docker host), and
-   `tools/macos-gate.sh <log>` runs the same suite list on this Mac's working tree, holding the heavy-suite lock (a lock
+   `tools/macos-gate.sh <log>` runs the same suite list on this Mac's working tree under the `python3` on `PATH` (the first line
+   of the log ends with `python <version>`: run it under the oldest Python the plugin supports, 3.9, and under the newest on the
+   Mac, because the verdict of a check on an unreadable folder differed between 3.9 and 3.14 and later), holding the heavy-suite lock (a lock
    left by a killed gate is taken over) and writing a machine sample every 5 s to `<log>.samples`. Both gates run each
    suite with stdin from `/dev/null` under a time limit (`OKF_GATE_SUITE_TIMEOUT`) and pass it only when it exits 0 and
    its last line is a summary of at least 1 passed and 0 failed, so a suite that stops early fails. `tools/check-tests.sh` (run by

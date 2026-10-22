@@ -9,6 +9,20 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.43] - 2026-10-22
+
+OKF Knowledge Gate 0.9.43 makes every stop and every unreadable input a named verdict: no empty `--json` document, no note that is too large to read reported as missing an owner, and the same answer for an unreadable folder on every Python. It also turns the public CI green again.
+
+### Fixed
+- **Every stop of `okf-check --duplicates --json` prints a JSON document** with the reason (and the reason on stderr): a manifest that does not parse, an `.okfignore` that cannot be applied, a failed duplicates helper, a missing `python3`. The main `--json`, `--conserve --json` and `--fingerprint --json` do the same on the shared stops.
+- **A note too large to read is named, never read as a pass.** Owner and Successor say the note was too large to read and was not checked (layer FAIL) instead of "not valid YAML" or "no deprecated notes"; `--duplicates` lists it as not compared.
+- **An unreadable folder gives the same verdict on every Python.** From Python 3.14, `pathlib` stopped raising on a permission error, so `okf-verify` reported an unreadable path as not found, or as REFUTED, and `okf-export` called an unreadable vault "not a folder". Both now name the unreadable path; `okf-check --file` stops at an unreadable folder like the full run; a bundle below an unreadable folder is reported as not readable, and an output folder nobody may enter as "cannot write".
+- **The public CI is green.** The linear-cost test of the heading reader compared against a fixed 0.5 s, which a hosted runner exceeds; it now bounds how the cost grows with the input.
+
+### Changed
+- `okf-check --facts --json` and `--doctor --json` print their text report (they printed nothing before); `--file --json` stays refused.
+- The first line of the macOS gate log names the Python it ran under.
+
 ## [0.9.42] - 2026-10-22
 
 OKF Knowledge Gate 0.9.42 closes the review findings of `okf-export` and its public-export scan: every file the export leaves out is named, hidden content cannot ship through a hard link, and the heading reader no longer emits an anchor CommonMark lacks.
@@ -833,7 +847,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.42...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.43...HEAD
+[0.9.43]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.42...v0.9.43
 [0.9.42]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.41...v0.9.42
 [0.9.41]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.40...v0.9.41
 [0.9.40]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.39...v0.9.40

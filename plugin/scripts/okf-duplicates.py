@@ -22,7 +22,7 @@ import unicodedata
 
 sys.dont_write_bytecode = True   # a direct run must not leave scripts/__pycache__ in the installed plugin (plugin.test.sh Z-2)
 sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
-from okf_notes import meta, read_note, refusal, resolve, shown  # noqa: E402
+from okf_notes import TooLarge, meta, read_note, refusal, resolve, shown  # noqa: E402
 from okf_validate import load_frontmatter  # noqa: E402
 
 bundle, as_json = sys.argv[1], sys.argv[3] == "1"
@@ -85,13 +85,16 @@ for p in sorted(root.rglob("*.md")):
 for line in refused:
     print("okf-duplicates: " + shown(line), file=sys.stderr)
 
-notes, cut_in, short_bodies = [], None, 0
+notes, cut_in, short_bodies, unread = [], None, 0, []
 to_read = sorted(by_real.values())
 for p in to_read:
     if over("read"):
         cut_in = "read"   # the limit covers reading too: a bundle of huge notes stops here, and says so
         break
-    m = meta(p)
+    m = meta(p, too_large=True)
+    if isinstance(m, TooLarge):   # not compared, and the report says so: it is not "no duplicates" for that note
+        unread.append({"rel": str(p.relative_to(root)), "why": "the note was too large to read: " + m.why})
+        continue
     gen = m.get("generated") if isinstance(m.get("generated"), dict) else {}
     sb = m.get("superseded_by") or []
     succ = {resolve(r, p, real) for r in (sb if isinstance(sb, list) else [sb])} - {None}
@@ -182,10 +185,11 @@ if with_body and not cut:
 
 if as_json:
     side = lambda n: {"rel": shown(n["rel"]), **{k: n[k] for k in ("status", "at", "owner")}}
-    print(json.dumps({"bundle": bundle, "exit": 0, "complete": not cut, "cut_in": cut_in, "notes_read": len(notes),
+    print(json.dumps({"bundle": bundle, "exit": 0, "complete": not cut and not unread, "cut_in": cut_in, "notes_read": len(notes),
                       "notes_total": len(to_read), "body_short": short_bodies, "compared": compared, "pairs_total": total,
                       "duplicates": [{"signal": x["signal"], "score": x["score"], "a": side(x["a"]), "b": side(x["b"])}
-                                     for x in pairs]}))
+                                     for x in pairs],
+                      **({"unread": [{"rel": shown(u["rel"]), "why": u["why"]} for u in unread]} if unread else {})}))
     sys.exit(0)
 if cut_in == "read":
     print("  Duplicates       CUT SHORT after %g s (okf_check.duplicates.time_limit) while reading notes: %d of %d notes read,"
@@ -201,8 +205,14 @@ elif cut:
 if short_bodies:
     print("  Duplicates       %d note(s) with a body under %d words not compared on body (title, description and"
           " sources still compared)" % (short_bodies, MIN_BODY_WORDS))
+if unread:
+    print("  Duplicates       %d note(s) too large to read, not compared:" % len(unread))
+    for u in unread[:5]:
+        print("                   %s: %s" % (shown(u["rel"]), u["why"]))
+    if len(unread) > 5:
+        print("                   ... and %d more (--json lists every one)" % (len(unread) - 5))
 if not pairs:
-    print("  Duplicates       no candidate duplicates" + (" among the pairs compared" if cut else ""))
+    print("  Duplicates       no candidate duplicates" + (" among the pairs compared" if cut else " among the notes read" if unread else ""))
 else:
     print("  Duplicates       %d candidate pair(s) (advisory: deprecate one of each, or keep both)" % len(pairs))
     side = lambda n: "%s [%s, %s, owner %s]" % (shown(n["rel"]), n["status"], n["at"], n["owner"])

@@ -175,6 +175,23 @@ else
   done
 fi
 
+# S39-PY-14: --file runs the same unreadable-folder guard as the full run, before it reads anything. A sub-folder nobody may enter
+# (mode 000) or that lists but cannot be entered (mode 0400) is exit 2 and the named message, on every Python; it used to be
+# "cross-link target not found" (000, and 0400 on 3.14 and later, exit 0) or a PermissionError (0400 before 3.14, exit 2).
+if [ "$(id -u)" = 0 ]; then
+  printf '  SKIP  S39-PY-14 a folder nobody may enter: root enters it anyway\n'
+else
+  for mode in 0400 000; do
+    P="$TMP/py$mode"; mkdir -p "$P/sub"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$P/index.md"; clean "$P/n.md"; clean "$P/sub/m.md"
+    printf 'See [m](sub/m.md).\n' >> "$P/n.md"
+    chmod $mode "$P/sub"; rc=$(run "$P" --file "$P/n.md"); chmod 755 "$P/sub"
+    { [ "$rc" = 2 ] && grep -q 'contains directories this process cannot read' "$TMP/out.txt" && grep -q "unreadable: .*py$mode/sub" "$TMP/out.txt" \
+        && ! grep -q 'PermissionError\|not found\|Traceback' "$TMP/out.txt"; } \
+      && ok "S39-PY-14 --file with a mode-$mode sub-folder: 'contains directories this process cannot read', exit 2, no PermissionError, no 'not found'" \
+      || bad "S39-PY-14 --file, sub-folder mode $mode" "rc=$rc $(head -3 "$TMP/out.txt" | cut -c1-160 | tr '\n' '|')"
+  done
+fi
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

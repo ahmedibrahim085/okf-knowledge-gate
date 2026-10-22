@@ -786,7 +786,10 @@ def find_line_doc(target: str, by_name: bool, note_dir: Path, bundle: Path, repo
     """`_find_line_doc`, asked once per name and folder in a run: the words before a citation give it many names to try."""
     key = (target, by_name, str(note_dir), str(bundle), tuple(map(str, repos)))
     if key not in _LINE_DOCS:
-        _LINE_DOCS[key] = _find_line_doc(target, by_name, note_dir, bundle, repos, docs)
+        try:
+            _LINE_DOCS[key] = _find_line_doc(target, by_name, note_dir, bundle, repos, docs)
+        except OSError as e:   # a folder of a searched repository that nobody may enter: nobody could look, so not "not found"
+            _LINE_DOCS[key] = (None, None, (UNRESOLVED, f"cannot be looked up: {target} ({e.strerror or type(e).__name__})"))
     return _LINE_DOCS[key]
 
 
@@ -818,7 +821,7 @@ def _find_line_doc(target: str, by_name: bool, note_dir: Path, bundle: Path, rep
             if not inside_any(str(p), [bundle]) or not real_inside(p, roots):
                 outside = True
                 continue
-            if p.is_file() and _guard().case_exact(p, base):
+            if _guard().path_is_file(p) and _guard().case_exact(p, base):
                 found, shown = p, os.path.relpath(p, bundle)
                 break
         if found is None:
@@ -828,7 +831,7 @@ def _find_line_doc(target: str, by_name: bool, note_dir: Path, bundle: Path, rep
                 cands += [(bundle / d, d) for d in docs.get(target, ())]
             for r in repos:
                 p = Path(os.path.normpath(str(r / target)))
-                if inside_any(str(p), [r]) and real_inside(p, roots) and p.is_file() and _guard().case_exact(p, r):
+                if inside_any(str(p), [r]) and real_inside(p, roots) and _guard().path_is_file(p) and _guard().case_exact(p, r):
                     cands.append((p, f"{r.resolve().name or r}/{os.path.relpath(p, r)}"))
             cands = [(p, n) for p, n in cands if real_inside(p, roots)]
             if len(cands) > 1:
@@ -992,7 +995,7 @@ def check_path(raw: str, bundle: Path, roots: list[Path] | None = None, host_pat
     #   lexists()       -> the entry EXISTS but does not resolve (ELOOP, dangling)
     #   neither         -> genuinely absent
     try:
-        if p.exists():
+        if _guard().path_exists(p):
             # UNRESOLVED, not REFUTED: the file is plainly there under another
             # case, so the claim is not false — it is unverified as written.
             # Only the part below the root is the citation: how the root was typed is not (`okf-verify repo/b` for the folder `Repo/b`).
@@ -1020,7 +1023,7 @@ def check_path(raw: str, bundle: Path, roots: list[Path] | None = None, host_pat
     if str(real).startswith(EPHEMERAL) or str(p).startswith(EPHEMERAL):
         return UNRESOLVED, "ephemeral location — absence here proves nothing about the claim"
     try:
-        parent_exists = p.parent.exists()
+        parent_exists = _guard().path_exists(p.parent)
     except OSError as e:
         return UNRESOLVED, f"parent unreadable ({type(e).__name__}) — could not check"
     if parent_exists:
@@ -1155,7 +1158,11 @@ def load_manifest(bundle: Path, source: Path | None = None) -> tuple[dict, dict]
     A file that cannot be read, is not UTF-8 or YAML, or whose top level is not a mapping raises BaseConfigError.
     """
     base = (source or bundle) / "okf-base.yaml"
-    if not base.is_file():
+    try:
+        present = _guard().path_is_file(base)
+    except OSError as e:   # a folder that nobody may enter: no manifest is not the same as a manifest nobody could look for
+        raise BaseConfigError(f"cannot read: {e.strerror or type(e).__name__}")
+    if not present:
         return {}, {}
     # PyYAML and the bounded loader ship beside the scripts in the plugin. The loader refuses a YAML alias bomb (a
     # small file whose aliases nest into billions of items) as an ordinary YAML error, as it does for L1 and the trust helper.
@@ -1308,14 +1315,14 @@ def declared_repos(bundle: Path) -> tuple[list[Path], list[dict]]:
     usable, problems = [], []
     for e in node:
         raw = e["path"]
-        # `~nosuchuser` makes expanduser() raise and an unreadable parent makes exists() raise. A crash here is exit 1,
+        # `~nosuchuser` makes expanduser() raise and an unreadable parent makes the stat raise. A crash here is exit 1,
         # which means "a claim was REFUTED"; the entry is UNRESOLVED instead: nobody could look.
         try:
             p = Path(raw).expanduser()
             p = p if p.is_absolute() else bundle / p
-            if not p.exists():
+            if not _guard().path_exists(p):
                 detail = f"declared repository not found: {p}"
-            elif not (p / ".git").exists():
+            elif not _guard().path_exists(p / ".git"):
                 detail = f"not a git repository: {p}"
             else:
                 usable.append(p)
@@ -1609,8 +1616,8 @@ def main() -> int:
     a = ap.parse_args()
 
     try:
-        is_dir = a.bundle.is_dir()
-    except OSError as e:   # a folder above it that nobody may enter: Path.is_dir() raises instead of answering
+        is_dir = _guard().path_is_dir(a.bundle)
+    except OSError as e:   # a folder above it that nobody may enter: stat raises instead of answering
         print(f"error: {a.bundle} cannot be read ({e.strerror or type(e).__name__})", file=sys.stderr)
         return 2
     if not is_dir:
@@ -1636,8 +1643,9 @@ def main() -> int:
     # and exited 0 — the worst possible shape of this failure in the one tool
     # whose entire job is to separate "checked and false" from "not checked".
     # Same defect okf-check carries as G-8; found by sweeping for siblings. (G-13)
+    # os.path.isdir, not Path.is_dir(): a child of a folder that lists but cannot be entered (mode 0400) made it raise, up to 3.13.
     unreadable = sorted(
-        str(d) for d in [a.bundle, *(p for p in a.bundle.rglob("*") if p.is_dir())]
+        str(d) for d in [a.bundle, *(p for p in a.bundle.rglob("*") if os.path.isdir(p))]
         if not os.access(d, os.R_OK | os.X_OK)
     )
     if unreadable:
@@ -1662,8 +1670,8 @@ def main() -> int:
     def git_dir(r: Path):
         """(True, "") when `r` holds a .git; else (False, why it could not be looked at, or "" for a folder without one)."""
         try:
-            return (r / ".git").exists(), ""
-        except OSError as e:   # a folder above it that nobody may enter: Path.exists() raises instead of answering
+            return _guard().path_exists(r / ".git"), ""
+        except OSError as e:   # a folder above it that nobody may enter: stat raises instead of answering
             return False, e.strerror or type(e).__name__
     looked = [(r, *git_dir(r)) for r in a.repo]
     repos, seen_repos = [], set()

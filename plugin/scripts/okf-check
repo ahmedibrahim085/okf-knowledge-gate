@@ -59,7 +59,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.42"
+VERSION="0.9.43"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -239,7 +239,7 @@ PY
   _t="[]"; [ -s "$TMP/trust.json" ] && _t=$(cat "$TMP/trust.json"); [ "${TRUST_RAN:-1}" -eq 0 ] && _t=null
   if [ -n "$PY" ]; then
     _b=$(printf '%s' "$BUNDLE" | "$PY" -c 'import json,sys; sys.path.insert(0, sys.argv[1]); from okf_guard import shown; sys.stdout.write(json.dumps(shown(sys.stdin.read())))' "$HERE")
-    _f=$(OKF_SCRIPTS_DIR="$HERE" OKF_SIZES_JSONL="$TMP/sizes.jsonl" OKF_FACTS_JSONL="$TMP/facts.jsonl" OKF_SYMLINKED_LST="$TMP/symlinked-folders.lst" OKF_GRAPH_JSON="$TMP/graph.json" "$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
+    _f=$(OKF_SCRIPTS_DIR="$HERE" OKF_SIZES_JSONL="$TMP/sizes.jsonl" OKF_FACTS_JSONL="$TMP/facts.jsonl" OKF_SYMLINKED_LST="$TMP/symlinked-folders.lst" OKF_GRAPH_JSON="$TMP/graph.json" OKF_STOP_WHY="${STOP_WHY:-}" "$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
 import json, os, sys
 sys.path.insert(0, os.environ["OKF_SCRIPTS_DIR"])
 from okf_guard import shown
@@ -319,12 +319,16 @@ try:
     out["facts"] = [json.loads(r) for r in rows if r]
 except (OSError, ValueError):
     pass
+# Present only on a run that stopped before its layers (stop_json): why.
+if os.environ.get("OKF_STOP_WHY"):
+    out["reason"] = os.environ["OKF_STOP_WHY"]
 print(json.dumps(out)[1:-1])
 PY
 )
   else
     _b="\"${BUNDLE//\"/\\\"}\""
     _f='"errors":[],"stale":[],"l2_findings":[],"skipped":[],"lifecycle":[],"l2_warnings":null,"l2_by_rule":{},"l2_advisories":[],"layers_not_run":[]'
+    [ -z "${STOP_WHY:-}" ] || _f="${_f%\"layers_not_run\":[]}\"layers_not_run\":[\"$STOP_LAYER\"],\"reason\":\"$STOP_WHY\""   # fixed texts without a quote or a backslash
   fi
   printf '{"bundle":%s,"exit":%d,"l1_errors":%s,"l1_warnings":%s,"concepts":%s,"change_detection":"%s"%s,"warnings":%s,"trust_findings":%s,"l2_profile":"%s",%s}\n' \
     "$_b" "$code" "${L1_ERR:-null}" "${L1_WARN:-null}" "${L1_CONCEPTS:-null}" "$_cd" "$_ign" "$_w" "$_t" "${L2_PROFILE:-ran}" "$_f"
@@ -419,6 +423,19 @@ unreadable_dirs() {
   find -H "$1" -type d -print0 2>/dev/null | while IFS= read -r -d '' d; do   # -H: the folders the layers read (okf_md_files)
     { [ -r "$d" ] && [ -x "$d" ]; } || printf '%s\n' "$d"
   done | sort          # find's order varies run to run; a gate's output should not
+}
+
+# not_a_dir <bundle>: the error and exit for a <bundle> that `[ -d ]` refused. `[ -d ]` is false both for a missing path and for
+# a path below a folder nobody may enter; ls says which. The second is "not readable", exit 2 as an unreadable bundle is (R-6);
+# a missing path stays "not a directory", exit 64.
+not_a_dir() {
+  case $(LC_ALL=C ls -d -- "$1" 2>&1 >/dev/null) in   # not a pipe into grep -q: pipefail would read ls's own failure
+    *'Permission denied'*)
+      esc_line "error: $1 is not readable — cannot reach a verdict (this is not a pass)" >&2
+      exit $EXIT_DEP;;
+  esac
+  esc_line "error: $1 is not a directory" >&2
+  exit 64
 }
 
 # report_folder_links <bundle>: name the symlinked folders no layer enters (okf_md_files in l3-lib.sh, S8-N1), so
@@ -769,8 +786,31 @@ layer_stopped() {
 # json_not_run LAYER WHY: for a mode whose stdout is ONE JSON document (--duplicates --json): when its layer could not run, still
 # print a document, shaped like the main --json (exit, layers_not_run) plus the reason, and say the reason on stderr.
 json_not_run() {
-  "$PY" -c 'import json, sys; print(json.dumps({"bundle": sys.argv[1], "exit": 2, "layers_not_run": [sys.argv[2]], "reason": sys.argv[3]}))' "$BUNDLE" "$1" "$2"
+  if [ -n "$PY" ]; then
+    "$PY" -c 'import json, sys; print(json.dumps({"bundle": sys.argv[1], "exit": 2, "layers_not_run": [sys.argv[2]], "reason": sys.argv[3]}))' "$BUNDLE" "$1" "$2"
+  else   # no encoder: the layer and the reason are fixed texts without a quote or a backslash
+    printf '{"bundle": "%s", "exit": 2, "layers_not_run": ["%s"], "reason": "%s"}\n' "${BUNDLE//\"/\\\"}" "$1" "$2"
+  fi
   echo "okf-check: $1 COULD NOT RUN — $2" >&2
+}
+# stop_json LAYER WHY: a run that ends with exit 2 before its report. Under --json stdout still gets ONE document, never nothing
+# (say is quiet under --json, so a stop that only said its reason left a CI caller an empty stdout and, for some stops, no
+# message at all): the main run's own (emit_json, plus layers_not_run and reason), --duplicates' (json_not_run), and
+# {bundle, exit, error} for --conserve and --fingerprint. The reason is on stderr. LAYER is the tag the text report uses for
+# the step. The other modes have no JSON document (--file refuses --json; --facts and --doctor print text), so there is nothing to print.
+stop_json() {
+  [ "$JSON" -eq 1 ] || return 0
+  case "$MODE" in
+    check)      record notrun "$1"; STOP_LAYER="$1"; STOP_WHY="$2"; emit_json "$EXIT_DEP"; echo "okf-check: $1 COULD NOT RUN — $2" >&2 ;;
+    duplicates) json_not_run "$1" "$2" ;;
+    conserve|fingerprint)
+      if [ -n "$PY" ]; then
+        "$PY" -c 'import json, sys; print(json.dumps({"bundle": sys.argv[1], "exit": 2, "error": sys.argv[2]}))' "$BUNDLE" "$2"
+      else
+        printf '{"bundle": "%s", "exit": 2, "error": "%s"}\n' "${BUNDLE//\"/\\\"}" "$2"
+      fi
+      echo "okf-check: $2" >&2 ;;
+  esac
 }
 
 doctor() {
@@ -1146,6 +1186,7 @@ run_config() {   # $1 the real bundle (paths in the block resolve against it), $
   fi
   say "  Config           COULD NOT RUN — $out"
   record error "$out"
+  CONFIG_WHY="$out"   # for stop_json (--duplicates --json)
   return $EXIT_DEP
 }
 
@@ -1153,14 +1194,14 @@ run_config() {   # $1 the real bundle (paths in the block resolve against it), $
 # With okf_check.deprecated_requires: superseded_by, every `status: deprecated` note names its successor in
 # superseded_by. A violation is a house-rule error (exit 1). Option off: nothing is printed.
 run_successor() {
-  local bundle="$1" out ec n
+  local bundle="$1" out ec n ne nt sum
   [ -f "$bundle/okf-base.yaml" ] && [ -n "$PY" ] || return 0
   OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" run_layer Successor - "$bundle" "$bundle/okf-base.yaml" <<'PYEOF'
 import os, pathlib, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter
-    from okf_notes import meta, resolve, read_note
+    from okf_notes import meta, resolve, read_note, TooLarge, shown
     # The bounded loader for the manifest too: an alias bomb in okf-base.yaml must not expand here (LT-35a), and a bounded
     # read: the manifest is judged like a note (a device or a file over the cap is not read).
     cfg = load_frontmatter(read_note(sys.argv[2], "utf-8", "replace"))
@@ -1179,7 +1220,10 @@ n = 0
 for p in sorted(bundle.rglob("*.md")):
     if p.name in ("index.md", "log.md") or not p.is_file():   # a dangling link is no note (okf_md_files)
         continue
-    m = meta(p)
+    m = meta(p, too_large=True)
+    if isinstance(m, TooLarge):   # its status is unknown: not "no deprecated notes" (the loader's size cap, as in the Owner layer)
+        print("T|%s: the note was too large to read, so its successor was not checked: %s" % (shown(str(p.relative_to(bundle))), m.why))
+        continue
     if m.get("status") != "deprecated":
         continue
     n += 1
@@ -1198,9 +1242,13 @@ for p in sorted(bundle.rglob("*.md")):
             print("E|%s: superseded_by %s: successor is not a note (index.md and log.md are reserved files)" % (rel, ref))
         elif q == os.path.realpath(str(p)):
             print("E|%s: superseded_by %s: a note cannot supersede itself" % (rel, ref))
-        elif meta(q).get("status") == "deprecated":
-            # One hop, no chains (decided): name the note that replaced the successor.
-            print("E|%s: superseded_by %s is deprecated too: point at the final successor, not a deprecated one" % (rel, ref))
+        else:
+            mq = meta(q, too_large=True)
+            if isinstance(mq, TooLarge):
+                print("T|%s: superseded_by %s: the successor was too large to read, so whether it is deprecated was not checked: %s" % (rel, ref, mq.why))
+            elif mq.get("status") == "deprecated":
+                # One hop, no chains (decided): name the note that replaced the successor.
+                print("E|%s: superseded_by %s is deprecated too: point at the final successor, not a deprecated one" % (rel, ref))
 print("N|%d" % n)
 PYEOF
   ec=$?; out=$(<"$TMP/layer.out")
@@ -1208,9 +1256,13 @@ PYEOF
   [ "$ec" -eq 0 ] || { say "  Successor        COULD NOT RUN — the successor check exited $ec"; return $EXIT_DEP; }
   n=$(printf '%s\n' "$out" | sed -n 's/^N|//p')
   [ -n "$n" ] || return 0
-  if printf '%s\n' "$out" | grep -q '^E|'; then
-    say "  Successor        FAIL   $(printf '%s\n' "$out" | grep -c '^E|') error(s): a deprecated note must name its successor in superseded_by"
-    printf '%s\n' "$out" | sed -n 's/^E|//p' | while IFS= read -r l; do record error "$l"; say "                   $l"; done
+  if printf '%s\n' "$out" | grep -q '^[ET]|'; then
+    # T: a note (or a successor) the loader refused for its size: whether it is deprecated, or live, is not known, so not a PASS.
+    ne=$(printf '%s\n' "$out" | grep -c '^E|'); nt=$(printf '%s\n' "$out" | grep -c '^T|'); sum=""
+    [ "$ne" -eq 0 ] || sum="$ne error(s): a deprecated note must name its successor in superseded_by"
+    [ "$nt" -eq 0 ] || sum="${sum:+$sum; }$nt note(s) too large to read"
+    say "  Successor        FAIL   $sum"
+    printf '%s\n' "$out" | sed -n 's/^[ET]|//p' | while IFS= read -r l; do record error "$l"; say "                   $l"; done
     return $EXIT_CONFORM
   fi
   if [ "$n" -eq 0 ]; then say "  Successor        PASS   no deprecated notes"
@@ -1222,7 +1274,7 @@ PYEOF
 # With okf_check.require_owner: true every note has an owner: its own `owner` key, else the folder default from
 # okf_check.owners. A note with neither is a house-rule error (exit 1). Option off: nothing is printed.
 run_owner() {
-  local bundle="$1" out ec pats f rel def pat own
+  local bundle="$1" out ec pats f rel def pat own ne nt sum
   [ -f "$bundle/okf-base.yaml" ] && [ -n "$PY" ] || return 0
   # An okf_check block that failed the schema is already the Config line's exit 2. Its owners are not trusted:
   # a folder default of 3 would otherwise become an owner error that outranks that exit 2 (LT-52 own-int).
@@ -1262,7 +1314,7 @@ import json, os, pathlib, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter, check_actor, Report
-    from okf_notes import meta, INVALID, read_note, shown
+    from okf_notes import meta, INVALID, TooLarge, read_note, shown
     cfg = load_frontmatter(read_note(sys.argv[2], "utf-8", "replace"))
 except Exception:
     sys.exit(0)
@@ -1280,7 +1332,10 @@ for p in sorted(bundle.rglob("*.md")):
         continue
     n += 1
     rel = str(p.relative_to(bundle))
-    m = meta(p, invalid=INVALID)
+    m = meta(p, invalid=INVALID, too_large=True)
+    if isinstance(m, TooLarge):   # the loader's size cap, not invalid YAML and not a missing owner (L1 reports the cap too)
+        print("T|%s: the note was too large to read, so its owner was not checked: %s" % (shown(rel), m.why))
+        continue
     if m is INVALID:
         print("E|%s: the frontmatter is not valid YAML, so its owner cannot be read (L1 reports the YAML error)" % shown(rel))
         continue
@@ -1307,9 +1362,13 @@ PYEOF
   layer_stopped "$ec" && return $EXIT_DEP
   [ "$ec" -eq 0 ] || { say "  Owner            COULD NOT RUN — the owner check exited $ec"; return $EXIT_DEP; }
   [ -n "$(printf '%s\n' "$out" | sed -n 's/^N|//p')" ] || return 0
-  if printf '%s\n' "$out" | grep -q '^E|'; then
-    say "  Owner            FAIL   $(printf '%s\n' "$out" | grep -c '^E|') error(s): every note needs an owner"
-    printf '%s\n' "$out" | sed -n 's/^E|//p' | while IFS= read -r l; do record error "$l"; say "                   $l"; done
+  if printf '%s\n' "$out" | grep -q '^[ET]|'; then
+    # E: a note with no owner or a bad one. T: a note the loader refused for its size, so its owner is not known: not a missing owner.
+    ne=$(printf '%s\n' "$out" | grep -c '^E|'); nt=$(printf '%s\n' "$out" | grep -c '^T|'); sum=""
+    [ "$ne" -eq 0 ] || sum="$ne error(s): every note needs an owner"
+    [ "$nt" -eq 0 ] || sum="${sum:+$sum; }$nt note(s) too large to read"
+    say "  Owner            FAIL   $sum"
+    printf '%s\n' "$out" | sed -n 's/^[ET]|//p' | while IFS= read -r l; do record error "$l"; say "                   $l"; done
     return $EXIT_CONFORM
   fi
   say "  Owner            PASS   $(printf '%s\n' "$out" | sed -n 's/^N|//p') note(s) have an owner"
@@ -1547,21 +1606,23 @@ run_facts_list() {
 # reaches okf_check.duplicates.threshold. Advisory: exit 0. A block that fails the schema is exit 2, as in a check.
 run_duplicates() {
   local bundle="$1" rc
-  [ -n "$PY" ] || { echo "okf-check: --duplicates needs python3" >&2; return $EXIT_DEP; }
+  [ -n "$PY" ] || { echo "okf-check: --duplicates needs python3" >&2; stop_json Duplicates "python3 is missing"; return $EXIT_DEP; }
   say "okf-check $VERSION — duplicates in $bundle"
   run_config "$bundle"; CONFIG_RC=$?
-  [ "$CONFIG_RC" -eq 0 ] || return $EXIT_DEP
+  [ "$CONFIG_RC" -eq 0 ] || { stop_json Config "${CONFIG_WHY:-okf-base.yaml could not be checked}"; return $EXIT_DEP; }
   # The owner check writes the effective owners ($TMP/owners.tsv) when require_owner is on; its report is not wanted here.
   run_owner "$bundle" >/dev/null 2>&1
   # .okfignore: the notes it leaves in, NUL-separated, as the L3 derived layer reads them (OKF_KEEP_LIST).
   local keep=""
   if okfignore_present "$bundle"; then
-    okfignore_load "$bundle"; [ $? -eq 2 ] && { say "  Duplicates       COULD NOT RUN — .okfignore could not be applied (see the message above)"; return $EXIT_DEP; }
+    okfignore_load "$bundle"; [ $? -eq 2 ] && { say "  Duplicates       COULD NOT RUN — .okfignore could not be applied (see the message above)"; stop_json Duplicates ".okfignore could not be applied (see the message above)"; return $EXIT_DEP; }
     okfignore_list "$bundle" > "$TMP/dup-keep.lst" 2>/dev/null && keep="$TMP/dup-keep.lst"
   fi
   OKF_KEEP_LIST="$keep" OKF_OWNERS_TSV="$TMP/owners.tsv" OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" run_layer Duplicates "$HERE/okf-duplicates.py" "$bundle" "$ROOT/config/okf-check-block.json" "$JSON" "$DUP_BODY"
   rc=$?
-  if layer_stopped "$rc"; then [ "$JSON" -eq 1 ] && json_not_run Duplicates "$LAYER_WHY"; return $EXIT_DEP; fi
+  if layer_stopped "$rc"; then stop_json Duplicates "$LAYER_WHY"; return $EXIT_DEP; fi
+  # A script that failed may have printed half a document: under --json the stop is the document.
+  if [ "$rc" -ne 0 ] && [ "$JSON" -eq 1 ]; then stop_json Duplicates "okf-duplicates.py exited $rc"; return $EXIT_DEP; fi
   cat "$TMP/layer.out"
   [ "$rc" -eq 0 ] || { say "  Duplicates       COULD NOT RUN — okf-duplicates.py exited $rc"; return $EXIT_DEP; }
   return 0
@@ -2571,13 +2632,14 @@ case "$MODE" in
   # its window, and a mutation re-adding `-maxdepth 1` to the fingerprint slipped
   # through exactly that way. Also answers "why did it say CONCURRENT?".
   fingerprint) [ -n "$BUNDLE" ] || { echo "usage: okf-check --fingerprint <bundle>" >&2; exit 64; }
-               [ -d "$BUNDLE" ] || { esc_line "error: $BUNDLE is not a directory" >&2; exit 64; }
+               [ -d "$BUNDLE" ] || not_a_dir "$BUNDLE"
                # The R-6 fail-closed guard was added to the normal path in the
                # same commit that introduced this mode, and not ported here: an
                # unreadable directory produced empty output and exit 0, a silent
                # clean read of a path we were never allowed to see. (G-3)
                ls "$BUNDLE" >/dev/null 2>&1 || {
                  esc_line "error: $BUNDLE is not readable — cannot fingerprint it (this is not 'unchanged')" >&2
+                 stop_json "Bundle read" "the bundle cannot be read, so it cannot be fingerprinted"
                  exit $EXIT_DEP; }
                # ...and every directory below it, or a fingerprint taken over a
                # subtree we cannot see compares equal to itself forever. (G-8)
@@ -2585,6 +2647,7 @@ case "$MODE" in
                [ -z "$_u" ] || {
                  esc_line "error: $BUNDLE contains unreadable directories — a fingerprint over them is not 'unchanged'" >&2
                  printf '%s\n' "$_u" | err_capped 3 "  unreadable: "
+                 stop_json "Bundle read" "the bundle holds a folder this process cannot read, so it cannot be fingerprinted"
                  exit $EXIT_DEP; }
                # `--json` used to print raw `size mtime path` lines here and exit
                # 0 — the R-3 defect, in the mode added after R-3 was fixed. (G-10)
@@ -2630,7 +2693,8 @@ print(json.dumps({"bundle": shown(sys.argv[1]),
                 echo "wrote $BUNDLE/.okfignore (starter; edit it, then re-run okf-check)"; exit 0;;
   preflight)    preflight; exit 0;;   # a SessionStart hook must never fail the session
   install-deps) install_deps; exit $?;;
-  doctor)   doctor; exit $?;;
+  doctor)   JSON=0   # a report, not a data feed: under --json say is quiet and the report was empty
+            doctor; exit $?;;
   selftest) # The probes read the layers' HUMAN output, which say() suppresses
             # under --json. With `--selftest --json` every probe saw nothing,
             # reported a dead gate and exited 5 — the code documented as the
@@ -2644,15 +2708,15 @@ print(json.dumps({"bundle": shown(sys.argv[1]),
 esac
 
 [ -n "$BUNDLE" ] || { echo "usage: okf-check <bundle> [--doctor|--selftest|--json|--fail-stale|--strict-trust]" >&2; exit 64; }
-[ -d "$BUNDLE" ] || { echo "error: $BUNDLE is not a directory" >&2; exit 64; }
+[ -d "$BUNDLE" ] || not_a_dir "$BUNDLE"
 layer_floor   # before every mode that runs a layer, --file included
-[ "$MODE" = scoped ] && { run_scoped "$BUNDLE" "${SCOPED_FILE:-}"; exit $?; }
 # An UNREADABLE directory used to yield "L1 PASS 0 concepts" and exit 0 — a
 # permission problem, or a typo'd path, read as a clean bill of health. The
 # fail-closed principle E-7b enforces for a single unreadable FILE was simply
 # absent for the DIRECTORY. (R-6)
 if ! ls "$BUNDLE" >/dev/null 2>&1; then
   echo "error: $BUNDLE is not readable — cannot reach a verdict (this is not a pass)" >&2
+  stop_json "Bundle read" "the bundle cannot be read, so no verdict is possible"
   exit $EXIT_DEP
 fi
 # ...and the same question about every directory BELOW it. (G-8)
@@ -2661,11 +2725,20 @@ if [ -n "$_unreadable" ]; then
   echo "error: $BUNDLE contains directories this process cannot read — no verdict is possible" >&2
   printf '%s\n' "$_unreadable" | err_capped 3 "  unreadable: "
   echo "  a partial scan is not a pass; fix the permissions or point at a subtree you can read" >&2
+  stop_json "Bundle read" "the bundle holds a folder this process cannot read, so no verdict is possible"
   exit $EXIT_DEP
 fi
+# --file reads the other notes of the bundle for its link check, so it stops at the same unreadable folder: a folder it
+# cannot enter would otherwise read as "link target not found", or as a PermissionError before Python 3.14. The edit hook
+# runs this and treats exit 2 as "could not check": it stays silent (fail-open).
+[ "$MODE" = scoped ] && { run_scoped "$BUNDLE" "${SCOPED_FILE:-}"; exit $?; }
 
-if ! doctor >/dev/null 2>&1; then doctor; echo "L1 cannot run — fix the above." >&2; exit $EXIT_DEP; fi
-resolve_note_cap "$BUNDLE" || exit $EXIT_DEP   # every layer and helper below judges a note by this one cap
+if ! doctor >/dev/null 2>&1; then
+  doctor; echo "L1 cannot run — fix the above." >&2
+  stop_json Doctor "python3 or its PyYAML is missing or broken (okf-check --doctor says which), so no layer can run"
+  exit $EXIT_DEP
+fi
+resolve_note_cap "$BUNDLE" || { stop_json "Note cap" "okf_check.max_note_bytes cannot be read, so no note can be judged safe to open"; exit $EXIT_DEP; }   # every layer and helper below judges a note by this one cap
 # --duplicates is a report of its own, not a gate: it runs instead of the layers and always exits 0 once it ran.
 # Its readers are all bounded (okf_notes.read_note), and the manifest is judged first: a device or pipe named okf-base.yaml
 # is refused up front, never opened (the plain open().read() of review round 1 ran a real /dev/zero out of memory).
@@ -2678,13 +2751,14 @@ if [ "$MODE" = conserve ]; then
   exit $?
 fi
 if [ "$MODE" = facts ]; then
+  JSON=0   # --facts has no JSON document; under --json say was quiet and a stop left both streams empty
   _mwhy=$(okf_note_refusal "$BUNDLE/okf-base.yaml")
   [ -z "$_mwhy" ] || { echo "okf-check: $BUNDLE/okf-base.yaml — $_mwhy: not read, so --facts cannot run" >&2; exit $EXIT_DEP; }
   run_facts_list "$BUNDLE"; exit $?
 fi
 if [ "$MODE" = duplicates ]; then
   _mwhy=$(okf_note_refusal "$BUNDLE/okf-base.yaml")
-  [ -z "$_mwhy" ] || { echo "okf-check: $BUNDLE/okf-base.yaml — $_mwhy: not read, so --duplicates cannot run" >&2; exit $EXIT_DEP; }
+  [ -z "$_mwhy" ] || { echo "okf-check: $BUNDLE/okf-base.yaml — $_mwhy: not read, so --duplicates cannot run" >&2; stop_json Config "okf-base.yaml is not a note this tool may open ($_mwhy), so --duplicates cannot run"; exit $EXIT_DEP; }
   run_duplicates "$BUNDLE"; exit $?
 fi
 
@@ -2717,6 +2791,8 @@ _ml=$(okfignore_mirror "$BUNDLE" "$TMP/okfmirror" "$_keep_other"); _mrc=$?
 if [ "$_mrc" -ne 0 ]; then
   if okfignore_present "$BUNDLE"; then say "  IGNORE           could not apply .okfignore (see the message above) - no verdict is possible"
   else say "  FREEZE           could not copy the bundle for the layers (see the message above) - no verdict is possible"; fi
+  if okfignore_present "$BUNDLE"; then stop_json IGNORE ".okfignore could not be applied (see the message above), so no verdict is possible"
+  else stop_json FREEZE "the bundle could not be copied for the layers (see the message above), so no verdict is possible"; fi
   exit $EXIT_DEP
 fi
 read -r _kept _exnotes _exall <<< "$_ml"

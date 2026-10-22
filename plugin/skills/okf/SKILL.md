@@ -46,7 +46,7 @@ Precedence when several apply: 5 > 1 > 3 > 2 > 6 > 4. A reached verdict outranks
 - **warn** is soft guidance. Broken cross-links are tolerated by the spec (§6.1): they are knowledge not yet
   written. Never "fix" a bundle by deleting an outbound link.
 - **SKIPPED** means a layer did not run. A skipped layer is counted in the verdict line and never shown as PASS; the exit code stays 0 unless another gate fails.
-- **`--json`** carries the verdict, the counts and the findings behind them: `errors[]` (L1 and the okf_check house rules such as size), `layers_not_run[]` (each layer that printed `COULD NOT RUN`, `[]` when none), `l2_findings[]` (house-rule errors only), `l2_advisories[]` (the L2 advisories behind `l2_warnings`, as `RULE file — message`; the first 200, then one last line that counts the rest; empty when L2 did not run), `l2_warnings` and `l2_by_rule` (the L2 advisory totals; null when L2 did not run), `stale[]` (expired or malformed `stale_after`), `lifecycle[]` (a status outside draft, stable, deprecated), `skipped[]` (layers that did not run), `warnings[]` (L1 warnings, then the okf_check size warnings) and `trust_findings`. Each entry is one text line that names the note. The key set is the same on every exit path, plus `misplaced_keys[]` when an okf_check option sits at the top level of okf-base.yaml instead of inside okf_check (it is then ignored).
+- **`--json`** carries the verdict, the counts and the findings behind them: `errors[]` (L1 and the okf_check house rules such as size), `layers_not_run[]` (each layer that printed `COULD NOT RUN`, `[]` when none; a run that stops before its layers also carries `reason`, and `--duplicates --json` prints the same document on every stop), `l2_findings[]` (house-rule errors only), `l2_advisories[]` (the L2 advisories behind `l2_warnings`, as `RULE file — message`; the first 200, then one last line that counts the rest; empty when L2 did not run), `l2_warnings` and `l2_by_rule` (the L2 advisory totals; null when L2 did not run), `stale[]` (expired or malformed `stale_after`), `lifecycle[]` (a status outside draft, stable, deprecated), `skipped[]` (layers that did not run), `warnings[]` (L1 warnings, then the okf_check size warnings) and `trust_findings`. Each entry is one text line that names the note. The key set is the same on every exit path, plus `misplaced_keys[]` when an okf_check option sits at the top level of okf-base.yaml instead of inside okf_check (it is then ignored).
 - **CONCURRENT** means the bundle changed during the scan; the report is a point-in-time reading.
 
 ## Trust (C4): can a "verified by a human" claim be trusted?
@@ -161,7 +161,7 @@ empty, inside the vault, or cannot be written). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.42`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.43`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

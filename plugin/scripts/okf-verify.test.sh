@@ -1197,6 +1197,69 @@ if [ "$(id -u)" != "0" ]; then
 else
   skip "RV-30 a bundle under an unreadable folder — running as root, chmod 000 does not stop the read (skip, not a pass)"
 fi
+# --- S39-PY: Python 3.14 stopped raising from Path.exists(), is_dir() and is_file(): a permission error is a plain False there.
+# Every verdict below says "cannot look", never "not found" or "refuted", on every Python. Run twice: as the Python in use is, and with
+# those three predicates made to answer False for an OSError (a sitecustomize on PYTHONPATH), so a 3.9 or 3.12 run proves the 3.14 behaviour too.
+if [ "$(id -u)" != "0" ]; then
+  mkdir -p "$TMP/py314"
+  cat > "$TMP/py314/sitecustomize.py" <<'PYEOF'
+import pathlib
+def _quiet(f):
+    def g(self, *a, **k):
+        try:
+            return f(self, *a, **k)
+        except OSError:
+            return False
+    return g
+for _n in ("exists", "is_dir", "is_file"):
+    setattr(pathlib.Path, _n, _quiet(getattr(pathlib.Path, _n)))
+PYEOF
+  PYB="$TMP/pyun"; mkdir -p "$PYB/lockedfile" "$PYB/outer/bundle" "$PYB/inner/r" "$PYB/mf/b" "$PYB/lrepo/docs"
+  printf 'x\n' > "$PYB/lockedfile/secret.txt"; printf 'a\nb\n' > "$PYB/lrepo/docs/spec.md"; git -C "$PYB/lrepo" init -q 2>/dev/null
+  note5 "$PYB/b1" "See \`$PYB/lockedfile/secret.txt\`."
+  note5 "$PYB/outer/bundle" "Fixed in commit $REAL_SHA."
+  note5 "$PYB/b3" "See docs/spec.md:1 here."
+  note5 "$PYB/b4" "Fixed in commit $REAL_SHA."; decl "$PYB/b4" "$PYB/inner/r"
+  note5 "$PYB/mf/b" "x"
+  note5 "$PYB/b6" "Fixed in commit $REAL_SHA."; note5 "$PYB/b6/sub" "x"
+  py_unreadable() { # <label> — the unreadable-folder verdicts, with the environment as it stands
+    local lbl="$1" rc
+    chmod 000 "$PYB/lockedfile"
+    rc=$(run "$PYB/b1" --host-paths); chmod 755 "$PYB/lockedfile"
+    { [ "$rc" = "0" ] && grep -q 'cannot stat' "$TMP/out.txt" && ! grep -qE '^  REFUTED ' "$TMP/out.txt" && ! grep -q Traceback "$TMP/out.txt"; } \
+      && ok "S39-PY-01 $lbl: a cited file under a folder nobody may enter is UNRESOLVED 'cannot stat', not REFUTED (exit 0)" \
+      || bad "S39-PY-01 $lbl" "exit $rc: $(grep -E '^  (ok|REFUTED|unresolved)|cannot|Traceback' "$TMP/out.txt" | head -3 | cut -c1-200 | tr '\n' '|')"
+    chmod 000 "$PYB/outer"
+    rc=$(run "$PYB/outer/bundle"); chmod 755 "$PYB/outer"
+    { [ "$rc" = "2" ] && grep -q "^error: .*outer/bundle cannot be read" "$TMP/out.txt" && ! grep -q 'not a directory' "$TMP/out.txt"; } \
+      && ok "S39-PY-02 $lbl: a bundle under a folder nobody may enter is 'cannot be read', not 'is not a directory' (exit 2)" \
+      || bad "S39-PY-02 $lbl" "exit $rc: $(head -2 "$TMP/out.txt" | cut -c1-200 | tr '\n' '|')"
+    chmod 000 "$PYB/lrepo/docs"
+    rc=$(run "$PYB/b3" --repo "$PYB/lrepo"); chmod 755 "$PYB/lrepo/docs"
+    { [ "$rc" = "0" ] && ! grep -q Traceback "$TMP/out.txt" && grep -q 'cannot be looked up: docs/spec.md' "$TMP/out.txt" && ! grep -qE '^  REFUTED ' "$TMP/out.txt"; } \
+      && ok "S39-PY-03 $lbl: a line citation into a --repo folder nobody may enter is UNRESOLVED 'cannot be looked up', no traceback (exit 0)" \
+      || bad "S39-PY-03 $lbl" "exit $rc: $(head -4 "$TMP/out.txt" | cut -c1-200 | tr '\n' '|')"
+    chmod 000 "$PYB/mf/b"
+    rc=$(run "$PYB/mf/b" --check-config); chmod 755 "$PYB/mf/b"
+    { [ "$rc" = "2" ] && grep -q 'okf-base.yaml cannot read: Permission denied' "$TMP/out.txt"; } \
+      && ok "S39-PY-04 $lbl: --check-config in a bundle folder nobody may enter is 'cannot read' (exit 2), not 'no manifest, fine'" \
+      || bad "S39-PY-04 $lbl" "exit $rc: $(head -2 "$TMP/out.txt" | cut -c1-200 | tr '\n' '|')"
+    chmod 0400 "$PYB/b6/sub"
+    rc=$(run "$PYB/b6"); chmod 755 "$PYB/b6/sub"
+    { [ "$rc" = "2" ] && grep -q 'contains directories this process cannot read' "$TMP/out.txt" && grep -q 'unreadable: .*b6/sub' "$TMP/out.txt" && ! grep -q Traceback "$TMP/out.txt"; } \
+      && ok "S39-PY-11 $lbl: a bundle folder that lists but cannot be entered (mode 0400) is named 'contains directories this process cannot read' (exit 2), no traceback" \
+      || bad "S39-PY-11 $lbl" "exit $rc: $(head -3 "$TMP/out.txt" | cut -c1-200 | tr '\n' '|')"
+    chmod 000 "$PYB/inner"
+    rc=$(run "$PYB/b4"); chmod 755 "$PYB/inner"
+    { [ "$rc" = "0" ] && ! grep -q Traceback "$TMP/out.txt" && grep -q 'cannot resolve' "$TMP/out.txt" && ! grep -q 'declared repository not found' "$TMP/out.txt"; } \
+      && ok "S39-PY-05 $lbl: a declared repository under a folder nobody may enter is 'cannot resolve', not 'not found' (exit 0)" \
+      || bad "S39-PY-05 $lbl" "exit $rc: $(head -4 "$TMP/out.txt" | cut -c1-200 | tr '\n' '|')"
+  }
+  py_unreadable "as run"
+  PYTHONPATH="$TMP/py314${PYTHONPATH:+:$PYTHONPATH}" py_unreadable "with Path predicates that answer False for an OSError (3.14 behaviour)"
+else
+  skip "S39-PY a folder nobody may enter — running as root, chmod 000 does not stop the read (skip, not a pass)"
+fi
 # --- RV-31: what git answers about one commit and one file is asked once per run. 20 citations of different lines of one file at one
 # commit used to spawn about 6 git processes each; the count must not grow with the citations.
 { printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\n'; for i in $(seq 1 20); do echo "Cite src/a.py:$i @$C2."; echo; done; } > "$TMP/c-p1.md"
