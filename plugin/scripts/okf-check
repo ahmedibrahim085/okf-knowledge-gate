@@ -59,7 +59,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.39"
+VERSION="0.9.40"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -847,7 +847,7 @@ doctor() {
 # were. List them, capped and honest about the cap (say_capped). 50 shows the pattern of a repeated
 # mistake without scrolling the verdict off the screen; the full list is in `--json`.
 l1_list_warnings() {
-  grep '^W|' "$TMP/l1.txt" | sed 's/^W|//' | say_capped 50 "                   "
+  grep -a '^W|' "$TMP/l1.txt" | sed 's/^W|//' | say_capped 50 "                   "
 }
 # Delegates to the vendored checker and reads its --json report through python3
 # rather than jq, so a machine without jq still gets a real verdict.
@@ -990,8 +990,10 @@ PY
   # Through say(), not raw stdout: these detail lines used to bypass it and
   # corrupt --json on every non-clean bundle. E-4 only ever tested a CLEAN
   # bundle, so the suite was green over it. (R-3)
-  grep '^E|' "$TMP/l1.txt" | sed 's/^E|//' | while IFS= read -r _e; do record error "$_e"; done
-  grep '^E|' "$TMP/l1.txt" | sed 's/^E|//' | say_capped 12 "                   "
+  # grep -a: as in L3, a note name with a byte that is not UTF-8 makes grep read the line as binary under a UTF-8 locale
+  # and drop it from the list while the count above still holds it (S30-CF-L1v).
+  grep -a '^E|' "$TMP/l1.txt" | sed 's/^E|//' | while IFS= read -r _e; do record error "$_e"; done
+  grep -a '^E|' "$TMP/l1.txt" | sed 's/^E|//' | say_capped 12 "                   "
   l1_list_warnings
   return $EXIT_CONFORM
 }
@@ -2199,20 +2201,22 @@ run_staleness() {
   # finding that L1 also warns about: counting it as "need attention" beside the expired notes made 4 overdue notes read as
   # 84, and made --fail-stale exit 4 on a bundle in which nothing had expired (okf-knowledge-gate#3).
   local n_stale n_status
-  n_stale=$(printf '%s\n' "$report" | grep -Ec '^ +(expired|malformed) '); n_status=$(printf '%s\n' "$report" | grep -Ec '^ +status ')
+  # grep -a: a note name may hold a byte that is not UTF-8. Under a UTF-8 locale grep reads that line as binary and
+  # drops it from its output while -c still counts it: "3 concept(s) need attention" listed 2 (S30-CF-L1u).
+  n_stale=$(printf '%s\n' "$report" | grep -aEc '^ +(expired|malformed) '); n_status=$(printf '%s\n' "$report" | grep -aEc '^ +status ')
   advise L3 $((n_stale + n_status))
   if [ "$n_stale" -gt 0 ]; then
     say "  L3 staleness     ${n_stale} concept(s) need attention"
     # through say(), or --json is corrupted by the detail lines (R-3)
-    printf '%s\n' "$report" | grep -E '^ +(expired|malformed) ' | sed 's/^ *//' | while IFS= read -r _e; do record stale "$_e"; done
-    printf '%s\n' "$report" | grep -E '^ +(expired|malformed) ' | say_capped 10 ""
+    printf '%s\n' "$report" | grep -aE '^ +(expired|malformed) ' | sed 's/^ *//' | while IFS= read -r _e; do record stale "$_e"; done
+    printf '%s\n' "$report" | grep -aE '^ +(expired|malformed) ' | say_capped 10 ""
   else
     say "  L3 staleness     PASS   nothing expired"
   fi
   if [ "$n_status" -gt 0 ]; then
     say "  L3 lifecycle     ${n_status} concept(s) have a status outside ${L3_STATUS//,/, } (OKF 5.4; L1 warns about them too)"
-    printf '%s\n' "$report" | grep -E '^ +status ' | sed 's/^ *//' | while IFS= read -r _e; do record lifecycle "$_e"; done
-    printf '%s\n' "$report" | grep -E '^ +status ' | say_capped 10 ""
+    printf '%s\n' "$report" | grep -aE '^ +status ' | sed 's/^ *//' | while IFS= read -r _e; do record lifecycle "$_e"; done
+    printf '%s\n' "$report" | grep -aE '^ +status ' | say_capped 10 ""
   fi
   [ "$FAIL_STALE" -eq 1 ] && [ "$n_stale" -gt 0 ] && return $EXIT_STALE
   return 0

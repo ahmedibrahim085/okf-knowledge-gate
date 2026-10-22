@@ -128,7 +128,12 @@ PY
 # The limit is set from this machine's own speed, not a fixed number: reading 1,200 notes took 2.8 s on a Mac with a
 # virus scanner, so a fixed 2 s limit cut the run while it was still reading and the bucket was never reached. First the
 # time to the start of the body pass (OKF_DUP_CUT_AT=body stops there), then a run whose limit is 1.5 times that: it must
-# stop inside the body pass, within 6 s of the limit (the slack this case always had: startup, the JSON report).
+# stop inside the body pass, within 6 s plus the time to the body pass of the limit (the 6 s this case always had for
+# startup and the JSON report, plus that machine's own speed: on a shared 4-CPU runner and under CPU limits the run after
+# the cut took 6.4 s on top of the limit with 3 to 4 s to the body pass, 0.4 s over a fixed 6 s; the whole bucket uncut
+# took 7 times the time to the body pass (6.3 s against 0.9 s), so the bound tells a cut from none only where the body pass
+# takes over 1.3 s; on a faster machine `cut_in` being "body" is what proves the cut, and S25-DU-E4 below proves it with a
+# fake clock).
 now() { "$REALPY" -c 'import time; print(time.time())'; }
 t0=$(now); rc=$(OKF_DUP_CUT_AT=body runjson "$B" --duplicates-body)
 pre=$("$REALPY" -c "import time; print('%.2f' % (time.time() - $t0))")
@@ -141,7 +146,7 @@ if [ "$rc" = 0 ] && [ "$cut" != '"body"' ] && [ "$cut" != '"read"' ] && [ "$cut"
 elif [ "$rc" = 0 ] && [ "$cut" != '"body"' ]; then
   skip "S25-DU-E3 bucket cut: this run reached its ${lim} s limit before the body pass (cut_in=$cut, ${el} s): reading was 1.5 times slower than ${pre} s a moment ago"
 else
-  { [ "$rc" = 0 ] && [ "$cut" = '"body"' ] && "$REALPY" -c "import sys; sys.exit(0 if $el < $lim + 6 else 1)"; } \
+  { [ "$rc" = 0 ] && [ "$cut" = '"body"' ] && "$REALPY" -c "import sys; sys.exit(0 if $el < $lim + 6 + $pre else 1)"; } \
     && ok "S25-DU-E3 a single crowded bucket stops at the limit (limit ${lim} s = 1.5 x ${pre} s to the body pass; cut_in body, ${el} s)" \
     || bad "S25-DU-E3 bucket cut" "rc=$rc el=${el}s limit=${lim}s cut_in=$cut"
 fi

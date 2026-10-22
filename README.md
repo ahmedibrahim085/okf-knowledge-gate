@@ -407,7 +407,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.39
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.40
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -423,7 +423,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.39
+    rev: v0.9.40
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -537,6 +537,11 @@ fix. A change is reviewed on two axes (standards and spec) before it is released
 | `CHANGELOG.md` | Dated history of every release |
 
 ## Release
+
+These steps run in the maintainer's private repository. The public repository ships `tools/demo` only: the other
+`tools/` scripts and files named here (`tools/linux-gate.sh`, `tools/macos-gate.sh`, `tools/export-public.sh`,
+`tools/export-public.allow` and the rest) and `docs/agents/safe-probe-brief.md` are not in it. From a public clone, run the
+suites with `.github/ci/run-suites.sh` (see [Develop and test](#develop-and-test)).
 
 1. Raise the version in `plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` and `VERSION` in
    `plugin/scripts/okf-check`. A test fails if they disagree. Then move the example pins (`okf-knowledge-gate@vx.y.z`

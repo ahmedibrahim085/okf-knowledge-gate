@@ -700,12 +700,15 @@ RG2="$TMP/rg2"; mkbundle "$RG2"
   && ok "R-10 --help documents exit code 6" || bad "R-10 --help documents exit 6" "EXIT CODES block stops at 5"
 # R-10b: --help is the script's whole header comment, and its EXIT CODES block lists every code the README table names and
 # every `exit N` / EXIT_*=N the script holds. A fixed window (lines 2-40) left out exit 64 and the usage lines.
-hlp=$("$CHECK" --help 2>&1); miss=""
+# The help goes to a file and grep reads the file: no `printf | grep -q` under pipefail, where grep leaving at its first match
+# can end the writer with SIGPIPE and fail the pipe. R-10b failed once on CI's gawk job (missing: 1) and passed in 5 other
+# environments and on the same tree in two later runs; this removes the one race the test had (UNPROVEN as the cause).
+"$CHECK" --help > "$TMP/help.txt" 2>&1; miss=""
 for c in $( { sed -n 's/^| \([0-9][0-9]*\) |.*/\1/p' "$HERE/../../README.md"
               grep -o -E 'exit [0-9]+|EXIT_[A-Z]+=[0-9]+' "$CHECK" | sed 's/.*[ =]//'; } | sort -un); do
-  printf '%s\n' "$hlp" | grep -qE "^# +$c " || miss="$miss $c"
+  grep -qE "^# +$c " "$TMP/help.txt" || miss="$miss $c"
 done
-printf '%s\n' "$hlp" | grep -q -- '--conserve <ref>' || miss="$miss usage-lines"
+grep -q -- '--conserve <ref>' "$TMP/help.txt" || miss="$miss usage-lines"
 [ -z "$miss" ] && ok "R-10b --help lists every exit code (README table and script) and the whole usage block" \
   || bad "R-10b --help exit codes" "missing:$miss"
 
@@ -3139,13 +3142,18 @@ D="$TMP/cf-n2"; mkbundle "$D"; note29 "$D/c.md" T stable; printf 'See [m](missin
   && ok "S30-CF-N2 one L1 warning (a link to a missing file) and nothing else: the tally says 1 advisory(ies) (advisories: L1 1)" \
   || bad "S30-CF-N2 L1 warning in the tally" "rc=$rcl $(grep -E 'L1 conf|advisor' "$D.txt" | tr '\n' ' ')"
 # S30-CF-N2b: L1 and L2 warnings add up: the tally is the sum of the two warning counts printed above it.
-mk56 cfn2b; D="$TMP/lt56-cfn2b"; printf 'See [m](missing.md).\n' >> "$D/c.md"
-"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
-w1=$(sed -n 's/^  L1 conformance *PASS .*, \([0-9]*\) warning(s).*/\1/p' "$D.txt")
-w2=$(sed -n 's/^  L2 profile *PASS *0 errors, \([0-9]*\) warning(s).*/\1/p' "$D.txt")
-{ [ "$rcl" -eq 0 ] && [ "${w1:-0}" -ge 1 ] && [ -n "$w2" ] && grep -q "but $((w1 + w2)) advisory(ies) and .* above (advisories: L1 $w1 + L2 $w2)\$" "$D.txt"; } \
-  && ok "S30-CF-N2b $w1 L1 and $w2 L2 warning(s): the tally says $((${w1:-0} + ${w2:-0})) advisory(ies), L1 $w1 + L2 $w2" \
-  || bad "S30-CF-N2b L1 + L2 tally" "rc=$rcl w1=$w1 w2=$w2 $(grep -E 'advisor' "$D.txt" | tr '\n' ' ')"
+# It needs okflint for the L2 warnings: without it, L2 is SKIPPED and so is this test.
+if command -v okflint >/dev/null 2>&1; then
+  mk56 cfn2b; D="$TMP/lt56-cfn2b"; printf 'See [m](missing.md).\n' >> "$D/c.md"
+  "$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+  w1=$(sed -n 's/^  L1 conformance *PASS .*, \([0-9]*\) warning(s).*/\1/p' "$D.txt")
+  w2=$(sed -n 's/^  L2 profile *PASS *0 errors, \([0-9]*\) warning(s).*/\1/p' "$D.txt")
+  { [ "$rcl" -eq 0 ] && [ "${w1:-0}" -ge 1 ] && [ -n "$w2" ] && grep -q "but $((w1 + w2)) advisory(ies) and .* above (advisories: L1 $w1 + L2 $w2)\$" "$D.txt"; } \
+    && ok "S30-CF-N2b $w1 L1 and $w2 L2 warning(s): the tally says $((${w1:-0} + ${w2:-0})) advisory(ies), L1 $w1 + L2 $w2" \
+    || bad "S30-CF-N2b L1 + L2 tally" "rc=$rcl w1=$w1 w2=$w2 $(grep -E 'advisor' "$D.txt" | tr '\n' ' ')"
+else
+  skip "S30-CF-N2b L1 + L2 tally — okflint not installed (this is a skip, not a pass)" "uv tool install okflint"
+fi
 
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

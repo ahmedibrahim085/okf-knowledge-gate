@@ -560,6 +560,20 @@ def fail(msg: str) -> int:
     return 2
 
 
+def link_refusal(vault: Path, rel: Path) -> str | None:
+    """Why a file is not exported because of where it really is, else None: it leads outside the vault, or into a dot file
+    or folder of it. Named by its link text, never by the host path it resolves to."""
+    full = vault / rel
+    target = full.resolve()
+    if target.is_relative_to(vault):
+        if not any(part.startswith(".") for part in target.relative_to(vault).parts):
+            return None
+        where = "into a hidden file or folder"
+    else:
+        where = "outside the vault"
+    return f"a symlink to {os.readlink(full)}, which leads {where}" if full.is_symlink() else f"a file under a symlinked folder that leads {where}"
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="Export an Obsidian-style vault folder to an OKF bundle.")
     ap.add_argument("--version", action="version", version=f"okf-export {plugin_version()}")
@@ -586,9 +600,9 @@ def main() -> int:
     # A symlink inside the vault that leads outside it would copy text from elsewhere into the bundle: it is left out and
     # named by its name and link text (never the host path it resolves to). One that stays inside the vault is exported as
     # before. rglob does not enter a symlinked folder (Python 3.9 and 3.12 measured), so only a file symlink gets here.
-    refused += sorted((rel, f"a symlink to {os.readlink(vault / rel)}, which leads outside the vault" if (vault / rel).is_symlink()
-                       else "a file under a symlinked folder that leads outside the vault") for rel in files
-                      if not (vault / rel).resolve().is_relative_to(vault))
+    # The dot rule above also holds for where a link leads: one that resolves to a dot file or folder (.obsidian, .git) is left
+    # out the same way, or the exclusion would be one `ln -s` away from the settings and VCS data it exists to keep out.
+    refused += sorted((rel, why) for rel in files for why in [link_refusal(vault, rel)] if why)
     skip = {rel for rel, _ in refused}
     files = [rel for rel in files if rel not in skip]
     fileset = set(files)

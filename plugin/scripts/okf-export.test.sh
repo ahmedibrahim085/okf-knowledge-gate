@@ -1235,6 +1235,30 @@ rc=$(run "$V" "$TMP/po15g/out")
   && ok "S10-PO-15g dash lines, quoted list items, indented code and lazy lines in quotes give no anchor CommonMark lacks" \
   || bad "S10-PO-15g quote shapes" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300) | $(tail -1 "$TMP/po15g/out/u.md" 2>/dev/null)"
 
+# S10-PO-16: a dot file or folder is left out of the bundle (.obsidian settings, .git data), and so is a symlink INSIDE the
+# vault that leads into one: the dot rule is about where the content lives, not what the link is called. The link is skipped
+# and named by its name and link text (no host path); a link to a visible file inside the vault still exports; a note that
+# links to the skipped file fails loudly (missing target), it is never a silent copy.
+V="$TMP/po16/vault"; mkdir -p "$V/.hidden" "$V/.git" "$V/.obsidian"
+printf 'HIDDENSECRET md\n' > "$V/.hidden/h.md"; printf 'HIDDENSECRET config\n' > "$V/.git/config"; printf 'HIDDENSECRET json\n' > "$V/.obsidian/workspace.json"
+note "$V" pub/real.md "# Real
+visible text"
+ln -s .hidden/h.md "$V/peek.md"; ln -s .git/config "$V/gitconfig.txt"; ln -s .obsidian/workspace.json "$V/ws.json"
+ln -s peek.md "$V/chain.md"; ln -s pub/real.md "$V/ok.md"; ln -s .hidden "$V/hiddendir"; mkdir -p "$V/.hidden/sub"; printf 'HIDDENSECRET sub\n' > "$V/.hidden/sub/s.md"
+rc=$(run "$V" "$TMP/po16/out")
+miss=""
+[ "$rc" = 1 ] || miss="$miss rc=$rc (problems are reported, so exit 1, as for a link that leaves the vault)"
+grep -rqF HIDDENSECRET "$TMP/po16/out" && miss="$miss [hidden content shipped: $(grep -rlF HIDDENSECRET "$TMP/po16/out" | sed "s#$TMP/po16/out/##" | tr '\n' ' ')]"
+for n in peek.md gitconfig.txt ws.json chain.md; do grep -q "^$n " "$TMP/out.txt" || miss="$miss [$n not named]"; done
+grep -qF "$TMP" "$TMP/out.txt" && miss="$miss [host path in the report]"
+[ -e "$TMP/po16/out/hiddendir" ] && miss="$miss [a symlinked folder to a dot folder was entered]"
+[ -f "$TMP/po16/out/ok.md" ] && grep -q 'visible text' "$TMP/po16/out/ok.md" || miss="$miss [symlink to a visible file not exported]"
+note "$V" u.md "[[peek]]"; rc=$(run "$V" "$TMP/po16/out2")
+{ [ "$rc" = 1 ] && grep -q 'missing target \[\[peek\]\]' "$TMP/out.txt"; } || miss="$miss [link to the skipped file: rc=$rc]"
+{ grep -rqF HIDDENSECRET "$TMP/po16/out2" || [ -e "$TMP/po16/out2/peek.md" ]; } && miss="$miss [a note linking to the skipped file copied it]"
+[ -z "$miss" ] && ok "S10-PO-16 a symlink into a dot folder (.hidden, .git, .obsidian, a chain) is skipped and named, a visible link still exports, a link to it fails loudly" \
+  || bad "S10-PO-16 symlink into a dot folder" "$miss | $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-200)"
+
 # S10-PO-13i: the block reader matches a line without its line end, so every S10-PO-11/12/13/14 vault saved with CRLF line
 # ends exports to the same report and, CRs aside, the same files as its LF copy.
 crlf_bad=""; crlf_n=0

@@ -9,6 +9,19 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.40] - 2026-10-22
+
+OKF Knowledge Gate 0.9.40 closes the hidden-folder exposure of `okf-export` and turns the public repository's CI green again: it was red on the 0.9.38 and 0.9.39 pushes.
+
+### Fixed
+- **`okf-export` no longer copies a dot folder through a symlink.** A note whose symlink resolves to a dot file or folder of the vault (`.obsidian`, `.git`, any `.name`) is skipped and named in the report like a link that leaves the vault, and the run exits 1. Before, `peek.md` pointing to `.obsidian/workspace.md` shipped the settings file into the bundle with exit 0. A link to a visible file inside the vault still exports; a note that links to the skipped file reports "missing target".
+- **`okf-check` lists every note it counts, under a UTF-8 locale too.** A note whose name holds a byte that is not UTF-8 was counted ("3 concept(s) need attention", "3 error(s)") but missing from the list below the count and from `--json` (`stale[]`, `errors[]`). Under a UTF-8 locale, which is the default of GitHub's runners, GNU grep read such a line as binary and dropped it while `grep -c` still counted it. The L3 and L1 listings now read their input as text (`grep -a`). This was the public CI failure S30-CF-L1.
+- **Test fixes for the CI.** S30-CF-N2b skips without `okflint` instead of failing; S25-DU-E3 allows the machine's own speed on top of its 6 s slack (it failed by 0.4 s on a loaded runner); R-10b reads the help from a file, not through a pipe.
+
+### Changed
+- The Linux release gate runs the suites under `OKF_LINUX_LANG` of `tools/linux-gate.conf` (`C.UTF-8`, the runner's locale), so a failure that shows only under a UTF-8 locale shows in the private gate first.
+- README: the Release section says its steps run in the private repository, and a public clone runs `.github/ci/run-suites.sh`.
+
 ## [0.9.39] - 2026-10-20
 
 OKF Knowledge Gate 0.9.39 closes the leftovers of the overnight review: the public-export scan, `okf-export` anchors and links, and the `okf-check` time limit and path rules.
@@ -788,7 +801,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.39...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.40...HEAD
+[0.9.40]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.39...v0.9.40
 [0.9.39]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.38...v0.9.39
 [0.9.38]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.37...v0.9.38
 [0.9.37]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.36...v0.9.37

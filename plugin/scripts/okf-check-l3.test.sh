@@ -519,6 +519,61 @@ else
     && ok "S30-CF-L1 three expired notes named with a space, ESC and a non-UTF-8 byte: L3 lists all three (exit 0)" \
     || bad "S30-CF-L1 odd names" "rc=$rc $(grep -c '(stale_after' "$TMP/t29.txt") listed; $(grep -E 'L3|COULD' "$TMP/t29.txt" | cat -v | tr '\n' ' ')"
 fi
+# S30-CF-L1u: the same three notes under a UTF-8 locale. GNU grep reads a line with a byte that is not UTF-8 as binary
+# and drops it, while grep -c still counts it: L3 said "3 concept(s) need attention" and listed 2, in the text and in
+# --json stale[]. GitHub's runner defaults to C.UTF-8, so S30-CF-L1 failed there and passed under the C locale.
+U8=$(locale -a 2>/dev/null | grep -iE '^(C|en_US)\.utf-?8$' | head -1)
+if [ "$(find "$T29" -name '*.md' | wc -l | tr -d ' ')" -ne 6 ]; then
+  skip "S30-CF-L1u this disk refuses a note name that is not UTF-8 (run on Linux)"
+elif [ -z "$U8" ]; then
+  skip "S30-CF-L1u no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  LC_ALL="$U8" "$CHECK" "$T29" >"$TMP/t29u.txt" 2>&1; rc=$?
+  LC_ALL="$U8" "$CHECK" --json "$T29" >"$TMP/t29u.json" 2>/dev/null
+  nj=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['stale']))" "$TMP/t29u.json" 2>/dev/null)
+  { [ "$rc" -eq 0 ] && [ "$(LC_ALL=C grep -c '(stale_after' "$TMP/t29u.txt")" -eq 3 ] && [ "$nj" = 3 ]; } \
+    && ok "S30-CF-L1u under LC_ALL=$U8 L3 lists all three odd-named notes, in the text and in --json stale[] (exit 0)" \
+    || bad "S30-CF-L1u odd names under $U8" "rc=$rc $(LC_ALL=C grep -c '(stale_after' "$TMP/t29u.txt") listed, --json stale[] ${nj:-?}"
+fi
+
+# S30-CF-L1v: L1 has the same listing as L3 did: under a UTF-8 locale its error lines for notes named with a space, ESC and a
+# non-UTF-8 byte were dropped by grep (the count said 3 errors, the list showed fewer and grep printed "binary file
+# matches"), in the text and in --json errors[]. Found by the review; the same three names as S30-CF-L1u.
+T30="$TMP/t30"; mkbundle "$T30"
+for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do
+  printf -- '---\ntype: Lesson\ntitle: D\ndescription: D\ndecided: 2026-02-30\n---\nbody\n' > "$T30/$n.md" 2>/dev/null
+done
+if [ "$(find "$T30" -name "*.md" | wc -l | tr -d " ")" -ne 6 ]; then
+  skip "S30-CF-L1v this disk refuses a note name that is not UTF-8 (run on Linux)"
+elif [ -z "$U8" ]; then
+  skip "S30-CF-L1v no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  LC_ALL="$U8" "$CHECK" "$T30" >"$TMP/t30u.txt" 2>&1; rc=$?
+  LC_ALL="$U8" "$CHECK" --json "$T30" >"$TMP/t30u.json" 2>/dev/null
+  nj=$(python3 -c "import json,sys; print(len(json.load(open(sys.argv[1]))['errors']))" "$TMP/t30u.json" 2>/dev/null)
+  nl=$(LC_ALL=C grep -c 'frontmatter is not valid YAML' "$TMP/t30u.txt")
+  { [ "$rc" -eq 1 ] && [ "$nl" -eq 3 ] && [ "$nj" = 3 ] && ! grep -qa 'binary file matches' "$TMP/t30u.txt"; } \
+    && ok "S30-CF-L1v under LC_ALL=$U8 L1 lists all three odd-named error notes, in the text and in --json errors[] (exit 1)" \
+    || bad "S30-CF-L1v L1 odd names under $U8" "rc=$rc $nl listed, --json errors[] ${nj:-?}; $(LC_ALL=C grep -a -c 'binary file matches' "$TMP/t30u.txt") 'binary file matches'"
+fi
+
+# S30-CF-L1w: the same for L1 WARNINGS (the `W|` listing): three notes with valid frontmatter and no `generated`, named
+# with a space, ESC and a non-UTF-8 byte, each get a warning line under a UTF-8 locale (round 2 of the review).
+T31="$TMP/t31"; mkbundle "$T31"
+for n in 'a b' "e$(printf '\033')x" "n$(printf '\377')u"; do
+  printf -- '---\ntype: Lesson\ntitle: D\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\nbody\n' > "$T31/$n.md" 2>/dev/null
+done
+if [ "$(find "$T31" -name "*.md" | wc -l | tr -d " ")" -ne 6 ]; then
+  skip "S30-CF-L1w this disk refuses a note name that is not UTF-8 (run on Linux)"
+elif [ -z "$U8" ]; then
+  skip "S30-CF-L1w no UTF-8 locale here (locale -a lists neither C.UTF-8 nor en_US.UTF-8)"
+else
+  LC_ALL="$U8" "$CHECK" "$T31" >"$TMP/t31u.txt" 2>&1; rc=$?
+  nw=$(LC_ALL=C grep -c 'recommended field `generated` is absent' "$TMP/t31u.txt")
+  { [ "$rc" -eq 0 ] && [ "$nw" -eq 3 ] && ! grep -qa 'binary file matches' "$TMP/t31u.txt"; } \
+    && ok "S30-CF-L1w under LC_ALL=$U8 L1 lists the warning of all three odd-named notes (exit 0)" \
+    || bad "S30-CF-L1w L1 warnings under $U8" "rc=$rc $nw warning line(s) of 3; $(LC_ALL=C grep -a -c 'binary file matches' "$TMP/t31u.txt") 'binary file matches'"
+fi
 
 # LT-CE1/CE2: L3 derived measures a cited sources[].resource only when it exists with the case as written (the citation
 # rule of okf-verify, D-11). On a case-insensitive disk SRC.txt used to be measured through src.txt, and on Linux it was
