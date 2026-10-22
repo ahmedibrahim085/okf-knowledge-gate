@@ -3139,13 +3139,18 @@ D="$TMP/cf-n2"; mkbundle "$D"; note29 "$D/c.md" T stable; printf 'See [m](missin
   && ok "S30-CF-N2 one L1 warning (a link to a missing file) and nothing else: the tally says 1 advisory(ies) (advisories: L1 1)" \
   || bad "S30-CF-N2 L1 warning in the tally" "rc=$rcl $(grep -E 'L1 conf|advisor' "$D.txt" | tr '\n' ' ')"
 # S30-CF-N2b: L1 and L2 warnings add up: the tally is the sum of the two warning counts printed above it.
-mk56 cfn2b; D="$TMP/lt56-cfn2b"; printf 'See [m](missing.md).\n' >> "$D/c.md"
-"$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
-w1=$(sed -n 's/^  L1 conformance *PASS .*, \([0-9]*\) warning(s).*/\1/p' "$D.txt")
-w2=$(sed -n 's/^  L2 profile *PASS *0 errors, \([0-9]*\) warning(s).*/\1/p' "$D.txt")
-{ [ "$rcl" -eq 0 ] && [ "${w1:-0}" -ge 1 ] && [ -n "$w2" ] && grep -q "but $((w1 + w2)) advisory(ies) and .* above (advisories: L1 $w1 + L2 $w2)\$" "$D.txt"; } \
-  && ok "S30-CF-N2b $w1 L1 and $w2 L2 warning(s): the tally says $((${w1:-0} + ${w2:-0})) advisory(ies), L1 $w1 + L2 $w2" \
-  || bad "S30-CF-N2b L1 + L2 tally" "rc=$rcl w1=$w1 w2=$w2 $(grep -E 'advisor' "$D.txt" | tr '\n' ' ')"
+# It needs okflint for the L2 warnings: without it, L2 is SKIPPED and so is this test.
+if command -v okflint >/dev/null 2>&1; then
+  mk56 cfn2b; D="$TMP/lt56-cfn2b"; printf 'See [m](missing.md).\n' >> "$D/c.md"
+  "$CHECK" "$D" >"$D.txt" 2>&1; rcl=$?
+  w1=$(sed -n 's/^  L1 conformance *PASS .*, \([0-9]*\) warning(s).*/\1/p' "$D.txt")
+  w2=$(sed -n 's/^  L2 profile *PASS *0 errors, \([0-9]*\) warning(s).*/\1/p' "$D.txt")
+  { [ "$rcl" -eq 0 ] && [ "${w1:-0}" -ge 1 ] && [ -n "$w2" ] && grep -q "but $((w1 + w2)) advisory(ies) and .* above (advisories: L1 $w1 + L2 $w2)\$" "$D.txt"; } \
+    && ok "S30-CF-N2b $w1 L1 and $w2 L2 warning(s): the tally says $((${w1:-0} + ${w2:-0})) advisory(ies), L1 $w1 + L2 $w2" \
+    || bad "S30-CF-N2b L1 + L2 tally" "rc=$rcl w1=$w1 w2=$w2 $(grep -E 'advisor' "$D.txt" | tr '\n' ' ')"
+else
+  skip "S30-CF-N2b L1 + L2 tally — okflint not installed (this is a skip, not a pass)" "uv tool install okflint"
+fi
 
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

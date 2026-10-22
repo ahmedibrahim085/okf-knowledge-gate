@@ -538,6 +538,11 @@ fix. A change is reviewed on two axes (standards and spec) before it is released
 
 ## Release
 
+These steps run in the maintainer's private repository. The `tools/` scripts and files they name (`tools/linux-gate.sh`,
+`tools/macos-gate.sh`, `tools/export-public.sh`, `tools/export-public.allow` and the rest) and
+`docs/agents/safe-probe-brief.md` are not in this public repository, which ships `tools/demo` only. From a public clone, run
+the suites with `.github/ci/run-suites.sh` (see [Develop and test](#develop-and-test)).
+
 1. Raise the version in `plugin/.claude-plugin/plugin.json`, `.claude-plugin/marketplace.json` and `VERSION` in
    `plugin/scripts/okf-check`. A test fails if they disagree. Then move the example pins (`okf-knowledge-gate@vx.y.z`
    and `rev: vx.y.z`) in this README, `plugin/skills/okf/SKILL.md` and `.pre-commit-hooks.yaml` to the new version
