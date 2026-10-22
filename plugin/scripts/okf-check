@@ -59,7 +59,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.46"
+VERSION="0.9.47"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -239,7 +239,7 @@ PY
   _t="[]"; [ -s "$TMP/trust.json" ] && _t=$(cat "$TMP/trust.json"); [ "${TRUST_RAN:-1}" -eq 0 ] && _t=null
   if [ -n "$PY" ]; then
     _b=$(printf '%s' "$BUNDLE" | "$PY" -c 'import json,sys; sys.path.insert(0, sys.argv[1]); from okf_guard import shown; sys.stdout.write(json.dumps(shown(sys.stdin.read())))' "$HERE")
-    _f=$(OKF_SCRIPTS_DIR="$HERE" OKF_SIZES_JSONL="$TMP/sizes.jsonl" OKF_FACTS_JSONL="$TMP/facts.jsonl" OKF_SYMLINKED_LST="$TMP/symlinked-folders.lst" OKF_GRAPH_JSON="$TMP/graph.json" OKF_STOP_WHY="${STOP_WHY:-}" "$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
+    _f=$(OKF_SCRIPTS_DIR="$HERE" OKF_SIZES_JSONL="$TMP/sizes.jsonl" OKF_FACTS_JSONL="$TMP/facts.jsonl" OKF_SYMLINKED_LST="$TMP/symlinked-folders.lst" OKF_GRAPH_JSON="$TMP/graph.json" OKF_STOP_WHY="${STOP_WHY:-}" OKF_L2_CRASHED="${#L2_CRASHED[@]}" "$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
 import json, os, sys
 sys.path.insert(0, os.environ["OKF_SCRIPTS_DIR"])
 from okf_guard import shown
@@ -257,7 +257,8 @@ def unmirror(t):
 out = {"errors": [], "stale": [], "l2_findings": [], "skipped": [], "lifecycle": [], "l2_warnings": None, "l2_by_rule": {}, "l2_advisories": [], "layers_not_run": []}
 key = {"error": "errors", "stale": "stale", "l2": "l2_findings", "skipped": "skipped", "lifecycle": "lifecycle", "notrun": "layers_not_run"}
 # The L2 advisory totals the text prints ("138 warning(s), by rule: S202 x136, L002 x2"); null when L2 did not run (okf-knowledge-gate#2).
-if sys.argv[3] == "ran":
+# l2_profile stays could_not_run when okflint crashed on some notes, but the text still lists the advisories of the notes it checked, so --json does too.
+if sys.argv[3] == "ran" or int(os.environ.get("OKF_L2_CRASHED") or 0) > 0:
     try:
         rows = open(sys.argv[2], encoding="utf-8", errors="replace").read().splitlines()
         out["l2_warnings"] = int(rows[0].split()[1])

@@ -9,6 +9,18 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.47] - 2026-10-23
+
+OKF Knowledge Gate 0.9.47 makes `okf-export` links to accented headings work on GitHub, reads tabs in block quotes as CommonMark does, and closes the gaps found by re-running every unverified claim in the register.
+
+### Fixed
+- **A link to a heading typed in decomposed Unicode now jumps on GitHub.** GitHub keeps the heading's own form in its anchor (checked on github.com); `okf-export` normalised it to NFC, so `#café` did not jump to a heading typed as `cafe` + U+0301. The anchor now keeps the heading's form, and a link typed either way finds it.
+- **A tab in a block-quote prefix is read as CommonMark reads it.** Tab stops count from the start of the line (CommonMark 0.31.2 section 2.2). Headings after such a quote were left out before; they now get their anchors, checked against commonmark.js, and the export reports far fewer false "missing heading" lines.
+- **A file with a hard-linked name outside the vault is named.** It is still exported, with a report line, as GNU tar's `--check-links` does.
+- **`okf-check --json` keeps the L2 advisories when okflint crashed on some notes**, as the text report does.
+- **The release gate's heavy-suite lock** is taken over by one gate only, a signal during the take-over leaves no lock or guard behind, and no work folder is left on any exit.
+- **Development setup installs the fixed okflint** (the fork with the byte-order-mark, non-UTF-8 and impossible-date fixes) at a pinned commit, until the fix is released upstream.
+
 ## [0.9.46] - 2026-10-22
 
 OKF Knowledge Gate 0.9.46 adds two guards to the test tooling so that two mistakes made in this release series cannot come back.
@@ -875,7 +887,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.46...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.47...HEAD
+[0.9.47]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.46...v0.9.47
 [0.9.46]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.45...v0.9.46
 [0.9.45]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.44...v0.9.45
 [0.9.44]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.43...v0.9.44

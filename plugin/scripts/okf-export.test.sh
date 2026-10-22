@@ -1169,11 +1169,11 @@ note "$V" u.md "[[h#foo-2]] [[h#bar-1-1]]"
 rc=$(run "$V" "$TMP/po15b/out")
 { [ "$rc" = 0 ] && grep -qF '(h.md#foo-2)' "$TMP/po15b/out/u.md" && grep -qF '(h.md#bar-1-1)' "$TMP/po15b/out/u.md"; } \
   && ok "S10-PO-15b Foo, Foo-1, Foo gives foo-2 and Bar, Bar, Bar-1 gives bar-1-1, as github-slugger" || bad "S10-PO-15b slugger" "rc=$rc $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
-# 15c: a heading typed in NFD matches a link typed in NFC (the anchor is made from NFC text).
+# 15c: a heading typed in NFD is found by a link typed in NFC; the anchor keeps the heading's own form (S10-PO-30).
 V="$TMP/po15c/vault"; note "$V" h.md "$(printf '# Cafe\314\201 menu')"; note "$V" u.md "$(printf '[[h#Caf\303\251 menu]]')"
 rc=$(run "$V" "$TMP/po15c/out")
-{ [ "$rc" = 0 ] && grep -qF "$(printf '(h.md#caf\303\251-menu)')" "$TMP/po15c/out/u.md"; } \
-  && ok "S10-PO-15c an NFD heading matches an NFC link (anchor from NFC text)" || bad "S10-PO-15c NFC heading" "rc=$rc $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
+{ [ "$rc" = 0 ] && grep -qF "$(printf '(h.md#cafe\314\201-menu)')" "$TMP/po15c/out/u.md"; } \
+  && ok "S10-PO-15c an NFD heading matches an NFC link (the anchor keeps the heading's NFD form, S10-PO-30)" || bad "S10-PO-15c NFC heading" "rc=$rc $(head -2 "$TMP/out.txt" | tr '\n' ' ') $(grep -o '(h.md#[^)]*)' "$TMP/po15c/out/u.md" | od -c | head -2 | tr '\n' ' ')"
 # 15d: inside a block quote no setext underline makes a heading (a shortcut: okf-export never invents an anchor, and a
 # link to such a heading fails loudly). Outside a quote `Kept` / `===` is still a heading.
 V="$TMP/po15d/vault"; note "$V" q1.md "> Title
@@ -1398,25 +1398,29 @@ done
   && ok "S10-PO-27 heading anchors drop a tab, controls, format characters and a no-break space and keep a mark and U+203F, as github-slugger" \
   || bad "S10-PO-27 slug" "rc=$rc missing:$miss | $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-200)"
 
-# S10-PO-28 (review round 2): inside a block quote, a line whose container prefix (the '>', spaces, tabs and list markers
-# before its text) holds a tab is not read for headings, and neither is any later line of that quote: CommonMark counts the
-# tab's columns from the container, which this reader does not follow. A link to such a heading fails loudly. A heading
-# before the first such line still resolves.
+# S10-PO-28: a tab in the container prefix of a block quote line (the '>', spaces, tabs and list markers before its text)
+# counts its columns from the start of the line, to the next multiple of 4 (CommonMark 0.31.2 section 2.2, cmark and
+# commonmark.js: a tab the '>' marker only part-uses leaves its remaining columns as spaces). So the headings in such a quote
+# resolve like those of a quote written with spaces: `>TAB# B` is a heading (2 columns left after the marker's space),
+# `>  TAB# H` too, and `>TAB TAB# I` and `>   TAB# J` are indented code (6 columns left), which stays a loud 'missing heading'.
+# (0.9.42 to 0.9.46 muted every heading from such a line on, on the belief that CommonMark counts from the container.)
 V="$TMP/po28/vault"; note "$V" t.md "$(printf '>\t>  > >1)   \tx\ny\n      >  >  >>  3) # T')"
 note "$V" q.md "$(printf '> # A\n>\t# B\n> # C')"; note "$V" r.md "$(printf '> - a\n>\t# D')"; note "$V" p.md "> # P"
-note "$V" u.md "[[t#T]] [[q#A]] [[q#B]] [[q#C]] [[r#D]] [[p#P]]"
+note "$V" h.md "$(printf '>  \t# H\n\n> >\t# K\n\n> -\t# L')"; note "$V" c.md "$(printf '>\t\t# I\n\n>   \t# J')"
+note "$V" u.md "[[t#T]] [[q#A]] [[q#B]] [[q#C]] [[r#D]] [[p#P]] [[h#H]] [[h#K]] [[h#L]] [[c#I]] [[c#J]]"
 rc=$(run "$V" "$TMP/po28/out")
-{ [ "$rc" = 1 ] && [ "$(grep -c 'missing heading' "$TMP/out.txt")" = 4 ] && grep -qF 'missing heading [[t#T]]' "$TMP/out.txt" \
-  && grep -qF 'missing heading [[q#B]]' "$TMP/out.txt" && grep -qF 'missing heading [[q#C]]' "$TMP/out.txt" \
-  && grep -qF 'missing heading [[r#D]]' "$TMP/out.txt" && grep -qF '(q.md#a)' "$TMP/po28/out/u.md" && grep -qF '(p.md#p)' "$TMP/po28/out/u.md"; } \
-  && ok "S10-PO-28 a tab in a quote line's container prefix: no heading from that line or after it in the quote (loud), one before it and a tab-free quote still resolve" \
-  || bad "S10-PO-28 tab in quote prefix" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+miss=""; for h in 'q#A' 'q#B' 'q#C' 'r#D' 'p#P' 'h#H' 'h#K' 'h#L'; do grep -qF "[[$h]]" "$TMP/out.txt" && miss="$miss $h"; done
+{ [ "$rc" = 1 ] && [ "$(grep -c 'missing heading' "$TMP/out.txt")" = 3 ] && [ -z "$miss" ] && grep -qF 'missing heading [[t#T]]' "$TMP/out.txt" \
+  && grep -qF 'missing heading [[c#I]]' "$TMP/out.txt" && grep -qF 'missing heading [[c#J]]' "$TMP/out.txt" \
+  && grep -qF '(q.md#b)' "$TMP/po28/out/u.md" && grep -qF '(q.md#c)' "$TMP/po28/out/u.md" && grep -qF '(r.md#d)' "$TMP/po28/out/u.md" \
+  && grep -qF '(h.md#h)' "$TMP/po28/out/u.md" && grep -qF '(h.md#k)' "$TMP/po28/out/u.md" && grep -qF '(h.md#l)' "$TMP/po28/out/u.md"; } \
+  && ok "S10-PO-28 a tab in a quote line's container prefix counts its columns from the line start: the headings after it resolve, indented code and a lazy line stay no heading (loud)" \
+  || bad "S10-PO-28 tab in quote prefix" "rc=$rc unresolved:$miss $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
 
-# S10-PO-29 (review round 3): the mute of S10-PO-28 reaches past the quote only when the quote's end is undecidable: a quote
-# that sits in a list item, or one that did not end at a blank line or the end of the note. A top-level quote that a blank
-# line ended, with a tab in its prefix (a tab-indented nested list in an Obsidian callout), leaves the headings after it
-# alone. 29a: two `>TAB- item` lines, 29b: `> - a` / `> TAB- b`, 29c: a callout with a nested list; 29d (guard): a tab in the
-# quote of a list item still mutes what follows (`c` is no heading in CommonMark), so that link fails loudly.
+# S10-PO-29: the headings after a quote with a tab in its prefix are read as after any quote. 29a: two `>TAB- item` lines,
+# 29b: `> - a` / `> TAB- b`, 29c: a callout with a nested list, all followed by a heading after a blank line. 29d: a tab in the
+# quote of a list item; `C` is no heading in CommonMark (the `TAB TAB# C` line after a blank line is indented code), so that
+# link stays a loud miss, and the heading after it resolves (0.9.46 muted it).
 po29() {   # po29 <id> <body-of-b> <link>: b.md holds the body, a.md links to it; prints the exit code
   V="$TMP/po29$1/vault"; note "$V" b.md "$2"; note "$V" a.md "$3"; rc=$(run "$V" "$TMP/po29$1/out")
 }
@@ -1432,10 +1436,37 @@ po29 c "$(printf '> [!note]\n>\t- b\n\ntext\n\n## After')" "[[b#After]]"
 { [ "$rc" = 0 ] && grep -qF '(b.md#after)' "$TMP/po29c/out/a.md"; } \
   && ok "S10-PO-29c a heading further down after a callout with a tab-indented list resolves" \
   || bad "S10-PO-29c heading after a callout" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
-po29 d "$(printf -- '-\t >> \t# C\n y\n\n\t\t# C\n\n# After')" "[[b#C]]"
-{ [ "$rc" = 1 ] && grep -qF 'missing heading [[b#C]]' "$TMP/out.txt"; } \
-  && ok "S10-PO-29d a tab in the quote of a list item: no heading C is read (guard: passes on the previous head too)" \
+po29 d "$(printf -- '-\t >> \t# C\n y\n\n\t\t# C\n\n# After')" "[[b#C]] [[b#After]]"
+{ [ "$rc" = 1 ] && [ "$(grep -c 'missing heading' "$TMP/out.txt")" = 1 ] && grep -qF 'missing heading [[b#C]]' "$TMP/out.txt" && grep -qF '(b.md#after)' "$TMP/po29d/out/a.md"; } \
+  && ok "S10-PO-29d a tab in the quote of a list item: C is no heading (loud) and the heading after it resolves" \
   || bad "S10-PO-29d tab in a quote in an item" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+
+# S10-PO-31: soundness guards for the quote reader once a tab no longer mutes it (found by the reviewer fuzz against
+# markdown-it-py and commonmark.py, 40 000 notes, 2026-10-22): a line without '>' that the quote took as a lazy line may be
+# a paragraph of its own in CommonMark, so what follows it, up to the next blank line, is not read for headings, and the list
+# items its indent does not reach have ended. 31a: `D` is indented code, `a` starts a paragraph and the tab line goes on with
+# it; 31b: `<v>` is an HTML block, `x` a paragraph, and `2.` cannot start a list under it; 31c: the same without a tab (the
+# hole was there before 0.9.47, the tab mute hid it in a tab-holding note); 31d (guard): `# After` on a line of its own
+# after a lazy line, and a heading after a quote line with a tab in an item, still resolve.
+po31() {   # po31 <id> <body-of-b> <link>: b.md holds the body, a.md links to it; prints the exit code
+  V="$TMP/po31$1/vault"; note "$V" b.md "$2"; note "$V" a.md "$3"; rc=$(run "$V" "$TMP/po31$1/out")
+}
+po31 a "$(printf '1) >-\n   >\t\tD\na\n\t# Z')" "[[b#Z]]"
+{ [ "$rc" = 1 ] && grep -qF 'missing heading [[b#Z]]' "$TMP/out.txt"; } \
+  && ok "S10-PO-31a a line after a quote whose code ended in a lazy-looking line is no heading (it continues the paragraph)" \
+  || bad "S10-PO-31a lazy end, tab" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+po31 b "$(printf '><v>\nx\n2. >\t# Z')" "[[b#Z]]"
+{ [ "$rc" = 1 ] && grep -qF 'missing heading [[b#Z]]' "$TMP/out.txt"; } \
+  && ok "S10-PO-31b an ordered item that cannot start a list under the paragraph after an HTML tag line in a quote is no heading" \
+  || bad "S10-PO-31b html tag line in a quote" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+po31 c "$(printf '1) >-\n   >       D\na\n    # Z')" "[[b#Z]]"
+{ [ "$rc" = 1 ] && grep -qF 'missing heading [[b#Z]]' "$TMP/out.txt"; } \
+  && ok "S10-PO-31c the same without a tab: the lazy end of a quote does not leave the list item open" \
+  || bad "S10-PO-31c lazy end, spaces" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+po31 d "$(printf -- '- >\t# M\n  y\n# After\n\n>>> foo\n> bar\n>># baz')" "[[b#M]] [[b#After]] [[b#baz]]"
+{ [ "$rc" = 0 ] && grep -qF '(b.md#m)' "$TMP/po31d/out/a.md" && grep -qF '(b.md#after)' "$TMP/po31d/out/a.md" && grep -qF '(b.md#baz)' "$TMP/po31d/out/a.md"; } \
+  && ok "S10-PO-31d a heading in a quote in an item, one on a line of its own after a lazy line, and a nested quote's heading resolve" \
+  || bad "S10-PO-31d guard" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
 
 # S10-PO-29e: a note whose first line is `---` indented is no frontmatter (spec 4 and okf-check want '---' at the start of
 # the file), so the fence after it runs to the end of the note and `# H` is code: there is no heading H to link to. The
@@ -1445,6 +1476,41 @@ rc=$(run "$V" "$TMP/po29e/out")
 { [ "$rc" = 1 ] && grep -qF 'missing heading [[b#H]]' "$TMP/out.txt"; } \
   && ok "S10-PO-29e an indented --- on the first line is no frontmatter: the fence after it hides the heading" \
   || bad "S10-PO-29e indented frontmatter fence" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+
+# S10-PO-30: the anchor is the heading's own Unicode form, as github-slugger and github.com keep it (a decomposed heading id,
+# `user-content-cafe` + U+0301, checked on github.com with a gist, 2026-10-22; the NFC link `#caf%C3%A9` does not jump to it).
+# A link is matched to a heading on the NFC of both sides, so a link typed in either form finds a heading typed in either form
+# and gets that heading's anchor. 30a NFD heading, NFD link; 30b NFC heading, NFC link (unchanged); 30c NFC heading, NFD link;
+# 30d both spellings of one word as two headings: each link takes the exact one; 30e a repeat of an NFD heading is `-1` in the
+# NFD form and an NFC link finds it; 30f a heading that does not exist stays a loud 'missing heading'.
+NFD_E=$(printf 'e\314\201'); NFC_E=$(printf '\303\251')
+po30() {   # po30 <id> <body-of-h> <links>: h.md holds the body, u.md links to it; prints the exit code
+  V="$TMP/po30$1/vault"; note "$V" h.md "$2"; note "$V" u.md "$3"; rc=$(run "$V" "$TMP/po30$1/out")
+}
+po30 a "# Caf${NFD_E} menu" "[[h#Caf${NFD_E} menu]]"
+{ [ "$rc" = 0 ] && grep -qF "(h.md#caf${NFD_E}-menu)" "$TMP/po30a/out/u.md"; } \
+  && ok "S10-PO-30a a heading typed in NFD gets an NFD anchor for an NFD link" \
+  || bad "S10-PO-30a NFD heading, NFD link" "rc=$rc $(grep -o '(h.md#[^)]*)' "$TMP/po30a/out/u.md" | od -c | head -2 | tr '\n' ' ')"
+po30 b "# Caf${NFC_E} menu" "[[h#Caf${NFC_E} menu]]"
+{ [ "$rc" = 0 ] && grep -qF "(h.md#caf${NFC_E}-menu)" "$TMP/po30b/out/u.md"; } \
+  && ok "S10-PO-30b a heading typed in NFC gets an NFC anchor for an NFC link (unchanged)" \
+  || bad "S10-PO-30b NFC heading, NFC link" "rc=$rc $(grep -o '(h.md#[^)]*)' "$TMP/po30b/out/u.md" | od -c | head -2 | tr '\n' ' ')"
+po30 c "# Caf${NFC_E} menu" "[[h#Caf${NFD_E} menu]]"
+{ [ "$rc" = 0 ] && grep -qF "(h.md#caf${NFC_E}-menu)" "$TMP/po30c/out/u.md"; } \
+  && ok "S10-PO-30c a heading typed in NFC gets its NFC anchor for a link typed in NFD" \
+  || bad "S10-PO-30c NFC heading, NFD link" "rc=$rc $(grep -o '(h.md#[^)]*)' "$TMP/po30c/out/u.md" | od -c | head -2 | tr '\n' ' ')"
+po30 d "$(printf '# Caf%s\n# Caf%s' "$NFC_E" "$NFD_E")" "[[h#Caf${NFC_E}]] [[h#Caf${NFD_E}]]"
+{ [ "$rc" = 0 ] && grep -qF "(h.md#caf${NFC_E}) " "$TMP/po30d/out/u.md" && grep -qF "(h.md#caf${NFD_E})" "$TMP/po30d/out/u.md"; } \
+  && ok "S10-PO-30d two spellings of one word as two headings: each link takes the heading typed in its own form" \
+  || bad "S10-PO-30d both spellings" "rc=$rc $(grep -o '(h.md#[^)]*)' "$TMP/po30d/out/u.md" | od -c | head -3 | tr '\n' ' ')"
+po30 e "$(printf '# Caf%s\n# Caf%s' "$NFD_E" "$NFD_E")" "[[h#Caf${NFC_E}-1]]"
+{ [ "$rc" = 0 ] && grep -qF "(h.md#caf${NFD_E}-1)" "$TMP/po30e/out/u.md"; } \
+  && ok "S10-PO-30e the repeat of an NFD heading is numbered in its NFD form and an NFC link finds it" \
+  || bad "S10-PO-30e numbered NFD heading" "rc=$rc $(grep -o '(h.md#[^)]*)' "$TMP/po30e/out/u.md" | od -c | head -2 | tr '\n' ' ')"
+po30 f "# Caf${NFD_E}" "[[h#Cafx]]"
+{ [ "$rc" = 1 ] && grep -qF 'missing heading [[h#Cafx]]' "$TMP/out.txt"; } \
+  && ok "S10-PO-30f a heading that is not there stays a loud 'missing heading'" \
+  || bad "S10-PO-30f missing heading" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-200)"
 
 # S10-PO-13i: the block reader matches a line without its line end, so every S10-PO-11/12/13/14 vault saved with CRLF line
 # ends exports to the same report and, CRs aside, the same files as its LF copy.
@@ -1644,8 +1710,8 @@ grep -rqE 'EXTSECRET|HIDDENSECRET' "$TMP/po19/out" && miss="$miss [content shipp
 
 # S10-PO-20: a HARD link to a file under a dot name has no target to follow: it IS the hidden file. A visible file with the same
 # (device, inode) as one under a dot folder or a dot-named file is refused and named. A second name of a visible file still
-# exports; a dot-folder symlink to a visible file does not make that file hidden. LIMIT (README): a hard link to a file
-# OUTSIDE the vault looks like a file that lives here, so it is exported.
+# exports; a dot-folder symlink to a visible file does not make that file hidden. A hard link to a file OUTSIDE the vault looks
+# like a file that lives here, so it is exported, and named as a warning (S10-PO-32).
 V="$TMP/po20/vault"; mkdir -p "$V/.hidden/deep/er" "$V/.git" "$V/.obsidian" "$TMP/po20/ext"
 printf 'HIDDENSECRET md\n' > "$V/.hidden/deep/er/h.md"; printf 'HIDDENSECRET config\n' > "$V/.git/config"; printf 'HIDDENSECRET json\n' > "$V/.obsidian/ws.md"
 printf 'HIDDENSECRET dotname\n' > "$V/.dotfile.md"; printf 'EXTFILE\n' > "$TMP/po20/ext/e.md"
@@ -1662,9 +1728,39 @@ for n in peek.md gitconfig.txt ws.md chain.md pub/dotcopy.md; do
   grep -qxF "$n — a hard link to a hidden file or folder of the vault: skipped" "$TMP/out.txt" || miss="$miss [$n not named]"; done
 grep -qF "$TMP" "$TMP/out.txt" && miss="$miss [host path in the report]"
 for n in pub/real.md second.md ext.md; do [ -f "$TMP/po20/out/$n" ] || miss="$miss [$n not exported]"; done
-grep -qE '^(pub/real|second|ext)\.md ' "$TMP/out.txt" && miss="$miss [a visible file was named]"
-[ -z "$miss" ] && ok "S10-PO-20 a hard link to a hidden file (dot folder, dot name, chain) is refused and named; a visible file's second name exports; the outside-the-vault limit holds" \
+grep -qE '^(pub/real|second)\.md ' "$TMP/out.txt" && miss="$miss [a visible file was named]"
+[ -z "$miss" ] && ok "S10-PO-20 a hard link to a hidden file (dot folder, dot name, chain) is refused and named; a visible file's second name exports" \
   || bad "S10-PO-20 hard link to a hidden file" "$miss | $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+
+# S10-PO-32: a visible file whose st_nlink is higher than the names of it found in the vault has another name outside it (GNU tar
+# --check-links warns the same way). It cannot be refused, since it looks like a file that lives here, so it is exported and
+# named: "<file> — a file with 2 names, 1 of them in the vault; the other names are outside it: exported" (exit 1, like the
+# other lines of the report). 32a one outside name; 32b three names, one outside the vault (3 links, 2 found); 32c no
+# warning when every name is in the vault (two visible names; a visible and a dot name is the refusal of S10-PO-20); 32d a
+# symlink to such a file is not named a second time; 32e the same file twice outside, the count is of names, not of files.
+V="$TMP/po32/vault"; mkdir -p "$V/sub" "$TMP/po32/ext"
+printf 'EXT one\n' > "$TMP/po32/ext/e.md"; ln "$TMP/po32/ext/e.md" "$V/out1.md"
+printf 'EXT three\n' > "$TMP/po32/ext/t.md"; ln "$TMP/po32/ext/t.md" "$V/three-a.md"; ln "$TMP/po32/ext/t.md" "$V/sub/three-b.md"
+note "$V" in-a.md "# In a"; ln "$V/in-a.md" "$V/in-b.md"
+printf 'EXT sym\n' > "$TMP/po32/ext/s.md"; ln "$TMP/po32/ext/s.md" "$V/sym-target.md"; ln -s sym-target.md "$V/sym-link.md"
+rc=$(run "$V" "$TMP/po32/out")
+miss=""
+[ "$rc" = 1 ] || miss="$miss rc=$rc"
+grep -qxF "out1.md — a file with 2 names, 1 of them in the vault; the other names are outside it: exported" "$TMP/out.txt" || miss="$miss [out1.md not named]"
+grep -qxF "three-a.md — a file with 3 names, 2 of them in the vault; the other names are outside it: exported" "$TMP/out.txt" || miss="$miss [three-a.md not named]"
+grep -qxF "sub/three-b.md — a file with 3 names, 2 of them in the vault; the other names are outside it: exported" "$TMP/out.txt" || miss="$miss [three-b.md not named]"
+grep -qxF "sym-target.md — a file with 2 names, 1 of them in the vault; the other names are outside it: exported" "$TMP/out.txt" || miss="$miss [sym-target.md not named]"
+grep -qE '^(in-a|in-b|sym-link)\.md ' "$TMP/out.txt" && miss="$miss [a file with all its names here, or a symlink, was named]"
+[ "$(grep -c 'of them in the vault' "$TMP/out.txt")" = 4 ] || miss="$miss [not 4 lines: $(grep -c 'of them in the vault' "$TMP/out.txt")]"
+grep -qF "$TMP" "$TMP/out.txt" && miss="$miss [host path in the report]"
+for n in out1.md three-a.md sub/three-b.md in-a.md in-b.md sym-target.md; do [ -f "$TMP/po32/out/$n" ] || miss="$miss [$n not exported]"; done
+[ -z "$miss" ] && ok "S10-PO-32 a file with a name outside the vault is exported and named (names counted, a symlink and a file whose names are all here are not)" \
+  || bad "S10-PO-32 hard link outside the vault" "$miss | $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-400)"
+V="$TMP/po32b/vault"; note "$V" a.md "# A"; ln "$V/a.md" "$V/b.md"; note "$V" c.md "# C"
+rc=$(run "$V" "$TMP/po32b/out")
+{ [ "$rc" = 0 ] && ! grep -q 'of them in the vault' "$TMP/out.txt"; } \
+  && ok "S10-PO-32b a vault whose hard links all stay inside it exits 0 with no warning" \
+  || bad "S10-PO-32b hard links inside" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
 
 # S10-PO-20b: the file identity is (device, inode), not the inode alone: inode numbers repeat across devices, and a vault can hold
 # a mount. Timed through the module with os.lstat answering that the hidden file lives on another device: not refused; on the same

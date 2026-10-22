@@ -157,11 +157,14 @@ ENCLOSED_LETTERS = re.compile("[\u24b6-\u24e9\U0001f130-\U0001f149\U0001f150-\U0
 
 def slug(heading: str) -> str:
     """The anchor GitHub gives a heading (github-slugger): lower case, everything dropped that is not a word character,
-    a space or '-', each space a '-'. A tab or any other control or format character is dropped, not turned into a space."""
+    a space or '-', each space a '-'. A tab or any other control or format character is dropped, not turned into a space.
+    The heading's own Unicode form is kept (a decomposed heading gets a decomposed anchor): github-slugger and github.com
+    do not normalise, and the NFC link `#caf%C3%A9` does not jump to the id `cafe` + U+0301. A link is matched to a heading
+    on the NFC of both sides (`matching_anchor`)."""
     def kept(c: str) -> bool:
         cat = unicodedata.category(c)
         return c in " -" or cat[0] in "LM" or cat in ("Nd", "Nl", "Pc") or bool(ENCLOSED_LETTERS.match(c))
-    return "".join(filter(kept, unicodedata.normalize("NFC", heading).strip().lower())).replace(" ", "-")
+    return "".join(filter(kept, heading.strip().lower())).replace(" ", "-")
 
 
 def frontmatter_len(lines: list[str]) -> int:
@@ -240,14 +243,14 @@ def holds_paragraph(t: str) -> bool:
 
 
 def quote_block(lines: list[str], start: int, first: str, at: int):
-    """(line indexes, contents, blind) of the block quote that starts at `start` with the quote line `first` (its text, markers
+    """(line indexes, contents, lazy) of the block quote that starts at `start` with the quote line `first` (its text, markers
     included): the lines that carry a '>' (read against the item content at `at`) with one '>' taken off, and the lazy
     lines that continue a paragraph (5.1). body_lines reads the contents, so a quote in this quote is read by a nested call.
     `para` errs towards True: a line taken in that CommonMark leaves outside can only hide a heading (a loud 'missing
-    heading'), never add one. `blind` is the index (in the returned lists) of the first line whose container prefix holds a
-    tab: CommonMark counts a tab's columns from the container, which is not followed here, so from that line on the quote
-    is undecidable and body_lines reports no heading in it (a link to one fails loudly), and that line leaves the
-    paragraph open and no fence open, which can only hide too.
+    heading'), never add one. A tab in a container prefix needs no care here: CommonMark (2.2, and cmark) counts its
+    columns from the start of the line, and `dedent` has already expanded the prefix of every line that way.
+    `lazy` says the last line taken has no '>': CommonMark may read it as a paragraph of its own outside the quote (the
+    quote's last block was not a paragraph after all), so what follows, up to the next blank line, is undecidable.
     SHORTCUT: setext headings inside block quotes are not recognised (body_lines with nested=True); a link to one fails
     with 'missing heading'."""
     def starts_block(t):
@@ -256,8 +259,8 @@ def quote_block(lines: list[str], start: int, first: str, at: int):
     idx, contents = [], []
     para, fence = False, 0   # a paragraph may be open; the quote level of an open fence (0: none)
     listed = False   # a list marker was seen: an indented line may be item text, not code, so it never ends `para`
-    blind = None
     j, text = start, first
+    lazy = False
     while True:
         if j > start:
             if j >= len(lines):
@@ -267,7 +270,6 @@ def quote_block(lines: list[str], start: int, first: str, at: int):
                 break   # a blank line ends the quote
             text = dedent(line, at)
         inner, depth = quote_depth(text)
-        tabbed = "\t" in lines[j][:PREFIX.match(lines[j]).end()]
         if j > start and depth and indent_width(line) < at:
             break   # a line with its own '>' that is not indented into the item ends the item, and the quote in it
         if not depth:   # lazy: only under a paragraph, and not a line that starts a block of its own
@@ -285,17 +287,14 @@ def quote_block(lines: list[str], start: int, first: str, at: int):
             # after it, unless a list is in the quote: there it may be item text, and `para` errs towards True
             para = not fence and bool(inner.strip()) and not starts_block(inner) and (para or listed or not INDENTED.match(inner)) \
                 and (not LIST_ITEM.match(inner) or holds_paragraph(inner))
-        if tabbed:
-            blind = len(idx) if blind is None else blind
-            if depth:
-                fence, para = 0, True
         idx.append(j)
+        lazy = not depth
         if depth:
             contents.append(re.sub(r"^ {0,3}>[ \t]?", "", text, count=1))
-        else:   # a lazy line is paragraph text; if its indent could read as a block start of the item, it is fed as plain text
-            contents.append("x" if starts_block(text.lstrip()) or LIST_ITEM.match(text.lstrip()) else text)
+        else:   # a lazy line is paragraph text; if its indent could read as a block start of the item (a '>' here is indented 4 or more), it is fed as plain text
+            contents.append("x" if starts_block(text.lstrip()) or LIST_ITEM.match(text.lstrip()) or text.lstrip().startswith(">") else text)
         j += 1
-    return idx, contents, len(idx) if blind is None else blind
+    return idx, contents, lazy
 
 
 def item_interrupts(text: str) -> bool:
@@ -324,12 +323,12 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
     html, html_at = False, 0  # an open HTML block: its end pattern (None: a blank line), the content indent
     code = False           # inside an indented code block
     quoted = {}            # results for the lines of a block quote read ahead: index -> (in_code, heading)
-    mute_from = len(lines)   # after a quote with a tab in a container prefix (quote_block, `blind`) that sits in an item or did not end at a blank line: no heading after its last line
+    hold = False           # after a quote whose last line is lazy (quote_block): no heading until the next blank line
     for i in range(0 if nested else frontmatter_len(lines), len(lines)):
         raw = lines[i]
         if i in quoted:
             c, h = quoted.pop(i)
-            yield i, raw, c, h if i < mute_from else None
+            yield i, raw, c, h
             continue
         line = raw.rstrip("\r\n")   # matched without its line end: `$` in SETEXT and THEMATIC must see a CRLF line too
         w = indent_width(line)
@@ -352,7 +351,7 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
         if not line.strip():
             if empty:
                 items.pop()
-            empty, para = False, []
+            empty, para, hold = False, [], False
             yield i, raw, False, None
             continue
         depth = bisect.bisect_right(items, w)   # the items this line's indent keeps it inside (items only grow)
@@ -360,7 +359,7 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
         if para and depth == len(items) and SETEXT.match(text) and not nested:   # not in a quote: see quote_block
             heading = " ".join(x.strip() for x in para)
             para = []
-            yield i, raw, False, heading if i < mute_from else None
+            yield i, raw, False, None if hold else heading
             continue
         brk = THEMATIC.match(text)
         item = LIST_ITEM.match(text) and not brk   # `- - -` is a thematic break, not an item
@@ -392,14 +391,15 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
         if not empty and QUOTE.match(text):   # a block quote: read its lines with this reader, then go on after it
             if level >= NEST_MAX or level + quote_depth(text)[1] > NEST_MAX:   # `level` counts nested reads; `depth` below is the list-item depth of one line
                 raise TooDeep()   # the second test reads the line's markers once: a line of 10^6 '>' costs one pass, not one per level
-            idx, contents, blind = quote_block(lines, i, text, at)
-            if blind < len(idx) and (items or idx[-1] + 1 < len(lines) and lines[idx[-1] + 1].strip()):
-                mute_from = min(mute_from, idx[-1] + 1)   # only a quote that a blank line or the end of the note closed, outside any item, is over
+            idx, contents, lazy = quote_block(lines, i, text, at)
             for k, _, c, h in body_lines(contents, nested=True, level=level + 1):
-                quoted[idx[k]] = (c, h if k < blind else None)
+                quoted[idx[k]] = (c, None if hold else h)
             para, code = [], False
+            if lazy:   # CommonMark may read that last line as a paragraph of its own, outside the quote and the items its indent does not reach
+                del items[bisect.bisect_right(items, indent_width(lines[idx[-1]].rstrip("\r\n"))):]
+                hold = True
             c, h = quoted.pop(i)
-            yield i, raw, c, h if i < mute_from else None
+            yield i, raw, c, h
             continue
         heading, in_code = None, False
         starts = [h for h in HTML_BLOCKS if h[0].match(text)]   # again: a marker line's content may start one
@@ -423,7 +423,7 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
             in_code = not nested
         else:
             para = [text]
-        yield i, raw, in_code, heading if i < mute_from else None
+        yield i, raw, in_code, None if hold and (items or pos) else heading   # an ATX heading on a line of its own, in no item, ends a paragraph in either reading
 
 
 def read_text(path: Path) -> str:
@@ -455,6 +455,15 @@ def heading_slugs(path: Path) -> set[str]:
     except TooDeep:
         pass   # the note is named on its own (main); its headings past the cap are not known
     return found
+
+
+def matching_anchor(anchor: str, known: set[str]) -> str | None:
+    """The anchor of a heading in `known` that a link to `anchor` names: the exact one first, else the one equal on NFC
+    (the smallest, so the choice does not depend on set order); None when there is none."""
+    if anchor in known:
+        return anchor
+    want = unicodedata.normalize("NFC", anchor)
+    return min((a for a in known if unicodedata.normalize("NFC", a) == want), default=None)
 
 
 # Spec 9 log input, read from a vault log.md: a level-2 heading (`## 2026-05-22`) whose lines are that day's entries,
@@ -725,11 +734,13 @@ def unreadable_links(vault: Path) -> list[tuple[Path, str]]:
     return sorted(out)
 
 
-def hidden_hard_links(vault: Path, files: list[Path]) -> list[tuple[Path, str]]:
+def hidden_hard_links(vault: Path, files: list[Path], outside: list | None = None) -> list[tuple[Path, str]]:
     """Visible files that are the same file as one under a dot name: a hard link has no target path to follow, so (device,
     inode) is the only tell. Inode numbers repeat across devices, hence the device in the key. st_nlink > 1 is the cheap
-    pre-check: the dot names are walked only when a visible file has a second name. A hard link to a file OUTSIDE the vault
-    cannot be told from a file that lives here."""
+    pre-check: the vault is walked only when a visible file has a second name. A hard link to a file OUTSIDE the vault
+    cannot be refused (it looks like a file that lives here), but `outside` collects it when given, as GNU tar --check-links
+    does: a file whose st_nlink is higher than the names of it found in the vault (the names are counted over every regular
+    file the walk meets, visible or under a dot name)."""
     multi, gone = [], []
     for rel in files:
         try:
@@ -738,24 +749,29 @@ def hidden_hard_links(vault: Path, files: list[Path]) -> list[tuple[Path, str]]:
             gone.append((rel, f"a file that could not be examined ({err.strerror})"))
             continue
         if st.st_nlink > 1 and st.st_ino:   # an inode of 0 is made up by some network and FUSE volumes
-            multi.append((rel, (st.st_dev, st.st_ino)))
+            multi.append((rel, (st.st_dev, st.st_ino), st.st_nlink))
     if not multi:
         return gone
-    hidden, unlisted = set(), []
+    hidden, unlisted, names_seen = set(), [], {}
     for top, _, names in os.walk(vault, onerror=lambda err: unlisted.append(Path(err.filename).relative_to(vault))):
         under_dot = any(part.startswith(".") for part in Path(top).relative_to(vault).parts)
         for name in names:
-            if under_dot or name.startswith("."):
-                try:
-                    st = os.lstat(os.path.join(top, name))   # lstat: a symlink under a dot name is not the file it points to
-                except OSError:
+            try:
+                st = os.lstat(os.path.join(top, name))   # lstat: a symlink is not the file it points to
+            except OSError:
+                if under_dot or name.startswith("."):
                     unlisted.append(Path(top).relative_to(vault))
-                    continue
-                if stat.S_ISREG(st.st_mode):
+                continue
+            if stat.S_ISREG(st.st_mode):
+                names_seen[(st.st_dev, st.st_ino)] = names_seen.get((st.st_dev, st.st_ino), 0) + 1
+                if under_dot or name.startswith("."):
                     hidden.add((st.st_dev, st.st_ino))
     # Fail closed: in a folder nobody may list, the other name of a file may be hidden, and nothing says so.
     why = f"a file with more than one name, while the folder {min(unlisted).as_posix()} cannot be listed or entered to rule out a hard link to a hidden file" if unlisted else ""
-    return gone + [(rel, "a hard link to a hidden file or folder of the vault" if ident in hidden else why) for rel, ident in multi if ident in hidden or why]
+    if outside is not None and not unlisted:   # with a folder nobody may list the count is not known: the file is refused above
+        outside += [(rel, f"a file with {nlink} names, {names_seen.get(ident, 0)} of them in the vault; the other names are outside it")
+                    for rel, ident, nlink in multi if ident not in hidden and nlink > names_seen.get(ident, 0) and not os.path.islink(vault / rel)]
+    return gone + [(rel, "a hard link to a hidden file or folder of the vault" if ident in hidden else why) for rel, ident, _ in multi if ident in hidden or why]
 
 
 def main() -> int:
@@ -799,7 +815,8 @@ def main() -> int:
     refused += unreadable_links(vault)
     refused += failed
     named = {rel for rel, _ in refused}
-    refused += hidden_hard_links(vault, [rel for rel in files if rel not in named])
+    warned: list[tuple[Path, str]] = []
+    refused += hidden_hard_links(vault, [rel for rel in files if rel not in named], warned)
     skip = {rel for rel, _ in refused}
     files = [rel for rel in files if rel not in skip]
     fileset = set(files)
@@ -870,6 +887,7 @@ def main() -> int:
         return 2
 
     problems: list[str] = [f"{rel.as_posix()} — {why}: skipped" for rel, why in refused]
+    problems += [f"{rel.as_posix()} — {why}: exported" for rel, why in warned]   # a warning: the file is exported
     for rel in files:
         dest = out / out_rel(rel)
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -912,10 +930,11 @@ def main() -> int:
                 if heading and found[0].suffix != ".md":
                     href += "#" + quote(heading, safe="=&")   # a PDF page link: the fragment is the viewer's, not a heading
                 elif heading:
-                    if slug(heading) not in heading_slugs(vault / found[0]):
+                    anchor = matching_anchor(slug(heading), heading_slugs(vault / found[0]))
+                    if anchor is None:
                         problems.append(f"{rel.as_posix()}:{no}: missing heading {m.group(0)}")
                         return m.group(0)
-                    href += "#" + slug(heading)
+                    href += "#" + anchor
                 text = alias or (f"{name} > {heading}" if name and heading else name or heading)
                 return f"[{text}]({href})"
 

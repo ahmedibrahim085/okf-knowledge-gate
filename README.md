@@ -109,7 +109,7 @@ okf-check <bundle>                 # all layers
 okf-check <bundle> --fail-stale    # staleness blocks (exit 4)
 okf-check <bundle> --strict-trust  # unauthenticated human verification and near-miss actors block (exit 1)
 okf-check <bundle> --fail-on-change   # exit 6 if the bundle changes during the scan
-okf-check <bundle> --json          # machine-readable summary (`layers_not_run[]` names each layer that printed `COULD NOT RUN`, `[]` when none; `l2_findings[]` lists house-rule errors; `l2_advisories[]` the advisories behind `l2_warnings`, as `RULE file — message`, cut at 200 with a count; `warnings[]` also lists the `okf_check.size` warnings; `misplaced_keys[]` appears only when an `okf_check` option sits at the top level of `okf-base.yaml`; `reason` appears only on a run that stopped before its layers (a folder that cannot be read, an `.okfignore` that cannot be applied, no python3), with the stop named in `layers_not_run[]` and the reason on stderr too, exit 2; `sizes[]` only when `okf_check.size` is set, `facts[]` only when `okf_check.facts` is)
+okf-check <bundle> --json          # machine-readable summary (`layers_not_run[]` names each layer that printed `COULD NOT RUN`, `[]` when none; `l2_findings[]` lists house-rule errors; `l2_advisories[]` the advisories behind `l2_warnings`, as `RULE file — message`, cut at 200 with a count (after a crash on some notes the advisories of the notes okflint checked are listed, as in the text); `warnings[]` also lists the `okf_check.size` warnings; `misplaced_keys[]` appears only when an `okf_check` option sits at the top level of `okf-base.yaml`; `reason` appears only on a run that stopped before its layers (a folder that cannot be read, an `.okfignore` that cannot be applied, no python3), with the stop named in `layers_not_run[]` and the reason on stderr too, exit 2; `sizes[]` only when `okf_check.size` is set, `facts[]` only when `okf_check.facts` is)
 okf-check <bundle> --duplicates    # list candidate duplicate notes (a report, always exit 0)
 okf-check <bundle> --duplicates-body   # the same, plus notes whose bodies are similar
 okf-check <bundle> --facts [NAME]  # every statement of the declared facts (a dry run, always exit 0)
@@ -174,7 +174,7 @@ citation) are in
 `okf-export` is for a team that edits in an Obsidian-style vault, whose backlinks and graph count only `[[wikilinks]]`.
 The vault stays the source; the export is a bundle `okf-check` can gate. Body `[[note]]`, `[[note|alias]]`,
 `[[note#heading]]` and `[[#heading]]` become relative Markdown links, and each target and heading is checked.
-Frontmatter, code (fenced, or indented 4 spaces or a tab) and raw HTML blocks are copied unchanged, since Obsidian renders no Markdown in HTML. Limits: inside a block quote a `[[link]]` in an HTML block, or in indented code that follows a list item, is still rewritten, and no setext heading (underlined with `===` or `---`) is recognised, nor any heading on or after a quote line whose `>`, spaces and list markers hold a tab (up to the end of the quote, and for a quote in a list item or one no blank line ended, to the end of the note); a link to one fails with `missing heading`, so name an ATX `# heading` and indent with spaces. A vault's `index.md` note becomes the folder note (`dir/index.md` to
+Frontmatter, code (fenced, or indented 4 spaces or a tab) and raw HTML blocks are copied unchanged, since Obsidian renders no Markdown in HTML. Limits: inside a block quote a `[[link]]` in an HTML block, or in indented code that follows a list item, is still rewritten, and no setext heading (underlined with `===` or `---`) is recognised; nor is a heading in a list item or a block quote, after a quote whose last line has no `>` (CommonMark may read that line as a paragraph of its own), up to the next blank line. A link to one fails with `missing heading`, so name an ATX `# heading`. A tab in the `>`, spaces and list markers before a quote line's text counts its columns from the start of the line, as CommonMark does. A vault's `index.md` note becomes the folder note (`dir/index.md` to
 `dir/dir.md`, the root one to `<vault folder>.md`), and an `index.md` listing is generated in every folder that holds
 a note, with `okf_version` at the root; a rename onto an existing note stops the export. When `<out>` is on a disk
 that does not tell upper from lower case (the macOS default) and the vault is not, two names that differ only in case
@@ -185,21 +185,24 @@ the folder's log: its dated lines (`## 2026-05-22` headings or `- 2026-05-22: te
 continuation lines) are grouped by date, newest first, under the note's own `# title`. Every `## ` heading must be a
 date, as spec 9 requires. Exit 1 lists each missing or ambiguous target, missing heading, malformed date, `## ` heading
 that is not a date (with the lines left out under it), undated log line, log frontmatter and log with no dated entry as
-`file:line` (the bundle is still written); exit 2 means nothing was written (`<out>` is not empty, is inside the
+`file:line`, and each skipped or refused file and each file with a hard-linked name outside the vault by name (the bundle is still written); exit 2 means nothing was written (`<out>` is not empty, is inside the
 vault or cannot be written, or two notes would be written to one name). A target is matched as Obsidian matches it: an exact match first, then ignoring case (two files that differ only in case are reported as ambiguous). Setext headings (a line underlined with `===` or `---`) are headings a `[[note#heading]]` link can name, except that a setext heading inside a block quote is not recognised: a link to one fails with `missing heading`, so give the quote an ATX heading (`# Title`) to link to. The vault is only read.
 
-Anchors follow the `github-slugger` package, with these limits. A heading typed in decomposed Unicode (`cafe` plus U+0301) gets the
-composed spelling (`café`) in the anchor, while `github-slugger` 2.0.0 keeps the decomposed one (measured with the package; whether
-github.com agrees is UNVERIFIED). A code span that runs over a line break is read as text, so a `[[link]]` on its second line is
+Anchors follow the `github-slugger` package: a heading keeps its own Unicode form, so a heading typed in decomposed Unicode (`cafe`
+plus U+0301) gets a decomposed anchor, as on github.com (its id and its jump target, checked with a gist on 2026-10-22), and a heading
+typed composed gets a composed one. A link is matched to its heading on the NFC of both sides, so a link typed in either form finds
+a heading typed in either form and gets that heading's anchor. Limits: a code span that runs over a line break is read as text, so a `[[link]]` on its second line is
 rewritten. Inline HTML and autolinks were not fuzzed against a CommonMark reader.
 
 `okf-export` leaves out dot files and folders (`.obsidian`, `.git`) and names each file it skips (exit 1). A symlink that
 leaves the vault or leads into a dot name is skipped, an absolute one without its host path (`an absolute link`). A symlink to
 a folder is not followed, so its notes are not exported, and a broken link or a loop leads nowhere: all three are named,
 never skipped in silence. A hard link to a file under a dot name is the same file, so it is skipped and named too (it is found
-by device and inode). Limit: a hard link to a file OUTSIDE the vault cannot be told from a file that lives in it and is
-exported; use a copy or a symlink, which is refused. A symlink under a dot name (`.store -> /ext`) is not walked either, so a
-visible hard link to a file in its target is the same limit. A folder that cannot be listed is named (its files are not
+by device and inode). A visible file whose link count is higher than the names of it found in the vault has another name
+outside it (or in the target of a symlink under a dot name, which is not walked): it looks like a file that lives in the
+vault, so it is exported, and named with a warning, as GNU tar `--check-links` does (`a.md — a file with 2 names, 1 of them in
+the vault; the other names are outside it: exported`, exit 1). Limit: a name outside the vault is only counted, never seen, and
+a count that a mount (SMB, NFS) reports as 1 gives no warning; use a copy or a symlink, which is refused, to keep the file out. A folder that cannot be listed is named (its files are not
 exported), and a file with a second name is skipped and named while a folder (dot or visible) cannot be listed or entered; a file that cannot be examined is named too. A folder that lists but cannot be entered is named too.
 
 A near-miss actor is a wrongly written actor such as `Human:dana`. OKF reads it as an agent, so a person's review is
@@ -435,7 +438,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.46
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.47
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -451,7 +454,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.46
+    rev: v0.9.47
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -590,7 +593,7 @@ another repository does nothing.
    of the log ends with `python <version>`: run it under the oldest Python the plugin supports, 3.9 (Apple's, first on `PATH`),
    and under the newest on the Mac, because the verdict of a check on an unreadable folder differed between 3.9 and 3.14 and
    later; `okflint` must be on `PATH` too, `uv tool install okflint`, or the suites that need it fail), holding the heavy-suite lock (a lock
-   left by a killed gate is taken over) and writing a machine sample every 5 s to `<log>.samples`. Both gates run each
+   left by a killed gate is taken over by one gate at a time; every exit removes the gate's work folder) and writing a machine sample every 5 s to `<log>.samples`. Both gates run each
    suite with stdin from `/dev/null` under a time limit (`OKF_GATE_SUITE_TIMEOUT`) and pass it only when it exits 0 and
    its last line is a summary of at least 1 passed and 0 failed, so a suite that stops early fails. `tools/check-tests.sh` (run by
    the pre-push gate) fails on a `*.test.sh` that `tools/linux-gate.conf` does not list.

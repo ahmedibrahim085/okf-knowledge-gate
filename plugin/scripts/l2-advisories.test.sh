@@ -122,5 +122,30 @@ x"; mkb "$B" '[x](nope.md)'; mv "$B/a.md" "$B/a\"b.md"; printf '[a](a"b.md)\n' >
     || bad "S20-IF-N1 clean summary" "rc=$rc $(grep -n 'PASS' "$TMP/if3.txt" | tr '\n' '|')"
 fi
 
+# S45-CJ: a STUB okflint (no real okflint needed) that dies on crash.md and, run on the other notes, reports two warnings.
+# The text report lists the advisories and names the crashed note; --json must carry the same advisories.
+section "S45-CJ crash isolation in --json"
+S45="$TMP/s45"; mkb "$S45/b"; mkdir -p "$S45/bin"; printf -- '---\ntype: Lesson\ntitle: X\ndescription: D\n---\nboom\n' > "$S45/b/crash.md"
+cat > "$S45/bin/okflint" <<'STUB'
+#!/bin/sh
+case "$*" in *--version*|*--help*|*validate-manifest*) echo "okflint 0.5.0"; exit 0;; esac
+if [ -f crash.md ]; then echo "Traceback: stub crash" >&2; exit 3; fi
+echo '[{"severity":"warning","code":"L002","file":"a.md","message":"broken markdown link: nope.md"},{"severity":"warning","code":"S205","file":"a.md","message":"stub advisory"}]'; exit 0
+STUB
+chmod +x "$S45/bin/okflint"
+env PATH="$S45/bin:$PATH" "$CHECK" "$S45/b" > "$S45/t.txt" 2>&1; rc_t=$?
+env PATH="$S45/bin:$PATH" "$CHECK" --json "$S45/b" > "$S45/j.json" 2>/dev/null; rc_j=$?
+got=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["l2_profile"], d["l2_warnings"], sorted(d["l2_by_rule"].items()), d["l2_advisories"])' "$S45/j.json" 2>&1)
+want="could_not_run 2 [('L002', 1), ('S205', 1)] ['L002 a.md — broken markdown link: nope.md', 'S205 a.md — stub advisory']"
+{ [ "$rc_t" = 2 ] && [ "$rc_j" = 2 ] && grep -Fq 'by rule: L002 x1, S205 x1' "$S45/t.txt" && grep -Fq 'crashed on' "$S45/t.txt" && [ "$got" = "$want" ]; } \
+  && ok "S45-CJ-H1 a crashed note: --json carries the same two advisories as the text, and still says could_not_run (exit 2 both)" \
+  || bad "S45-CJ-H1 json matches text" "rc text=$rc_t json=$rc_j; got: $got; want: $want"
+# S45-CJ-N1: no crash, no isolation: unchanged (the same two advisories, l2_profile ran).
+rm -f "$S45/b/crash.md"
+env PATH="$S45/bin:$PATH" "$CHECK" --json "$S45/b" > "$S45/j2.json" 2>/dev/null
+got=$(python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["l2_profile"], d["l2_warnings"], len(d["l2_advisories"]))' "$S45/j2.json" 2>&1)
+[ "$got" = "ran 2 2" ] && ok "S45-CJ-N1 no crashed note: --json is unchanged (ran, 2 warnings, 2 advisories)" \
+  || bad "S45-CJ-N1 no crash" "got: $got"
+
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1
