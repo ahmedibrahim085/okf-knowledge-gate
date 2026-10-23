@@ -12,6 +12,7 @@
 set -uo pipefail
 
 HERE=$(cd -P "$(dirname "$0")" && pwd)
+. "$HERE/../tests/cite-sha.sh"   # cite_sha: a fixture commit cited with a digit (RV-35)
 VERIFY="$HERE/okf-verify"
 REALPY=$(command -v python3)   # captured before any PATH stub shadows it
 PASS=0; FAIL=0
@@ -109,7 +110,7 @@ git -C "$REPO" init -q 2>/dev/null
 git -C "$REPO" config user.email t@t; git -C "$REPO" config user.name t
 printf 'x\n' > "$REPO/f.txt"; git -C "$REPO" add f.txt
 git -C "$REPO" -c commit.gpgsign=false commit -qm "fix: a real commit to cite"
-REAL_SHA=$(git -C "$REPO" rev-parse --short HEAD)
+REAL_SHA=$(cite_sha "$REPO" HEAD)
 
 # X-1: the fixture is NEVER assumed. Every step above is quiet, so when the repo
 # failed to build — git slow or unavailable under a loaded machine — REAL_SHA
@@ -658,7 +659,7 @@ rc=$(run "$TMP/f5b2" --repo "$REPO")
 # (c) a SHA missing from a shallow clone says so
 SH="$TMP/cl5"; git -C "$REPO" -c commit.gpgsign=false commit -q --allow-empty -m "second commit for the shallow test"
 git clone -q --depth 1 "file://$REPO" "$SH" 2>/dev/null
-OLD_SHA=$(git -C "$REPO" rev-parse --short HEAD~1)
+OLD_SHA=$(cite_sha "$REPO" HEAD~1)
 note5 "$TMP/f5c" "Fixed in commit $OLD_SHA."
 rc=$(run "$TMP/f5c" --repo "$SH")
 grep -qi 'shallow' "$TMP/out.txt" && ok "V-F5c a SHA absent from a shallow clone says the clone is shallow (git fetch --unshallow)" || bad "V-F5c shallow" "$(grep -n 'unresolved' "$TMP/out.txt" | head -1 | cut -c1-200)"
@@ -676,7 +677,7 @@ REPO2="$TMP/repo2"; mkdir -p "$REPO2"; git -C "$REPO2" init -q 2>/dev/null
 git -C "$REPO2" config user.email t@t; git -C "$REPO2" config user.name t
 printf 'y\n' > "$REPO2/g.txt"; git -C "$REPO2" add g.txt
 git -C "$REPO2" -c commit.gpgsign=false -c credential.helper= commit -qm "fix: a commit in the second repository"
-SHA2=$(git -C "$REPO2" rev-parse --short HEAD)
+SHA2=$(cite_sha "$REPO2" HEAD)
 
 # 0.9.50 okf-verify searches only the repositories given with --repo. A repository named in okf-base.yaml is not
 # searched (the file arrives with the bundle, so it is not the user's choice); each one is named on its own line with
@@ -729,7 +730,7 @@ n=$(grep -oE 'repos searched: .*' "$TMP/out.txt" | tr ',' '\n' | grep -c "$(base
 # .md, and an absolute path, are not resolved through a config-named repository (no CONFIRMED, no REFUTED).
 CR="$TMP/s1cr"; mkdir -p "$CR/docs"; git -C "$CR" init -q; printf 'a\nb\nc\n' > "$CR/docs/t.md"
 git -C "$CR" add docs/t.md; git -C "$CR" -c user.email=t@t -c user.name=t -c commit.gpgsign=false -c credential.helper= commit -qm c
-CRS=$(git -C "$CR" rev-parse --short HEAD); printf 'x\ny\n' > "$CR/docs/u.md"
+CRS=$(cite_sha "$CR" HEAD); printf 'x\ny\n' > "$CR/docs/u.md"
 note5 "$TMP/s1cr-b" "See docs/t.md:3 @$CRS and docs/u.md:2 and $CR/docs/u.md:1."; decl "$TMP/s1cr-b" "$CR"
 rc=$(run "$TMP/s1cr-b")
 { [ "$rc" = "0" ] && ! grep -qE '^  (ok  |REFUTED)' "$TMP/out.txt"; } \
@@ -841,12 +842,12 @@ CREPO="$TMP/crepo"; mkdir -p "$CREPO"; git -C "$CREPO" init -q 2>/dev/null
 git -C "$CREPO" config user.email t@t; git -C "$CREPO" config user.name t
 printf 'readme\n' > "$CREPO/README"; git -C "$CREPO" add README
 git -C "$CREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "docs: first commit, no source yet"
-C1=$(git -C "$CREPO" rev-parse --short HEAD)
+C1=$(cite_sha "$CREPO" HEAD)
 mkdir -p "$CREPO/src" "$CREPO/x" "$CREPO/y"
 seq 1 20 > "$CREPO/src/a.py"; printf 'p\n' > "$CREPO/x/dup.py"; printf 'q\n' > "$CREPO/y/dup.py"
 git -C "$CREPO" add src x y
 git -C "$CREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: add the source files"
-C2=$(git -C "$CREPO" rev-parse --short HEAD)
+C2=$(cite_sha "$CREPO" HEAD)
 cite() { # <dir> <citation text> — a one-note bundle with that citation
   note5 "$1" "Evidence: $2"; }
 verdict_line() { grep -E '^  (ok  |REFUTED|unresolved)' "$TMP/out.txt" | head -1; }
@@ -905,7 +906,7 @@ grep -q 'ambiguous' "$TMP/out.txt" && ok "RV-11 ... and the detail says ambiguou
 printf '' > "$CREPO/empty.txt"; printf 'a\0b\1\2\n' > "$CREPO/bin.dat"; printf 'one\ntwo' > "$CREPO/nonl.txt"
 git -C "$CREPO" add empty.txt bin.dat nonl.txt
 git -C "$CREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: an empty, a binary and an unterminated file"
-C3=$(git -C "$CREPO" rev-parse --short HEAD)
+C3=$(cite_sha "$CREPO" HEAD)
 
 # S2-H1: a line inside the file is CONFIRMED and the detail shows the sha, the path and the line
 cite "$TMP/l1" "\`src/a.py:10 @$C2\`"
@@ -949,7 +950,7 @@ grep -q 'binary' "$TMP/out.txt" && ok "RV-15 (S2-E1) ... and the detail says bin
 # F1: a symlink at the cited commit holds the LINK TEXT as its blob. Counting it gave `link.py:5` -> REFUTED "has 1 lines" and `link.py:1` -> a false CONFIRMED.
 ln -s src/a.py "$CREPO/link.py"; git -C "$CREPO" add link.py
 git -C "$CREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: a symlink to the source file"
-C4=$(git -C "$CREPO" rev-parse --short HEAD)
+C4=$(cite_sha "$CREPO" HEAD)
 for ln in 5 1; do
   cite "$TMP/sy$ln" "\`link.py:$ln @$C4\`"; rc=$(run "$TMP/sy$ln" --repo "$CREPO")
   { [ "$rc" = "0" ] && grep -qE '^  unresolved ' "$TMP/out.txt" && grep -q 'symlink' "$TMP/out.txt" && ! grep -qE '^  (REFUTED|ok  ) ' "$TMP/out.txt"; } \
@@ -962,7 +963,7 @@ done
 # looking at the characters, so a cut that matches the END of a longer file name (not at a "/") is UNRESOLVED, never REFUTED.
 mkdir -p "$CREPO/my dir"; printf 'w\n' > "$CREPO/my dir/w.py"; printf 'd\n' > "$CREPO/data.py"; git -C "$CREPO" add -A
 git -C "$CREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: a directory with a space"
-C5=$(git -C "$CREPO" rev-parse --short HEAD)
+C5=$(cite_sha "$CREPO" HEAD)
 cite "$TMP/sp1" "a dir/w.py:1 @$C5"; rc=$(run "$TMP/sp1" --repo "$CREPO")  # "a" does not spell the real name `my dir/w.py`; the spelled-out `my dir/w.py:1` is RV-27
 { [ "$rc" = "0" ] && grep -qE '^  unresolved ' "$TMP/out.txt" && ! grep -qE '^  (REFUTED|ok  ) ' "$TMP/out.txt"; } \
   && ok "RV-21 (S2-E3) 'a dir/w.py:1 @sha' (a space inside the path, words that do not spell the file) is UNRESOLVED, not a false REFUTED of 'dir/w.py'" \
@@ -1004,7 +1005,7 @@ vrefuted "RV-23 (S2-E4) ... and REFUTED when the larger number is past the end"
 spcommit() { # <repo> <name:lines>... — a fresh repo with one commit; prints the short sha
   local r="$1"; shift; mkdir -p "$r"; git -C "$r" init -q 2>/dev/null; git -C "$r" config user.email t@t; git -C "$r" config user.name t
   local f; for f in "$@"; do mkdir -p "$r/$(dirname "${f%:*}")"; seq 1 "${f##*:}" > "$r/${f%:*}"; done
-  git -C "$r" add -A; git -C "$r" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: files"; git -C "$r" rev-parse --short HEAD
+  git -C "$r" add -A; git -C "$r" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: files"; cite_sha "$r" HEAD
 }
 # S2-SP-N1: both `my w.py` and `w.py` exist: the writer's intent cannot be told, so UNRESOLVED naming both; never CONFIRMED on a guess
 SP1=$(spcommit "$TMP/sp-both" "my w.py:1" "w.py:5")
@@ -1298,7 +1299,7 @@ BREPO="$TMP/brepo"; mkdir -p "$BREPO"; git -C "$BREPO" init -q 2>/dev/null
 git -C "$BREPO" config user.email t@t; git -C "$BREPO" config user.name t
 printf 'tiny\n' > "$BREPO/big.txt"; git -C "$BREPO" add big.txt
 git -C "$BREPO" -c commit.gpgsign=false -c credential.helper= commit -qm "feat: big.txt"
-BS=$(git -C "$BREPO" rev-parse --short HEAD)
+BS=$(cite_sha "$BREPO" HEAD)
 mkdir -p "$TMP/gitbig"
 cat > "$TMP/gitbig/git" <<'SHEOF'
 #!/bin/sh
@@ -1493,6 +1494,29 @@ ex=$(LC_ALL=C grep -a -c '"Step\\u001bx:12"' "$TMP/on-vj.json")
 { [ "$rc" = 0 ] && [ "$rawesc" = 0 ] && [ "$sp" = 1 ] && [ "$ex" = 1 ]; } \
   && ok "S36-ON-VJ --json keeps a control character in a quoted example as \\u001b; the text spells it \\x1b" \
   || bad "S36-ON-VJ content in --json" "rc=$rc raw ESC in text=$rawesc spelled in text=$sp json example=$ex $(grep -a -m1 examples -A1 "$TMP/on-vj.json" | cat -v | tr '\n' '|')"
+
+# RV-35: the intermittent failure mode above, found. About 1 short SHA in 1000 has no digit, and okf-verify skips such an id on
+# purpose (D-7), so a fixture that cited `rev-parse --short` dropped its claim in ~1% of runs. A pinned commit whose 7-character
+# prefix is `faecdac` (fixed tree, dates and message) proves cite_sha cites a prefix with a digit that okf-verify CONFIRMS.
+# SHA-1 on purpose: a git whose ~/.gitconfig sets init.defaultObjectFormat=sha256 gives another id (review round 1).
+# A git older than SHA-256 support ignores both settings and makes SHA-1 anyway.
+DG="$TMP/digitless"; mkdir -p "$DG"; GIT_DEFAULT_HASH=sha1 git -c init.defaultObjectFormat=sha1 -C "$DG" init -q 2>/dev/null; printf 'x\n' > "$DG/f.txt"; git -C "$DG" add f.txt
+DGC=$(printf 'fix: nonce 1598\n' | GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@t GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@t \
+  GIT_AUTHOR_DATE=2026-01-01T00:00:00Z GIT_COMMITTER_DATE=2026-01-01T00:00:00Z git -C "$DG" commit-tree "$(git -C "$DG" write-tree)")
+git -C "$DG" update-ref HEAD "$DGC"
+DGS=$(cite_sha "$DG")
+cite "$TMP/rv35" "commit \`$DGS\`"; rc=$(run "$TMP/rv35" --repo "$DG")
+{ [ "${DGC:0:7}" = faecdac ] && [ "$DGS" = faecdac0 ] && [ "$rc" = 0 ] && grep -qE '^  ok  ' "$TMP/out.txt"; } \
+  && ok "RV-35 a commit whose short SHA has no digit is cited by cite_sha as a prefix okf-verify CONFIRMS" \
+  || bad "RV-35 digitless short SHA" "commit=$DGC cited=$DGS rc=$rc $(verdict_line)"
+
+# RV-36: an entry of okf_check.verify.repos with no path is a config error (exit 2, could not run). It crashed with
+# KeyError: 'path' and exit 1, which reads as "a claim is REFUTED".
+mkb "$TMP/rv36"; printf 'okf_check:\n  verify:\n    repos:\n      - {}\n' > "$TMP/rv36/okf-base.yaml"
+rc=$(run "$TMP/rv36")
+{ [ "$rc" = 2 ] && grep -q 'needs path' "$TMP/out.txt" && ! grep -q 'Traceback' "$TMP/out.txt"; } \
+  && ok "RV-36 a verify.repos entry with no path is a config error: exit 2 naming the missing path, no traceback" \
+  || bad "RV-36 repos entry without path" "rc=$rc $(tail -2 "$TMP/out.txt" | tr '\n' ' ')"
 
 echo
 # Before the summary: the gate runners take only a suite's LAST line as its summary, and a wrapped `rm` can print.

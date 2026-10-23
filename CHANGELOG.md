@@ -9,6 +9,14 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.51] - 2026-10-23
+
+OKF Knowledge Gate 0.9.51 turns a crash on a malformed `okf-base.yaml` into a config error and removes the cause of an intermittent test failure.
+
+### Fixed
+- **An `okf_check.verify.repos` entry with no `path` crashed `okf-verify` with exit 1.** A `- {}` entry raised `KeyError: 'path'`, and exit 1 reads as "a claim is REFUTED". It is now a config error: `okf_check.verify.repos[0] needs path`, exit 2 (could not run). `okf-check` reports the same, since it validates the block through `okf-verify --check-config`.
+- **`okf-verify.test.sh` failed in about 1 run in 100.** About 1 short SHA in 1000 has no digit, and `okf-verify` skips such an id on purpose, so a test fixture that cited `git rev-parse --short` lost its claim. The suites now cite fixture commits by a prefix that holds a digit. Test-only; the tools did not change.
+
 ## [0.9.50] - 2026-10-23
 
 OKF Knowledge Gate 0.9.50 narrows what the tools read: `okf-check` reads only notes inside the bundle, and `okf-verify` searches only the repositories you pass with `--repo`. The `okf-verify` change is breaking for bundles that list repositories in `okf-base.yaml`.
@@ -918,7 +926,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.50...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.51...HEAD
+[0.9.51]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.50...v0.9.51
 [0.9.50]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.49...v0.9.50
 [0.9.49]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.48...v0.9.49
 [0.9.48]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.47...v0.9.48

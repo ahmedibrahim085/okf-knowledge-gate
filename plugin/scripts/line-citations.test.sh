@@ -110,7 +110,7 @@ rc=$(runjson "$B"); got=$(lineres)
 
 # S21-LC-E2: a citation pinned to a commit (`d.md:3 @sha`) stays ONE claim of kind citation, not also a line claim.
 B="$TMP/e2"; mkbundle "$B"; R="$TMP/e2repo"; mkdir -p "$R"; git init -q "$R"; lines "$R/d.md" 5
-git -C "$R" add d.md; git -C "$R" -c user.name=t -c user.email=t@e -c commit.gpgsign=false commit -qm init; sha=$(git -C "$R" rev-parse --short HEAD)
+git -C "$R" add d.md; git -C "$R" -c user.name=t -c user.email=t@e -c commit.gpgsign=false commit -qm init; sha=$(cite_sha "$R" HEAD)
 note "$B/a.md" "Pinned: d.md:3 @$sha"
 rc=$(runjson "$B" --repo "$R"); got=$("$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps(sorted(r["kind"] for r in d["results"])))' "$TMP/out.json")
 { [ "$rc" = 0 ] && [ "$got" = '["citation"]' ]; } && ok "S21-LC-E2 a pinned citation is not also counted as a line claim" || bad "S21-LC-E2 pinned" "rc=$rc kinds=$got"
@@ -184,7 +184,7 @@ rc=$(runjson "$B"); got=$(lineall)
 # S21-LC-A7: a citation pinned to a commit is history: its anchor is checked at that commit, on the cited lines only, and it is
 # never MOVED (the reporter's dated review record must not be renumbered). On the line: CONFIRMED; elsewhere: REFUTED.
 B="$TMP/a7"; mkbundle "$B"; R="$TMP/a7repo"; mkdir -p "$R"; git init -q "$R"; docfile "$R/d.md" "intro" "shadow, canary" "end"
-git -C "$R" add d.md; git -C "$R" -c user.name=t -c user.email=t@e -c commit.gpgsign=false commit -qm init; sha=$(git -C "$R" rev-parse --short HEAD)
+git -C "$R" add d.md; git -C "$R" -c user.name=t -c user.email=t@e -c commit.gpgsign=false commit -qm init; sha=$(cite_sha "$R" HEAD)
 docfile "$R/d.md" "new" "intro" "shadow, canary" "end"   # the working tree moved on; the commit did not
 note "$B/a.md" "d.md:2 @$sha \"shadow, canary\" and d.md:1 @$sha \"shadow, canary\""
 rc=$(runjson "$B" --repo "$R"); got=$(lineall)

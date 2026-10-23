@@ -10,6 +10,7 @@
 set -uo pipefail
 
 HERE=$(cd -P "$(dirname "$0")" && pwd)
+. "$HERE/../tests/cite-sha.sh"   # cite_sha: a fixture commit cited with a digit (RV-35)
 PLUGIN=$(cd -P "$HERE/.." && pwd)
 PASS=0; FAIL=0
 REALPY=$(command -v python3)
@@ -648,7 +649,7 @@ if command -v pre-commit >/dev/null 2>&1; then
     || bad "LT-29o3 S22-E1 real pre-commit" "rc=$rc $(tail -3 "$TMP_W/pc_c3.txt" | tr '\n' ' ')"
   # 0.9.48: the okf-verify hook through the real pre-commit tool. The hook repo above holds the new .pre-commit-hooks.yaml.
   PCV2="$PCX/vwork"; mkdir -p "$PCV2"; pcgit "$PCV2" init -q; printf 'x\n' > "$PCV2/code.txt"; pcgit "$PCV2" add code.txt; pcgit "$PCV2" commit -qm "code"
-  PCV2_SHA=$(pcgit "$PCV2" rev-parse --short HEAD)
+  PCV2_SHA=$(cite_sha "$PCV2")
   mkab "$PCV2"; printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nFixed in %s.\n' "$PCV2_SHA" > "$PCV2/n.md"
   printf 'repos:\n  - repo: %s\n    rev: %s\n    hooks:\n      - id: okf-verify\n        args: [., --repo, ., --strict]\n' "$PCX/hookrepo" "$PCREV" > "$PCV2/.pre-commit-config.yaml"
   ( cd "$PCV2" && pcenv pre-commit install >/dev/null 2>&1 )
@@ -1254,7 +1255,7 @@ runact2() { # <bundle> <env assignments...> -- the same contract as runact, with
       bash --noprofile --norc -eo pipefail "$TMP_W/act_run.sh" ) >"$TMP_W/act_out.txt" 2>&1
 }
 ACTWD="$TMP_W/actwd"; mkdir -p "$ACTWD/bundle"; ( cd "$ACTWD" && g=$(command -v git) && "$g" init -q . && "$g" config user.email a@b && "$g" config user.name n && printf 'x\n' > code.txt && "$g" add code.txt && "$g" commit -q -m first )
-mkab "$ACTWD/bundle"; AW_SHA=$(cd "$ACTWD" && git rev-parse --short HEAD)
+mkab "$ACTWD/bundle"; AW_SHA=$(cite_sha "$ACTWD")
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nFixed in %s.\n' "$AW_SHA" > "$ACTWD/bundle/n.md"
 runact2 bundle INPUT_VERIFY=true; rc=$?
 { [ "$rc" -eq 0 ] && grep -q '^okf-verify' "$TMP_W/act_out.txt" && grep -q 'CONFIRMED 1' "$TMP_W/act_out.txt"; } && ok "LT-49g verify: true runs okf-verify after okf-check on the workspace repo: the citation is CONFIRMED, exit 0" || bad "LT-49g verify input" "rc=$rc $(tail -3 "$TMP_W/act_out.txt" | tr '\n' ' ')"

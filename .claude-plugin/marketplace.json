@@ -9,7 +9,7 @@
     {
       "name": "okf",
       "description": "One gate over the Open Knowledge Format toolchain: spec conformance (vendored v0.2 checker), house rules (okflint manifest), and staleness — with a doctor that names missing dependencies, an opt-in installer for the supported ones, and a selftest that re-proves every gate still fires.",
-      "version": "0.9.50",
+      "version": "0.9.51",
       "source": "./plugin",
       "category": "productivity",
       "tags": [

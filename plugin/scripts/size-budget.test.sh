@@ -99,6 +99,12 @@ bad_cfg warn-eq   "$(size_cfg 100 100)"  'okf_check.size.warn_body_chars must be
 bad_cfg warn-gt   "$(size_cfg 100 200)"  'okf_check.size.warn_body_chars must be below okf_check.size.max_body_chars'
 bad_cfg typo-key  $'okf_check:\n  size:\n    max_body_char: 100' 'okf_check.size.max_body_char is not a known key'
 bad_cfg not-map   $'okf_check:\n  size: 100' 'okf_check.size must be a mapping'
+# RV-36c: okf-check validates the okf_check block through `okf-verify --check-config`, so a verify.repos entry with no
+# path is the same config error here (exit 2), not a crash. The okf-verify side is RV-36 in okf-verify.test.sh.
+B="$TMP/rv36c"; mkb "$B" $'okf_check:\n  verify:\n    repos:\n      - {}'; rc=$(run "$B")
+{ [ "$rc" = 2 ] && grep -Fq 'okf_check.verify.repos[0] needs path' "$TMP/out.txt" && ! grep -q Traceback "$TMP/out.txt"; } \
+  && ok "RV-36c okf-check refuses a verify.repos entry with no path: exit 2 naming it" \
+  || bad "RV-36c okf-check repos entry without path" "rc=$rc $(grep -n 'Config' "$TMP/out.txt" | head -2 | tr '\n' '|')"
 
 # size_line <file>: the Size verdict word (FAIL, WARN, PASS or none) of the last run's text.
 size_line() { sed -n 's/^  Size  *\([A-Z]*\) .*/\1/p' "$1" | head -1; }

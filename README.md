@@ -503,7 +503,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.50
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.51
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -521,7 +521,7 @@ To check the commits, paths and line citations the notes cite as well, add `veri
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.50
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.51
         with:
           bundle: path/to/bundle
           verify: 'true'                  # also run okf-verify; default 'false'
@@ -544,7 +544,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.50
+    rev: v0.9.51
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

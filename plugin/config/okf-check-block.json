@@ -11,7 +11,8 @@
           "list": {
             "keys": {
               "path": {"type": "string"}
-            }
+            },
+            "required": ["path"]
           }
         },
         "generated": {"list": {"type": "string"}, "item_no_prefix": "!"},

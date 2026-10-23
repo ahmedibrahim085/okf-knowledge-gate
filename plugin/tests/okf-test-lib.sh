@@ -9,6 +9,7 @@
 
 PASS=0; FAIL=0
 REALPY=$(command -v python3)   # defined ONCE, before any sandbox stub uses it
+. "$(dirname "${BASH_SOURCE[0]}")/cite-sha.sh"
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t okfchecktest)
 trap 'rm -rf "$TMP"' EXIT
 trap 'exit 130' INT
