@@ -17,6 +17,7 @@ import argparse
 import bisect
 import datetime
 import functools
+import itertools
 import os
 import re
 import shutil
@@ -343,28 +344,57 @@ def holds_paragraph(t: str) -> bool:
                                             or any(h[0].match(t) for h in HTML_BLOCKS))
 
 
-def quote_block(lines: list[str], start: int, first: str, at: int):
-    """(line indexes, contents, lazy) of the block quote that starts at `start` with the quote line `first` (its text, markers
-    included): the lines that carry a '>' (read against the item content at `at`) with one '>' taken off, and the lazy
-    lines that continue a paragraph (5.1). body_lines reads the contents, so a quote in this quote is read by a nested call.
-    `para` errs towards True: a line taken in that CommonMark leaves outside can only hide a heading (a loud 'missing
-    heading'), never add one. A tab in a container prefix needs no care here: CommonMark (2.2, and cmark) counts its
-    columns from the start of the line, and `dedent` has already expanded the prefix of every line that way.
-    `lazy` says the last line taken has no '>': CommonMark may read it as a paragraph of its own outside the quote (the
-    quote's last block was not a paragraph after all), so what follows, up to the next blank line, is undecidable.
-    SHORTCUT: setext headings inside block quotes are not recognised (body_lines with nested=True); a link to one fails
-    with 'missing heading'."""
+# What quote_block feeds the quote's reader for a lazy line that the reader could misread as a block start or an underline:
+# plain paragraph text. Its own text is not kept, so a setext heading over it is not named (a link to it fails loudly).
+LAZY_TEXT = "\x00"
+
+
+def more(lines, i: int) -> bool:
+    """Whether `lines` has a line `i`: a list, or a QuoteLines that reads its quote only up to the line asked for."""
+    return lines.has(i) if isinstance(lines, QuoteLines) else i < len(lines)
+
+
+class QuoteLines:
+    """The contents of one block quote as its reader asks for them: quote_block is read one line further only when the
+    reader reaches that line, so a quote the reader ends early (at a lazy line it rejects) costs no read ahead to the end of
+    the quote (review round 1 of the block-quote rows: a note of such quotes took 80 s for 12000 lines). `idx[k]` is the
+    note line of content line k; `lazy` holds the k of each line with no '>'."""
+    def __init__(self, rows):
+        self.rows, self.lines, self.idx, self.lazy = rows, [], [], set()
+
+    def has(self, k: int) -> bool:
+        while len(self.lines) <= k:
+            row = next(self.rows, None)
+            if row is None:
+                return False
+            if row[2]:
+                self.lazy.add(len(self.lines))
+            self.idx.append(row[0])
+            self.lines.append(row[1])
+        return True
+
+    def __getitem__(self, k: int) -> str:
+        self.has(k)
+        return self.lines[k]   # past the end: IndexError, as a list
+
+
+def quote_block(lines, start: int, first: str, at: int):
+    """Yield (line index, content, lazy) for each line of the block quote that starts at `start` with the quote line `first`
+    (its text, markers included): the lines that carry a '>' (read against the item content at `at`) with one '>' taken
+    off, and the lines with no '>' that may be lazy lines of a paragraph (5.1, `lazy` True). body_lines reads the contents
+    (through QuoteLines, one line at a time), so a quote in this quote is read by a nested call, and keeps a lazy line only
+    if that reader has a paragraph open there (SC-export417): `para` here is a line test that errs towards True, so it takes
+    every line CommonMark may take, and the reader drops the ones it does not. A tab in a container prefix needs no care here: CommonMark (2.2, and
+    cmark) counts its columns from the start of the line, and `dedent` has already expanded the prefix of every line that way."""
     def starts_block(t):
         return ATX.match(t) or FENCE.match(t) or THEMATIC.match(t) or any(h[0].match(t) for h in HTML_BLOCKS)
 
-    idx, contents = [], []
     para, fence = False, 0   # a paragraph may be open; the quote level of an open fence (0: none)
     listed = False   # a list marker was seen: an indented line may be item text, not code, so it never ends `para`
     j, text = start, first
-    lazy = False
     while True:
         if j > start:
-            if j >= len(lines):
+            if not more(lines, j):
                 break
             line = lines[j].rstrip("\r\n")
             if not line.strip():
@@ -388,14 +418,12 @@ def quote_block(lines: list[str], start: int, first: str, at: int):
             # after it, unless a list is in the quote: there it may be item text, and `para` errs towards True
             para = not fence and bool(inner.strip()) and not starts_block(inner) and (para or listed or not INDENTED.match(inner)) \
                 and (not LIST_ITEM.match(inner) or holds_paragraph(inner))
-        idx.append(j)
-        lazy = not depth
         if depth:
-            contents.append(re.sub(r"^ {0,3}>[ \t]?", "", text, count=1))
-        else:   # a lazy line is paragraph text; if its indent could read as a block start of the item (a '>' here is indented 4 or more), it is fed as plain text
-            contents.append("x" if starts_block(text.lstrip()) or LIST_ITEM.match(text.lstrip()) or text.lstrip().startswith(">") else text)
+            yield j, re.sub(r"^ {0,3}>[ \t]?", "", text, count=1), False
+        else:   # a lazy line is paragraph text; if its indent could read as a block start of the item (a '>' here is indented 4 or more), or it is an underline (no lazy line is one, 5.1), it is fed as LAZY_TEXT
+            t = text.lstrip()
+            yield j, LAZY_TEXT if starts_block(t) or LIST_ITEM.match(t) or t.startswith(">") or SETEXT.match(t) else text, True
         j += 1
-    return idx, contents, lazy
 
 
 def item_interrupts(text: str) -> bool:
@@ -408,15 +436,15 @@ def item_interrupts(text: str) -> bool:
 
 def body_lines(lines: list[str], nested: bool = False, level: int = 0, joins: set | None = None):
     """Yield (index, line, in_code, heading) for each body line. in_code is True inside a fence, fence lines included,
-    and on the lines of an indented code block or of an HTML block outside a quote (raw HTML holds no Markdown); heading
+    and on the lines of an indented code block or of an HTML block, in a quote too (raw HTML holds no Markdown); heading
     is the text of a heading that ends on this line (ATX, or the underline of a setext heading), else None. Blocks are read the way CommonMark 0.31.2 reads them, inside list items
     too (5.2): each line is matched against the content of the item it sits in, a marker line's own content included.
     A blank line is never code: it holds no link, and the log reader counts it.
 
     A block quote (5.1) is read as a container too: its lines, '>' taken off, are read by this same reader (nested=True),
-    inside a list item as well, and quotes nest. SHORTCUT: a lazy line continues a quote's paragraph by a line test on
-    the quote's last line, not by the inner reader's state; read it from the inner reader if a note shows a difference.
-    Inside a quote (nested) no setext heading is read: see quote_block.
+    inside a list item as well, and quotes nest. A line with no '>' stays in the quote only if this reader, reading the
+    quote, goes on with an open paragraph on it (a lazy line); at the first one it does not, the quote ends there and the
+    line is read out here (SC-export417).
 
     `joins`, when given, collects the index of each line that goes on with the paragraph of the line before it (lazily
     too), so a caller can read a paragraph's inline text as one piece (raw_ranges)."""
@@ -427,8 +455,9 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0, joins: se
     html, html_at = False, 0  # an open HTML block: its end pattern (None: a blank line), the content indent
     code = False           # inside an indented code block
     quoted = {}            # results for the lines of a block quote read ahead: index -> (in_code, heading)
-    hold = False           # after a quote whose last line is lazy (quote_block): no heading until the next blank line
-    for i in range(0 if nested else frontmatter_len(lines), len(lines)):
+    for i in itertools.count(0 if nested else frontmatter_len(lines)):
+        if not more(lines, i):
+            break
         raw = lines[i]
         if i in quoted:
             c, h = quoted.pop(i)
@@ -450,20 +479,20 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0, joins: se
             else:
                 if html is not None and html.search(line):
                     html = False
-                yield i, raw, not nested, None   # not nested: see the HTML block start below
+                yield i, raw, True, None
                 continue
         if not line.strip():
             if empty:
                 items.pop()
-            empty, para, hold = False, [], False
+            empty, para = False, []
             yield i, raw, False, None
             continue
         depth = bisect.bisect_right(items, w)   # the items this line's indent keeps it inside (items only grow)
         text = dedent(line, items[depth - 1] if depth else 0)
-        if para and depth == len(items) and SETEXT.match(text) and not nested:   # not in a quote: see quote_block
-            heading = " ".join(x.strip() for x in para)
+        if para and depth == len(items) and SETEXT.match(text):
+            heading = None if LAZY_TEXT in para else " ".join(x.strip() for x in para)   # LAZY_TEXT: quote_block
             para = []
-            yield i, raw, False, None if hold else heading
+            yield i, raw, False, heading
             continue
         brk = THEMATIC.match(text)
         item = LIST_ITEM.match(text) and not brk   # `- - -` is a thematic break, not an item
@@ -497,16 +526,14 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0, joins: se
         if not empty and QUOTE.match(text):   # a block quote: read its lines with this reader, then go on after it
             if level >= NEST_MAX or level + quote_depth(text)[1] > NEST_MAX:   # `level` counts nested reads; `depth` below is the list-item depth of one line
                 raise TooDeep()   # the second test reads the line's markers once: a line of 10^6 '>' costs one pass, not one per level
-            idx, contents, lazy = quote_block(lines, i, text, at)
-            inner = None if joins is None else set()
+            contents, inner = QuoteLines(quote_block(lines, i, text, at)), set()
             for k, _, c, h in body_lines(contents, nested=True, level=level + 1, joins=inner):
-                quoted[idx[k]] = (c, None if hold else h)
-            if inner:
-                joins.update(idx[k] for k in inner)
+                if k in contents.lazy and k not in inner:
+                    break   # no paragraph open: no lazy line, the quote ends before it (an earlier line's result never depends on it)
+                quoted[contents.idx[k]] = (c, h)
+                if joins is not None and k in inner:
+                    joins.add(contents.idx[k])
             para, code = [], False
-            if lazy:   # CommonMark may read that last line as a paragraph of its own, outside the quote and the items its indent does not reach
-                del items[bisect.bisect_right(items, indent_width(lines[idx[-1]].rstrip("\r\n"))):]
-                hold = True
             c, h = quoted.pop(i)
             yield i, raw, c, h
             continue
@@ -527,12 +554,12 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0, joins: se
         elif starts or HTML_TAG_LINE.match(text):
             end = starts[0][1] if starts else None
             html, html_at = (False if end is not None and end.search(text[text.index("<") + 1:]) else end), at
-            # Raw HTML holds no Markdown, so a [[link]] in it is text (4.6; Obsidian reads none either). Not inside a quote:
-            # quote_block does not follow an HTML block, so there it cannot tell the block's lines from the paragraph after it.
-            in_code = not nested
+            # Raw HTML holds no Markdown, so a [[link]] in it is text (4.6; Obsidian reads none either), inside a quote too
+            # (D23-a): a line with no '>' after it is no lazy line here, so the quote's reader ends the quote before it.
+            in_code = True
         else:
             para = [text]
-        yield i, raw, in_code, None if hold and (items or pos) else heading   # an ATX heading on a line of its own, in no item, ends a paragraph in either reading
+        yield i, raw, in_code, heading
 
 
 def read_text(path: Path, root: Path) -> str:
@@ -670,9 +697,23 @@ def case_clashes(files: list[Path], root_name: str, case: bool = True) -> list[t
 
 def case_insensitive(folder: Path) -> bool:
     """Whether the disk that holds folder (or will: an output not made yet goes in its nearest existing parent) folds
-    case. A temp folder is made there and removed, so nothing is left behind. Raises OSError if it cannot be written."""
+    case. Nothing is written: the nearest folder whose name is ASCII with a letter and sits in a folder on that disk is
+    compared with its case-swapped name, so a kill -9 in the probe leaves nothing behind (BL-722). Only when no such folder
+    exists (the output's nearest folder is a volume's mount folder, or every folder name between it and the mount folder is
+    non-ASCII or has no letter) is a temp folder made there and removed; a kill -9 in that window can still leave a
+    .okf-case-* folder. Raises OSError if it cannot be written."""
     while not folder.exists():
         folder = folder.parent
+    dev = folder.stat().st_dev
+    for p in (folder, *folder.parents):
+        # ASCII only: a non-ASCII name's swapcase need not be a name the disk folds to it ('ıx'.swapcase() is 'IX', which
+        # APFS keeps apart from 'ıx'; the probe then said case-sensitive and a note was written over, review round 1)
+        if not p.name.isascii() or p.name.swapcase() == p.name:
+            continue
+        if p.parent.stat().st_dev != dev:
+            break   # p is a mount folder: its name, and every folder above, is looked up on another disk
+        other = p.with_name(p.name.swapcase())
+        return other.exists() and os.path.samefile(p, other)   # a case-sensitive disk may hold the swapped name as another folder
     probe = Path(tempfile.mkdtemp(prefix=".okf-case-", dir=folder))
     try:
         (probe / "a").touch()

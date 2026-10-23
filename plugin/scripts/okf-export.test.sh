@@ -739,7 +739,14 @@ from pathlib import Path
 loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
 mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
 loader.exec_module(mod)
-if sys.argv[2] == "probe":
+if sys.argv[2] in ("probe", "probe-kill"):
+    if sys.argv[2] == "probe-kill":   # BL-722: SIGKILL (untrappable) when the probe creates a file, as a kill -9 in that window
+        import os, signal
+        real_open = os.open
+        def killed(*a, **k):
+            os.kill(os.getpid(), signal.SIGKILL)
+        os.open = lambda p, flags, *a, **k: killed() if flags & os.O_CREAT else real_open(p, flags, *a, **k)
+        Path.touch = killed   # Python 3.9's pathlib bound os.open at import, so the patch above does not reach it
     print(mod.case_insensitive(Path(sys.argv[3])))
     sys.exit(0)
 mode = sys.argv[2]   # read now: sys.argv is replaced below
@@ -766,6 +773,37 @@ seam probe "$P/not/yet" >/dev/null; got2=$(cat "$TMP/out.txt"); left2=$(ls -A "$
 { [ "$got1" = "$want" ] && [ "$got2" = "$want" ] && [ -z "$left1$left2" ]; } \
   && ok "S10-CO-P1 the output probe agrees with the disk ($want), also for an output not yet made, and leaves nothing behind" \
   || bad "S10-CO-P1 probe" "want $want got '$got1' '$got2' left: $left1 $left2"
+# BL-722: a kill -9 inside the probe window leaves nothing behind: the probe writes nothing (it compares the folder with its
+# case-swapped name), so a SIGKILL at a write never fires and the answer still agrees with the disk.
+rc=$(seam probe-kill "$P/not/yet"); got3=$(cat "$TMP/out.txt"); left3=$(ls -A "$P")
+{ [ "$rc" = 0 ] && [ "$got3" = "$want" ] && [ -z "$left3" ]; } \
+  && ok "BL-722 a SIGKILL at any write of the output probe leaves nothing beside <out>: the probe writes nothing (answer $want)" \
+  || bad "BL-722 probe debris" "rc=$rc want $want got '$got3' left: $left3"
+# BL-722b: the name of a volume's mount folder is looked up on the disk above it, so the write-free probe must not judge a
+# case-sensitive volume by it. A 20 MB case-sensitive APFS image (hdiutil, no sudo) is mounted and <out> is made in its root.
+if command -v hdiutil >/dev/null 2>&1 && hdiutil create -size 20m -fs "Case-sensitive APFS" -volname okfcs "$TMP/cs.dmg" -quiet 2>/dev/null \
+  && hdiutil attach "$TMP/cs.dmg" -mountpoint "$TMP/csmnt" -nobrowse -quiet 2>/dev/null; then
+  seam probe "$TMP/csmnt/not/yet" >/dev/null; got4=$(cat "$TMP/out.txt")
+  # BL-722c as a user meets it: a vault on the case-sensitive volume holds Notes.md and notes.md, and <out> goes in a folder
+  # named ıx on this disk ('ıx'.swapcase() is 'IX', which APFS does not take for ıx). Exit 2 on a folding disk, never a lost note.
+  V="$TMP/csmnt/kb"; O="$P/ıx/out"; mkdir -p "$P/ıx"; note "$V" Notes.md "UPPER"; note "$V" notes.md "lower"
+  rc5=$(run "$V" "$O"); [ "$want" = True ] && want5=2 || want5=0
+  hdiutil detach "$TMP/csmnt" -quiet 2>/dev/null || hdiutil detach "$TMP/csmnt" -force -quiet
+  [ "$got4" = False ] && ok "BL-722b an <out> in the root of a case-sensitive volume probes as case-sensitive (False)" \
+    || bad "BL-722b mount root" "got '$got4' for a case-sensitive APFS volume"
+  [ "$rc5" = "$want5" ] && ok "BL-722c Notes.md + notes.md exported into a folder named ıx: exit $want5 on this disk (case-insensitive: $want), no note lost" \
+    || bad "BL-722c ıx output folder" "rc=$rc5 want $want5 report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(ls "$O" 2>/dev/null | tr '\n' ' ')"
+  rm -rf "$P/ıx"
+else
+  printf '  SKIP  BL-722b..c no hdiutil or no case-sensitive APFS image here (macOS only)\n'
+fi
+# BL-722c: the probe agrees with the disk for an output whose nearest folder has a non-ASCII name: ıx (dotless i), straße,
+# ﬁle (a ligature) and İx. Their swapcase is not the name the disk folds them to.
+mkdir -p "$P/ıx" "$P/straße" "$P/ﬁle" "$P/İx"; got6=""
+for d in ıx straße ﬁle İx; do seam probe "$P/$d/out" >/dev/null; got6="$got6$d=$(cat "$TMP/out.txt") "; done
+rm -rf "$P/ıx" "$P/straße" "$P/ﬁle" "$P/İx"
+[ "$got6" = "ıx=$want straße=$want ﬁle=$want İx=$want " ] && ok "BL-722c the probe agrees with the disk ($want) under folders named ıx, straße, ﬁle and İx" \
+  || bad "BL-722c non-ASCII folder names" "want $want for each, got: $got6"
 
 V="$TMP/co/kb"; O="$TMP/co/out"; note "$V" a.md "# A"; mkdir -p "$O"; chmod 555 "$O"
 if [ "$(id -u)" = 0 ]; then
@@ -1174,8 +1212,8 @@ V="$TMP/po15c/vault"; note "$V" h.md "$(printf '# Cafe\314\201 menu')"; note "$V
 rc=$(run "$V" "$TMP/po15c/out")
 { [ "$rc" = 0 ] && grep -qF "$(printf '(h.md#cafe\314\201-menu)')" "$TMP/po15c/out/u.md"; } \
   && ok "S10-PO-15c an NFD heading matches an NFC link (the anchor keeps the heading's NFD form, S10-PO-30)" || bad "S10-PO-15c NFC heading" "rc=$rc $(head -2 "$TMP/out.txt" | tr '\n' ' ') $(grep -o '(h.md#[^)]*)' "$TMP/po15c/out/u.md" | od -c | head -2 | tr '\n' ' ')"
-# 15d: inside a block quote no setext underline makes a heading (a shortcut: okf-export never invents an anchor, and a
-# link to such a heading fails loudly). Outside a quote `Kept` / `===` is still a heading.
+# 15d: a lazy underline (`===` with no '>') or an underline under a lazy paragraph line of a deeper quote makes no heading,
+# and `---` there is a break; `> Kept` / `> ===` is a heading (BL-884), as `Kept` / `===` outside a quote.
 V="$TMP/po15d/vault"; note "$V" q1.md "> Title
 ==="; note "$V" q2.md "> > a
 > ==="; note "$V" q3.md "> > b
@@ -1184,8 +1222,8 @@ V="$TMP/po15d/vault"; note "$V" q1.md "> Title
 ==="
 note "$V" u.md "[[q1#Title]] [[q2#a]] [[q3#b]] [[q4#Kept]] [[q5#Kept]]"
 rc=$(run "$V" "$TMP/po15d/out")
-{ [ "$rc" = 1 ] && [ "$(grep -c 'missing heading \[\[q[1-4]#' "$TMP/out.txt")" = 4 ] && grep -qF '(q5.md#kept)' "$TMP/po15d/out/u.md"; } \
-  && ok "S10-PO-15d no === / --- under a quote makes a heading (a link to one fails loudly); outside a quote it does" \
+{ [ "$rc" = 1 ] && [ "$(grep -c 'missing heading \[\[q[1-3]#' "$TMP/out.txt")" = 3 ] && grep -qF '(q4.md#kept)' "$TMP/po15d/out/u.md" && grep -qF '(q5.md#kept)' "$TMP/po15d/out/u.md"; } \
+  && ok "S10-PO-15d a lazy === and a --- break in a quote make no heading; > Kept / > === does (BL-884), as outside a quote" \
   || bad "S10-PO-15d quote underline" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
 # 15e: the line for a file that leads outside the vault names it as the vault sees it (its name and its link text), never
 # the host path it resolves to.
@@ -1213,9 +1251,62 @@ b c
 > > ==="
 note "$V" u.md "[[r1#b c]] [[r2#b c]] [[r3#b c]] [[r4#b]] [[r5#a b]]"
 rc=$(run "$V" "$TMP/po15g/out")
-{ [ "$rc" = 1 ] && [ "$(grep -c 'missing heading \[\[r[1-5]#' "$TMP/out.txt")" = 5 ] && ! grep -qF '.md#' "$TMP/po15g/out/u.md"; } \
-  && ok "S10-PO-15g dash lines, quoted list items, indented code and lazy lines in quotes give no anchor CommonMark lacks" \
+# r5 is a heading in CommonMark (`b` is a lazy line of the deeper quote's paragraph, `> > ===` its underline): BL-884 reads it
+{ [ "$rc" = 1 ] && [ "$(grep -c 'missing heading \[\[r[1-4]#' "$TMP/out.txt")" = 4 ] && [ "$(grep -o '\.md#[a-z-]*' "$TMP/po15g/out/u.md")" = ".md#a-b" ]; } \
+  && ok "S10-PO-15g dash lines, quoted list items, indented code and lazy lines in quotes give no anchor CommonMark lacks; r5 a b is one it has" \
   || bad "S10-PO-15g quote shapes" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300) | $(tail -1 "$TMP/po15g/out/u.md" 2>/dev/null)"
+
+# BL-884: a setext heading inside a block quote is a heading, at any quote depth and in a quoted list item; a paragraph that
+# holds a lazy line which could start a block (here an indented `# foo`) gives no anchor (that line's text is not read), so
+# a link to it fails loudly and never gets an anchor CommonMark lacks.
+V="$TMP/bl884/vault"; note "$V" a.md "> Title
+> =====
+
+> > Deep
+> > ---
+
+> - Item
+>   ---"; note "$V" z.md "> Top
+    # foo
+> ==="
+note "$V" u.md "see [[a#Title]] [[a#Deep]] [[a#Item]] [[z#Top # foo]]"
+rc=$(run "$V" "$TMP/bl884/out")
+{ [ "$rc" = 1 ] && grep -qF '(a.md#title)' "$TMP/bl884/out/u.md" && grep -qF '(a.md#deep)' "$TMP/bl884/out/u.md" \
+  && grep -qF '(a.md#item)' "$TMP/bl884/out/u.md" && [ "$(grep -c 'missing heading' "$TMP/out.txt")" = 1 ] && ! grep -qF 'z.md#' "$TMP/bl884/out/u.md"; } \
+  && ok "BL-884 setext headings inside quotes (nested, in a quoted item) resolve; one over an unread lazy line fails loudly" \
+  || bad "BL-884 setext in a quote" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+
+# RM-230b, SC-export417: a lazy line (no '>') stays in the quote only if the quote's own reader has a paragraph open there.
+# RM-230b: `lazy` goes on with the item paragraph in the quote, so `- # Head` after it starts a new list: a heading.
+V="$TMP/rm230b/vault"; note "$V" a.md "> - x
+lazy
+- # Head"; note "$V" u.md "see [[a#Head]]"
+rc=$(run "$V" "$TMP/rm230b/out")
+{ [ "$rc" = 0 ] && grep -qF '(a.md#head)' "$TMP/rm230b/out/u.md"; } \
+  && ok "RM-230b a heading after a quote whose last line is lazy is read: [[a#Head]] resolves (exit 0)" \
+  || bad "RM-230b heading after a lazy quote line" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+# BL-886b: after a heading in a quoted list item no paragraph is open, so the 4-space line is no lazy line: the quote ends
+# and the line is indented code, its link stays as written.
+V="$TMP/bl886b/vault"; note "$V" n.md "# N"; note "$V" a.md " >1. # Dup
+>     1. # Dup
+    [[n]]"
+rc=$(run "$V" "$TMP/bl886b/out")
+{ [ "$rc" = 0 ] && grep -qxF '    [[n]]' "$TMP/bl886b/out/a.md"; } \
+  && ok "BL-886b SC-export417 a 4-space line after a heading in a quoted list item is code: its [[n]] stays as written" \
+  || bad "BL-886b code after a quoted item" "rc=$rc $(grep -n 'n' "$TMP/bl886b/out/a.md" 2>&1 | tr '\n' ' ')"
+# D23-a: an HTML block inside a quote is raw HTML (4.6) as it is outside one: its [[b]] stays as written. A line with no
+# '>' after it is no lazy line (no paragraph is open), so it is read outside the quote and its link is converted.
+V="$TMP/d23a/vault"; note "$V" b.md "# B"; note "$V" a.md "> <div>
+> [[b]]
+> </div>
+
+> <div>
+> [[b]]
+after [[b]]"
+rc=$(run "$V" "$TMP/d23a/out")
+{ [ "$rc" = 0 ] && [ "$(grep -cxF '> [[b]]' "$TMP/d23a/out/a.md")" = 2 ] && grep -qxF 'after [b](b.md)' "$TMP/d23a/out/a.md"; } \
+  && ok "D23-a a [[link]] in an HTML block inside a quote stays as written; the line after the quote is converted" \
+  || bad "D23-a HTML block in a quote" "rc=$rc $(grep -n 'b' "$TMP/d23a/out/a.md" 2>&1 | tr '\n' ' ')"
 
 # S10-PO-16: a dot file or folder is left out of the bundle (.obsidian settings, .git data), and so is a symlink INSIDE the
 # vault that leads into one: the dot rule is about where the content lives, not what the link is called. The link is skipped
@@ -1308,7 +1399,11 @@ loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
 mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
 loader.exec_module(mod)
 shapes = {"lone #": lambda n: ["#"] * (n // 2), "quoted items + code": lambda n: ["> - a", ">     code"] * (n // 14),
-          "lazy indented": lambda n: ["> - a"] + ["    # H"] * (n // 8)}
+          "lazy indented": lambda n: ["> - a"] + ["    # H"] * (n // 8),
+          # a quote that its reader ends at a lazy line it rejects, again and again: each new quote must not read ahead to
+          # the end of the note (review round 1 of the block-quote rows: 6000 lines took 20 s, 12000 took 80 s)
+          "quote ended at a lazy line": lambda n: ["> <div>", "> [x]: /u", "z"] * (n // 22)}
+sizes = {"quote ended at a lazy line": 4 * 1024}   # bytes; every other shape starts at 40 KB
 def best(fn, lines):
     runs = []
     for _ in range(3):
@@ -1323,14 +1418,15 @@ bad_control, c1, c8 = too_slow(quadratic, lambda n: ["l"] * n, 3000, 24000)
 print("control quadratic     %.3f s -> %.3f s  %s" % (c1, c8, "caught" if bad_control else "NOT CAUGHT"))
 slow = [] if bad_control else ["the quadratic control was not caught"]
 for name, make in shapes.items():
-    flag, t1, t8 = too_slow(lambda ls: list(mod.body_lines(ls + ["after"])), make, 40 * 1024, 320 * 1024)
+    small = sizes.get(name, 40 * 1024)
+    flag, t1, t8 = too_slow(lambda ls: list(mod.body_lines(ls + ["after"])), make, small, 8 * small)
     print("%-22s %.3f s -> %.3f s" % (name, t1, t8))
     if flag:
         slow.append("%s %.2f s -> %.2f s" % (name, t1, t8))
 sys.exit(1 if slow else 0)
 PY
 rc=$?
-[ "$rc" = 0 ] && ok "S10-PO-26g lone #, quoted items with code and lazy indented lines cost linear time: 8 times the size costs at most 24 times as much plus 0.25 s (a quadratic control is caught; guard: passes on the base script too)" \
+[ "$rc" = 0 ] && ok "S10-PO-26g lone #, quoted items with code, lazy indented lines and quotes ended at a lazy line again and again cost linear time: 8 times the size costs at most 24 times as much plus 0.25 s (a quadratic control is caught; guard: passes on the base script too)" \
   || bad "S10-PO-26g linear cost" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt")"
 # 26h: a list item in a quote that holds no paragraph (empty, or its content starts a block) leaves none open, so the next
 # line without a `>` is no lazy line: the quote ends there. An HTML block or indented code then starts at that line, and
@@ -1377,11 +1473,11 @@ rc=$(run "$V" "$TMP/po26j/out")
   && grep -qF '<div>[[b]] [[nope]]</div>' "$TMP/po26j/out/h.md"; } \
   && ok "S10-PO-26j a wikilink inside a raw HTML block stays as written and is not checked; one after the block is rewritten" \
   || bad "S10-PO-26j link in HTML block" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300) | $(tail -7 "$TMP/po26j/out/h.md" 2>&1 | tr '\n' ' ')"
-# 26k: inside a block quote the reader does not follow an HTML block, so there a wikilink is rewritten (a known limit, pinned).
+# 26k: inside a block quote an HTML block is raw HTML too (D23-a closed the limit this case once pinned): the link stays.
 V="$TMP/po26k/vault"; note "$V" b.md "# B"; note "$V" q.md "> <div>[[b]]</div>"
 rc=$(run "$V" "$TMP/po26k/out")
-{ [ "$rc" = 0 ] && grep -qF '<div>[b](b.md)</div>' "$TMP/po26k/out/q.md"; } \
-  && ok "S10-PO-26k a wikilink in an HTML block inside a block quote is rewritten (the quote reader does not follow HTML blocks; guard: passes on the previous head too)" \
+{ [ "$rc" = 0 ] && grep -qxF '> <div>[[b]]</div>' "$TMP/po26k/out/q.md"; } \
+  && ok "S10-PO-26k a wikilink in a one-line HTML block inside a block quote stays as written (D23-a)" \
   || bad "S10-PO-26k HTML in a quote" "rc=$rc $(tail -2 "$TMP/po26k/out/q.md" 2>&1 | tr '\n' ' ')"
 
 # S10-PO-27 (review round 2): the anchor drops what github-slugger drops. A tab, a control, a zero-width or soft-hyphen
@@ -2026,14 +2122,15 @@ rc=$?
 [ "$rc" = 0 ] && ok "S10-PO-24 a 1 MB line of '>' ends in TooDeep in under 1 s, and the 100-level cut-off is unchanged (top level, in a list item, in a quote)" \
   || bad "S10-PO-24 early TooDeep" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt")"
 
-# S10-PO-25: the setext-in-quote limit is in the two texts a user reads, with the way round it: the README and the plugin's
-# SKILL.md both say a setext heading inside a block quote is not recognised, so a link to one fails, and name the ATX heading.
-# The README sits above the plugin folder: a copy of the plugin alone has none, which is shown as a SKIP.
+# S10-PO-25: the two texts a user reads, the README and the plugin's SKILL.md, say what the export reads in block quotes
+# since BL-884 and D23-a: setext headings are headings and raw HTML is copied unchanged, inside block quotes too; the old
+# limit sentence is gone. The README sits above the plugin folder: a copy of the plugin alone has none, shown as a SKIP.
 for doc in "$HERE/../skills/okf/SKILL.md" "$HERE/../../README.md"; do
   if [ ! -f "$doc" ]; then printf '  SKIP  S10-PO-25 %s not found\n' "$(basename "$doc")"; continue; fi
-  grep -qF 'a setext heading inside a block quote is not recognised' "$doc" && grep -q 'ATX heading' <<<"$(grep -F 'a setext heading inside a block quote is not recognised' "$doc")" \
-    && ok "S10-PO-25 $(basename "$doc") says a setext heading inside a block quote is not recognised and names the ATX heading" \
-    || bad "S10-PO-25 $(basename "$doc")" "the limit sentence (setext heading inside a block quote, ATX heading) is missing"
+  { ! grep -qF 'a setext heading inside a block quote is not recognised' "$doc" && ! grep -qF 'outside block quotes' "$doc" \
+    && [ "$(grep -cF 'inside block quotes too' "$doc")" -ge 2 ]; } \
+    && ok "S10-PO-25 $(basename "$doc") says setext headings and raw HTML are read inside block quotes too (BL-884, D23-a), no old limit" \
+    || bad "S10-PO-25 $(basename "$doc")" "the old setext-in-quote or HTML-outside-quotes limit is still stated, or 'inside block quotes too' is missing for headings and raw HTML"
 done
 
 # S10-PO-33: CommonMark 0.31.2 reads no link in a code span that wraps onto the next line (6.1), in an autolink (6.5) or in

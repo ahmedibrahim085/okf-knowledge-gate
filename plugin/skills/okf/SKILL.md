@@ -163,8 +163,8 @@ run `okf-check --doctor`: it names the file that switched the hook on and says w
 
 For a team that edits in an Obsidian-style vault: the vault stays the source, and the export is a bundle
 `okf-check` can gate. Body `[[note]]`, `[[note|alias]]`, `[[note#heading]]` and `[[#heading]]` become relative
-Markdown links; frontmatter, code (fenced or indented) and raw HTML blocks (outside block quotes; Obsidian reads no Markdown in them) are copied unchanged. Targets match as Obsidian matches them
-(exact first, then ignoring case), and a setext heading (underlined with `===` or `---`) is a heading a link can name, except that a setext heading inside a block quote is not recognised (a link to one fails with `missing heading`: give the quote an ATX heading, `# Title`, to link to), nor is a heading in a list item or a block quote after a quote whose last line has no `>`, up to the next blank line (a tab before a quote line's text counts its columns from the start of the line, as CommonMark does). A vault `index.md` note is renamed to
+Markdown links; frontmatter, code (fenced or indented) and raw HTML blocks (inside block quotes too; Obsidian reads no Markdown in them) are copied unchanged. Targets match as Obsidian matches them
+(exact first, then ignoring case), and a setext heading (underlined with `===` or `---`) is a heading a link can name, inside block quotes too (a tab before a quote line's text counts its columns from the start of the line, as CommonMark does). A vault `index.md` note is renamed to
 the folder note (`dir/dir.md`) and spec index files are generated (root carries `okf_version`); a rename collision
 stops the export with exit 2, and so do two names that differ only in case when `<out>` is on a case-insensitive disk. A vault `log.md` note becomes the spec log (dated lines grouped, newest first; every `## ` heading must
 be a date). Exit 1 lists every missing or ambiguous target, missing heading, malformed date, non-date `## ` heading,
@@ -173,7 +173,7 @@ empty, inside the vault, or cannot be written). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.51`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.52`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

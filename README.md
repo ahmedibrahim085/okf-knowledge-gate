@@ -227,7 +227,7 @@ citation) are in
 `okf-export` is for a team that edits in an Obsidian-style vault, whose backlinks and graph count only `[[wikilinks]]`.
 The vault stays the source; the export is a bundle `okf-check` can gate. Body `[[note]]`, `[[note|alias]]`,
 `[[note#heading]]` and `[[#heading]]` become relative Markdown links, and each target and heading is checked.
-Frontmatter, code (fenced, or indented 4 spaces or a tab) and raw HTML blocks are copied unchanged, since Obsidian renders no Markdown in HTML. Limits: inside a block quote a `[[link]]` in an HTML block, or in indented code that follows a list item, is still rewritten, and no setext heading (underlined with `===` or `---`) is recognised; nor is a heading in a list item or a block quote, after a quote whose last line has no `>` (CommonMark may read that line as a paragraph of its own), up to the next blank line. A link to one fails with `missing heading`, so name an ATX `# heading`. A tab in the `>`, spaces and list markers before a quote line's text counts its columns from the start of the line, as CommonMark does. A vault's `index.md` note becomes the folder note (`dir/index.md` to
+Frontmatter, code (fenced, or indented 4 spaces or a tab) and raw HTML blocks are copied unchanged, inside block quotes too, since Obsidian renders no Markdown in HTML. A line with no `>` after a block quote stays in the quote only when it continues an open paragraph there (a lazy line), as CommonMark reads it. Limit: a setext heading whose text holds a lazy line that could be an underline or start a block of its own (`===`, or an indented `# foo`) is not named; a link to it fails with `missing heading`, so name an ATX `# heading`. A tab in the `>`, spaces and list markers before a quote line's text counts its columns from the start of the line, as CommonMark does. A vault's `index.md` note becomes the folder note (`dir/index.md` to
 `dir/dir.md`, the root one to `<vault folder>.md`), and an `index.md` listing is generated in every folder that holds
 a note, with `okf_version` at the root; a rename onto an existing note stops the export. When `<out>` is on a disk
 that does not tell upper from lower case (the macOS default) and the vault is not, two names that differ only in case
@@ -239,7 +239,7 @@ continuation lines) are grouped by date, newest first, under the note's own `# t
 date, as spec 9 requires. Exit 1 lists each missing or ambiguous target, missing heading, malformed date, `## ` heading
 that is not a date (with the lines left out under it), undated log line, log frontmatter and log with no dated entry as
 `file:line`, and each skipped or refused file and each file with a hard-linked name outside the vault by name (the bundle is still written); exit 2 means nothing was written (`<out>` is not empty, is inside the
-vault or cannot be written, or two notes would be written to one name). A target is matched as Obsidian matches it: an exact match first, then ignoring case (two files that differ only in case are reported as ambiguous). Setext headings (a line underlined with `===` or `---`) are headings a `[[note#heading]]` link can name, except that a setext heading inside a block quote is not recognised: a link to one fails with `missing heading`, so give the quote an ATX heading (`# Title`) to link to. The vault is only read.
+vault or cannot be written, or two notes would be written to one name). A target is matched as Obsidian matches it: an exact match first, then ignoring case (two files that differ only in case are reported as ambiguous). Setext headings (a line underlined with `===` or `---`) are headings a `[[note#heading]]` link can name, inside block quotes too. The vault is only read.
 
 Anchors follow the `github-slugger` package: a heading keeps its own Unicode form, so a heading typed in decomposed Unicode (`cafe`
 plus U+0301) gets a decomposed anchor, as on github.com (its id and its jump target, checked with a gist on 2026-10-22), and a heading
@@ -503,7 +503,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.51
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.52
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -521,7 +521,7 @@ To check the commits, paths and line citations the notes cite as well, add `veri
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.51
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.52
         with:
           bundle: path/to/bundle
           verify: 'true'                  # also run okf-verify; default 'false'
@@ -544,7 +544,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.51
+    rev: v0.9.52
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
