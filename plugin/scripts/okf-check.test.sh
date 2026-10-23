@@ -156,6 +156,40 @@ fi
 section "selftest"
 expect_exit  0 "H-3 selftest passes (every gate fires)" -- "$CHECK" --selftest
 expect_match "FIRED" "selftest reports fired gates" "$CHECK" --selftest
+# H-3b: under `set -o pipefail`, `printf '%s' "$out" | grep -q "$marker"` is false when grep exits at its match while printf
+# still writes (SIGPIPE, PIPESTATUS "141 0"): a gate that fired reads as NOT FIRED and --selftest exits 5. Seen on the Debian
+# gate of 0.9.49 (H-3 and R-5 red) and reproduced under CPU load: PIPESTATUS=141 0 with the marker in the output. Output
+# longer than a pipe buffer makes the race certain, so the copy below appends 70000 bytes to what each probe captures.
+H3P="$TMP/h3-pipe"; rm -rf "$H3P"; mkdir -p "$H3P"; cp -R "$HERE/.." "$H3P/plugin" 2>/dev/null
+"$REALPY" - "$H3P/plugin/scripts/okf-check" <<'PY'; h3rc=$?
+import sys
+p = sys.argv[1]; t = open(p).read()
+for old in ('out=$("$fn" "$b" 2>&1; true)', 'base=$(run_conformance "$b" 2>&1)'):
+    assert t.count(old) == 1, old
+    t = t.replace(old, old[:-1] + '; printf "%*d" 70000 0)')
+open(p, "w").write(t)
+PY
+"$H3P/plugin/scripts/okf-check" --selftest >"$TMP/h3b.txt" 2>&1; rcl=$?
+{ [ "$h3rc" -eq 0 ] && [ "$rcl" -eq 0 ] && ! grep -q 'NOT FIRED\|BASELINE DIRTY' "$TMP/h3b.txt"; } \
+  && ok "H-3b a probe whose output is longer than a pipe buffer still reads as FIRED (exit 0)" \
+  || bad "H-3b probe match under pipefail" "pad=$h3rc rc=$rcl $(grep -m2 'NOT FIRED\|DIRTY' "$TMP/h3b.txt" | tr '\n' ' ')"
+# PF-1/PF-2: the same race in a layer. Successor and Owner asked `printf '%s\n' "$out" | grep -q '^[ET]|'`; 1500 failing notes
+# make that output far longer than a pipe buffer, so grep exits at the first E| line while printf still writes, the pipe is
+# false, and the layer printed PASS with exit 0 on a bundle where every note breaks the rule (10 notes: FAIL, exit 1).
+PFB="$TMP/pf-big"; rm -rf "$PFB"; mkbundle "$PFB"; rm -f "$PFB/c.md"
+sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$PFB/okf-base.yaml"
+printf 'okf_check:\n  deprecated_requires: superseded_by\n  require_owner: true\n' >> "$PFB/okf-base.yaml"
+for i in $(seq 1 1500); do
+  printf -- '---\ntype: Lesson\ntitle: T%s\ndescription: D\nstatus: deprecated\nstale_after: "2099-01-01"\n---\nbody\n' "$i" \
+    > "$PFB/a-note-with-a-long-name-so-that-each-finding-line-is-long-$i.md"
+done
+"$CHECK" "$PFB" >"$TMP/pf-big.txt" 2>&1; rcl=$?
+{ [ "$rcl" -eq 1 ] && grep -q '^  Successor  *FAIL   1500 error(s)' "$TMP/pf-big.txt"; } \
+  && ok "PF-1 Successor FAILS on 1500 deprecated notes with no superseded_by, not PASS (exit 1)" \
+  || bad "PF-1 Successor on a large bundle" "rc=$rcl $(grep -m1 '^  Successor' "$TMP/pf-big.txt")"
+{ [ "$rcl" -eq 1 ] && grep -q '^  Owner  *FAIL   1500 error(s)' "$TMP/pf-big.txt"; } \
+  && ok "PF-2 Owner FAILS on 1500 notes with no owner, not PASS (exit 1)" \
+  || bad "PF-2 Owner on a large bundle" "rc=$rcl $(grep -m1 '^  Owner' "$TMP/pf-big.txt")"
 
 # --- L1 conformance ---------------------------------------------------------
 section "L1 conformance"

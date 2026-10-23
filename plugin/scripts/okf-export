@@ -85,39 +85,140 @@ def break_at(text: str, pos: int, tail) -> bool:
 def indent_width(line: str) -> int:
     wide = line.expandtabs(4)
     return len(wide) - len(wide.lstrip(" "))
-# A code span closes on a backtick run of exactly its opening length.
-# SHORTCUT: one line only; a span wrapped across lines is read as text. Track spans per paragraph if one shows up.
+# A code span closes on a backtick run of exactly its opening length. CODE_SPAN is for a title, whose backslashes
+# link_text doubles; a note's body is read by raw_inlines.
 CODE_SPAN = re.compile(r"(?<!`)(`+)(?!`).+?(?<!`)\1(?!`)")
 BACKTICKS = re.compile(r"`+")
+# CommonMark 0.31.2, 6.5 Autolinks and 6.6 Raw HTML. Whitespace there is spaces, tabs and line endings (not Unicode
+# spaces, which Python's \s would take). A comment, a processing instruction, a declaration and a CDATA section end on
+# their first terminator: raw_inlines finds that with str.find, so an unclosed one costs one scan of the paragraph.
+_WS = r"[ \t\r\n]"
+AUTOLINK = re.compile(r"<(?:[A-Za-z][A-Za-z0-9+.-]{1,31}:[^<>\x00-\x20]*|[A-Za-z0-9.!#$%&'*+/=?^_`{|}~-]+@[A-Za-z0-9]"
+                      r"(?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*)>")
+HTML_TAG = re.compile(rf"<[A-Za-z][A-Za-z0-9-]*(?:{_WS}+[A-Za-z_:][A-Za-z0-9_.:-]*(?:{_WS}*={_WS}*"
+                      rf"(?:[^ \"'=<>`\x00-\x20]+|'[^']*'|\"[^\"]*\"))?)*{_WS}*/?>|</[A-Za-z][A-Za-z0-9-]*{_WS}*>")
+HTML_ENDED = (("<!-->", None), ("<!--->", None), ("<!--", "-->"), ("<![CDATA[", "]]>"), ("<?", "?>"))
+DECLARATION = re.compile(r"<![A-Za-z]")
+INLINE_START = re.compile(r"[\\`<]")
+ASCII_PUNCT = frozenset("!\"#$%&'()*+,-./:;<=>?@[\\]^_`{|}~")
 
 
-def code_spans(line: str):
-    """(start, end) of each code span in a body line, read left to right as CommonMark 6.1 does: a backtick run opens a
-    span that the next run of the same length closes, a run with no closer is text, and a backslash escapes the backtick
-    after it outside a span (inside one it is literal). CODE_SPAN above is for a title, whose backslashes link_text doubles."""
-    runs = [m.span() for m in BACKTICKS.finditer(line)]
-    by_len = {}
+def raw_inlines(text: str) -> list[tuple[int, int]]:
+    """(start, end) of each code span (6.1), autolink (6.5) and raw HTML item (6.6) in a paragraph's text, read left to
+    right as CommonMark reads them: whichever starts first wins, so a backtick inside a tag is the tag's and a `<` inside a
+    span is the span's. A backtick run opens a span that the next run of the same length closes, even on a later line; a
+    run with no closer is text. Outside them a backslash escapes the punctuation character after it."""
+    runs = [m.span() for m in BACKTICKS.finditer(text)]
+    starts = [a for a, _ in runs]
+    by_len: dict[int, list[int]] = {}
     for k, (a, b) in enumerate(runs):
         by_len.setdefault(b - a, []).append(k)
-    spans, k = [], 0
-    while k < len(runs):
-        a, b = runs[k]
-        z = a
-        while z and line[z - 1] == "\\":   # the backslashes just before the run: an odd count escapes its first backtick
-            z -= 1
-        if (a - z) % 2:
-            a += 1
-        if a == b:
-            k += 1
+    found: dict[str, tuple[int, int]] = {}   # terminator -> (searched from, found at): one find answers every start up to there
+
+    def ends(term: str, pos: int) -> int:
+        hit = found.get(term)
+        if hit is None or not (hit[0] <= pos and (hit[1] < 0 or pos <= hit[1])):
+            hit = found[term] = (pos, text.find(term, pos))
+        return hit[1]
+
+    out, p = [], 0
+    while True:
+        m = INLINE_START.search(text, p)
+        if not m:
+            return out
+        p = m.start()
+        c = text[p]
+        if c == "\\":
+            p += 2 if text[p + 1:p + 2] in ASCII_PUNCT else 1   # at the end the slice is "", which is not in the set
             continue
-        later = by_len.get(b - a, [])
-        at = bisect.bisect_right(later, k)
-        if at == len(later):
-            k += 1
+        if c == "`":   # p is a run's start, or one past an escaped first backtick
+            k = bisect.bisect_right(starts, p) - 1
+            b = runs[k][1]
+            later = by_len.get(b - p, [])
+            at = bisect.bisect_right(later, k)
+            if at == len(later):
+                p = b
+            else:
+                out.append((p, runs[later[at]][1]))
+                p = runs[later[at]][1]
             continue
-        spans.append((a, runs[later[at]][1]))
-        k = later[at] + 1
-    return spans
+        end = None
+        a = AUTOLINK.match(text, p) or HTML_TAG.match(text, p)
+        if a:
+            end = a.end()
+        else:
+            for opener, term in HTML_ENDED:
+                if text.startswith(opener, p):
+                    if term is None:
+                        end = p + len(opener)
+                    else:
+                        q = ends(term, p + len(opener))
+                        end = q + len(term) if q >= 0 else None
+                    break
+            else:
+                if DECLARATION.match(text, p):
+                    q = ends(">", p + 2)
+                    end = q + 1 if q >= 0 else None
+        if end is None:
+            p += 1
+        else:
+            out.append((p, end))
+            p = end
+
+
+# A GFM table's delimiter row (`|---|:-:|`): table rows are read one by one, not as one paragraph. It starts a table only
+# when it has as many cells as the header row above it (GFM 0.29, 4.10); otherwise both lines are paragraph text.
+TABLE_DELIM = re.compile(r"\|?[ \t]*:?-+:?[ \t]*(?:\|[ \t]*:?-+:?[ \t]*)*\|?[ \t]*$")
+LINE_PREFIX = re.compile(r"[ \t>]*")
+CELL_BAR = re.compile(r"(?<!\\)\|")   # a bar that splits cells; `\|` is a literal bar
+
+
+def cells(row: str) -> int:
+    """The number of cells GFM reads in a table row: bars split cells, a leading and a trailing bar are not cells."""
+    row = row.strip()
+    row = row[1:] if row.startswith("|") else row
+    row = row[:-1] if row.endswith("|") and not row.endswith("\\|") else row
+    return len(CELL_BAR.findall(row)) + 1
+
+
+def raw_ranges(lines: list[str], rows, joins: set) -> dict[int, list[tuple[int, int]]]:
+    """For each body line, the code spans, autolinks and raw HTML items that touch it, as (start, end) offsets into that
+    line (a start below 0 or an end past the line: the item goes on from the line before or into the next). The lines of a
+    paragraph (body_lines `joins`) are read as one text, a later line's container prefix (spaces, tabs, `>`) blanked out,
+    as CommonMark strips it; the rows of a table, from its header row on, are read one by one."""
+    groups, cur = [], None
+    for i, line, code, _ in rows:
+        if code or not line.strip():
+            cur = None
+            continue
+        if cur is None or i not in joins:
+            cur = []
+            groups.append(cur)
+        cur.append(i)
+    out: dict[int, list[tuple[int, int]]] = {}
+    for g in groups:
+        for j in range(1, len(g)):
+            body = lines[g[j]][LINE_PREFIX.match(lines[g[j]]).end():].rstrip("\r\n")
+            head = lines[g[j - 1]][LINE_PREFIX.match(lines[g[j - 1]]).end():].rstrip("\r\n")
+            if "|" in body and "|" in head and TABLE_DELIM.match(body) and cells(body) == cells(head):
+                groups += [[i] for i in g[j - 1:]]
+                del g[j - 1:]
+                break
+        if not g:
+            continue
+        parts, bases, at = [], [], 0
+        for n, i in enumerate(g):
+            line = lines[i]
+            if n:
+                cut = LINE_PREFIX.match(line).end()
+                line = " " * cut + line[cut:]
+            parts.append(line)
+            bases.append(at)
+            at += len(line)
+        for s, e in raw_inlines("".join(parts)):
+            for n in range(bisect.bisect_right(bases, s) - 1, bisect.bisect_right(bases, e - 1)):
+                out.setdefault(g[n], []).append((s - bases[n], e - bases[n]))
+    return out
 
 
 # A problem line quotes link text and file names from the vault, and a person or Claude reads it: control characters
@@ -305,7 +406,7 @@ def item_interrupts(text: str) -> bool:
     return bool(g.group(3)) and (marker in ("-", "*", "+") or int(marker[:-1]) == 1)
 
 
-def body_lines(lines: list[str], nested: bool = False, level: int = 0):
+def body_lines(lines: list[str], nested: bool = False, level: int = 0, joins: set | None = None):
     """Yield (index, line, in_code, heading) for each body line. in_code is True inside a fence, fence lines included,
     and on the lines of an indented code block or of an HTML block outside a quote (raw HTML holds no Markdown); heading
     is the text of a heading that ends on this line (ATX, or the underline of a setext heading), else None. Blocks are read the way CommonMark 0.31.2 reads them, inside list items
@@ -315,7 +416,10 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
     A block quote (5.1) is read as a container too: its lines, '>' taken off, are read by this same reader (nested=True),
     inside a list item as well, and quotes nest. SHORTCUT: a lazy line continues a quote's paragraph by a line test on
     the quote's last line, not by the inner reader's state; read it from the inner reader if a note shows a difference.
-    Inside a quote (nested) no setext heading is read: see quote_block."""
+    Inside a quote (nested) no setext heading is read: see quote_block.
+
+    `joins`, when given, collects the index of each line that goes on with the paragraph of the line before it (lazily
+    too), so a caller can read a paragraph's inline text as one piece (raw_ranges)."""
     items = []             # content indents of the open list items, outer first
     empty = False          # the innermost item has no content yet: a blank line ends it
     para = []              # the lines of the open paragraph, as its item sees them (setext heading text)
@@ -368,6 +472,8 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
         interrupts = (item and (depth < len(items) or item_interrupts(text))) or brk or FENCE.match(text) or ATX.match(text) or starts or QUOTE.match(text)
         if para and not interrupts:
             para.append(raw.strip())   # a paragraph goes on, lazily too; the text as written: a tab in it is no column count
+            if joins is not None:
+                joins.add(i)
             yield i, raw, False, None
             continue
         del items[depth:]   # the line is outside the deeper items: they end
@@ -392,8 +498,11 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0):
             if level >= NEST_MAX or level + quote_depth(text)[1] > NEST_MAX:   # `level` counts nested reads; `depth` below is the list-item depth of one line
                 raise TooDeep()   # the second test reads the line's markers once: a line of 10^6 '>' costs one pass, not one per level
             idx, contents, lazy = quote_block(lines, i, text, at)
-            for k, _, c, h in body_lines(contents, nested=True, level=level + 1):
+            inner = None if joins is None else set()
+            for k, _, c, h in body_lines(contents, nested=True, level=level + 1, joins=inner):
                 quoted[idx[k]] = (c, None if hold else h)
+            if inner:
+                joins.update(idx[k] for k in inner)
             para, code = [], False
             if lazy:   # CommonMark may read that last line as a paragraph of its own, outside the quote and the items its indent does not reach
                 del items[bisect.bisect_right(items, indent_width(lines[idx[-1]].rstrip("\r\n"))):]
@@ -933,11 +1042,13 @@ def main() -> int:
             shutil.copy2(vault / rel, dest)
             continue
         try:
-            rows = list(body_lines(lines))
+            joins: set[int] = set()
+            rows = list(body_lines(lines, joins=joins))
         except TooDeep:
             problems.append(f"{rel.as_posix()}:1: block quotes and list items nested deeper than {NEST_MAX} levels: copied unchanged, its links not rewritten")
             shutil.copy2(vault / rel, dest)
             continue
+        raw = raw_ranges(lines, rows, joins)
         for i, line, code, _ in rows:
             if code:
                 continue
@@ -970,9 +1081,10 @@ def main() -> int:
                 text = alias or (f"{name} > {heading}" if name and heading else name or heading)
                 return f"[{text}]({href})"
 
-            # A link is rewritten unless a code span cuts through it (its start or end inside a span): a span wholly inside the
-            # alias, `[[a|`b`]]`, stays in the new link text. CommonMark binds a code span tighter than a link.
-            spans = code_spans(line)
+            # A link is rewritten unless a code span, an autolink or a raw HTML item covers or cuts through it (its start or
+            # end inside one), on this line or from the line before: a span wholly inside the alias, `[[a|`b`]]`, stays in
+            # the new link text. CommonMark binds a code span tighter than a link.
+            spans = raw.get(i, ())
 
             def outside(m: re.Match) -> str:
                 cut = any(s < m.start() < e or s < m.end() < e for s, e in spans)   # a boundary strictly inside a span

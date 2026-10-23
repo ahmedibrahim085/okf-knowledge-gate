@@ -244,8 +244,10 @@ vault or cannot be written, or two notes would be written to one name). A target
 Anchors follow the `github-slugger` package: a heading keeps its own Unicode form, so a heading typed in decomposed Unicode (`cafe`
 plus U+0301) gets a decomposed anchor, as on github.com (its id and its jump target, checked with a gist on 2026-10-22), and a heading
 typed composed gets a composed one. A link is matched to its heading on the NFC of both sides, so a link typed in either form finds
-a heading typed in either form and gets that heading's anchor. Limits: a code span that runs over a line break is read as text, so a `[[link]]` on its second line is
-rewritten. Inline HTML and autolinks were not fuzzed against a CommonMark reader.
+a heading typed in either form and gets that heading's anchor. A `[[link]]` inside a code span (one that runs over a line break
+too), an autolink (`<https://...>`) or inline raw HTML (a tag, a comment, a processing instruction, a declaration, CDATA) is
+left as written, as CommonMark 0.31.2 reads no link there; a test plants a `[[link]]` at every offset of the spec's examples
+for these three sections and compares the export with a CommonMark reader.
 
 `okf-export` leaves out dot files and folders (`.obsidian`, `.git`) and names each file it skips (exit 1). A symlink that
 leaves the vault or leads into a dot name is skipped, an absolute one without its host path (`an absolute link`). A symlink to
@@ -492,7 +494,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.48
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.49
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -510,7 +512,7 @@ To check the commits, paths and line citations the notes cite as well, add `veri
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.48
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.49
         with:
           bundle: path/to/bundle
           verify: 'true'                  # also run okf-verify; default 'false'
@@ -533,7 +535,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.48
+    rev: v0.9.49
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

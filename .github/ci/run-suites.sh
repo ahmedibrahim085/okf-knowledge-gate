@@ -22,7 +22,7 @@ suite_verdict() {
   if [ "$2" -eq 124 ] && [ -n "${3:-}" ]; then echo "timed out after $3 s"; return 1; fi
   [ "$2" -eq 0 ] || { echo "exit $2"; return 1; }
   last=$(awk 'NF { l = $0 } END { print l }' "$1" 2>/dev/null)
-  printf '%s\n' "$last" | grep -Eq '^[[:space:]]*[0-9]+ passed, [0-9]+ failed' \
+  grep -Eq '^[[:space:]]*[0-9]+ passed, [0-9]+ failed' <<<"$last" \
     || { echo "no summary line (N passed, M failed) at the end: the suite stopped before its end"; return 1; }
   counts=$(printf '%s\n' "$last" | awk '{ print $1 + 0, $3 + 0 }')
   case "$counts" in
@@ -107,6 +107,7 @@ for s in $SUITES; do
   if [ -n "$why" ]; then
     fail=1
     echo "::group::$s — FAIL lines and the end of its log"
+    # pipefail-safe: display only; the verdict above is already decided and this status is never tested.
     grep -A1 '^  FAIL' "$WORK/$i.log" | head -60; echo '...'; tail -20 "$WORK/$i.log"
     echo "::endgroup::"
   fi

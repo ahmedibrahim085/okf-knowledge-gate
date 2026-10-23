@@ -35,6 +35,7 @@ jobs:
       OKF_LINUX_PYTHON: "3.12"
       OKF_LINUX_UV: "0.11.28"
       OKF_LINUX_PRECOMMIT: "4.7.0"
+      OKF_LINUX_MARKDOWN_IT: "3.0.0"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,12 +44,12 @@ jobs:
       - name: Versions from tools/linux-gate.conf (private tree only)
         run: |
           [ -f tools/linux-gate.conf ] || { echo "no tools/linux-gate.conf: the defaults of this workflow apply"; exit 0; }
-          for k in OKF_LINUX_PYTHON OKF_LINUX_UV OKF_LINUX_PRECOMMIT; do
+          for k in OKF_LINUX_PYTHON OKF_LINUX_UV OKF_LINUX_PRECOMMIT OKF_LINUX_MARKDOWN_IT; do
             v=$(sed -n "s/^$k=//p" tools/linux-gate.conf)
             if [ -n "$v" ]; then echo "$k=$v" >> "$GITHUB_ENV"; fi
           done
 
-      - name: ${{ matrix.awk }} as awk, and the pinned okflint and pre-commit in a uv venv
+      - name: ${{ matrix.awk }} as awk, and the pinned okflint, pre-commit and markdown-it-py in a uv venv
         env:
           AWK_IMPL: ${{ matrix.awk }}
         run: |
@@ -63,7 +64,7 @@ jobs:
           pins=plugin/config/pinned-versions.txt
           okflint=$(awk '$1=="okflint_source"{print $2}' "$pins")
           [ -n "$okflint" ] || okflint="okflint==$(awk '$1=="okflint"{print $2}' "$pins")"
-          uv pip install -q "$okflint" "pre-commit==$OKF_LINUX_PRECOMMIT"
+          uv pip install -q "$okflint" "pre-commit==$OKF_LINUX_PRECOMMIT" "markdown-it-py==$OKF_LINUX_MARKDOWN_IT"
           echo "$HOME/venv/bin" >> "$GITHUB_PATH"
           echo "VIRTUAL_ENV=$HOME/venv" >> "$GITHUB_ENV"
 
@@ -89,7 +90,7 @@ jobs:
 
       - name: Versions from tools/linux-gate.conf; the venv and caches under RUNNER_TEMP
         run: |
-          for k in OKF_LINUX_PYTHON OKF_LINUX_UV OKF_LINUX_PRECOMMIT; do
+          for k in OKF_LINUX_PYTHON OKF_LINUX_UV OKF_LINUX_PRECOMMIT OKF_LINUX_MARKDOWN_IT; do
             v=$(sed -n "s/^$k=//p" tools/linux-gate.conf)
             [ -n "$v" ] || { echo "::error::$k is not set in tools/linux-gate.conf"; exit 1; }
             echo "$k=$v" >> "$GITHUB_ENV"
@@ -107,7 +108,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/awk-bin" && ln -sf "$(command -v gawk)" "$RUNNER_TEMP/awk-bin/awk"
           echo "$RUNNER_TEMP/awk-bin" >> "$GITHUB_PATH"
 
-      - name: The pinned uv, okflint and pre-commit in a venv, as the runner's own user
+      - name: The pinned uv, okflint, pre-commit and markdown-it-py in a venv, as the runner's own user
         run: |
           curl -LsSf "https://astral.sh/uv/$OKF_LINUX_UV/install.sh" | sh > /dev/null
           export PATH="$HOME/.local/bin:$PATH"
@@ -116,7 +117,7 @@ jobs:
           pins=plugin/config/pinned-versions.txt
           okflint=$(awk '$1=="okflint_source"{print $2}' "$pins")
           [ -n "$okflint" ] || okflint="okflint==$(awk '$1=="okflint"{print $2}' "$pins")"
-          uv pip install -q "$okflint" "pre-commit==$OKF_LINUX_PRECOMMIT"
+          uv pip install -q "$okflint" "pre-commit==$OKF_LINUX_PRECOMMIT" "markdown-it-py==$OKF_LINUX_MARKDOWN_IT"
           echo "$OKF_VENV/bin" >> "$GITHUB_PATH"
           echo "VIRTUAL_ENV=$OKF_VENV" >> "$GITHUB_ENV"
 

@@ -16,6 +16,7 @@ _OKF_GUARD_DIR=$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 # OKF_MAX_NOTE_BYTES; a standalone caller gets the default, which lives in config/okf-check-block.json only.
 okf_note_cap() {
   local c="${OKF_MAX_NOTE_BYTES:-}"
+  # pipefail-safe: only the value is used (callers test it); the status of this assignment is never tested.
   case "$c" in ''|*[!0-9]*|0) c=$(sed -n 's/.*"max_note_bytes"[^}]*"default": *\([0-9][0-9]*\).*/\1/p' "$_OKF_GUARD_DIR/../config/okf-check-block.json" 2>/dev/null | head -1) ;; esac
   printf '%s' "$c"
 }

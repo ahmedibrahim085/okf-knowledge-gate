@@ -9,6 +9,14 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.49] - 2026-10-23
+
+OKF Knowledge Gate 0.9.49 makes `okf-export` read code spans, autolinks and inline HTML the way CommonMark does, so it no longer changes code or URLs.
+
+### Fixed
+- **Owner and Successor could report PASS on a large bundle that breaks the rule, and `--selftest` could report a gate that fired as NOT FIRED.** With 1500 notes that break `require_owner` or `deprecated_requires`, both layers said PASS and the run exited 0 (with 10 notes they FAIL); on a loaded machine `--selftest` exited 5 now and then. Both now give the same verdict at any size and load.
+- **`okf-export` leaves a `[[link]]` alone inside a code span that runs over a line break, an autolink and inline raw HTML.** It rewrote `[[b]]` there into a Markdown link, which changed the code, broke the URL or the HTML tag (CommonMark 0.31.2 sections 6.1, 6.5, 6.6). Code spans, autolinks and raw HTML are now read over the whole paragraph, left to right as CommonMark reads them; a link in plain text, in a link text or in a table cell is rewritten as before. A new suite plants a `[[link]]` at every offset of the spec's examples for the three sections (1246 cases) and compares the export with markdown-it-py 3.0.0: 0 differences.
+
 ## [0.9.48] - 2026-10-23
 
 OKF Knowledge Gate 0.9.48 makes every feature easy to find: a skill per job, complete help on the three tools, and the same option names everywhere.
@@ -902,7 +910,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.48...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.49...HEAD
+[0.9.49]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.48...v0.9.49
 [0.9.48]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.47...v0.9.48
 [0.9.47]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.46...v0.9.47
 [0.9.46]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.45...v0.9.46

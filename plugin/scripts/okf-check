@@ -43,7 +43,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.48"
+VERSION="0.9.49"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -459,7 +459,7 @@ err_capped() {
   rm -f "$buf"
   return 0
 }
-pin_of() { [ -f "$PINS" ] && awk -v k="$1" '$1==k{print $2}' "$PINS" | head -1; }
+pin_of() { [ -f "$PINS" ] && awk -v k="$1" '$1==k{print $2; exit}' "$PINS"; }
 
 # --- concurrency detection (E-7) --------------------------------------------
 # The layers run in sequence, so a write landing between them yields ONE report
@@ -643,6 +643,7 @@ bundle_fingerprint() {
 okflint_version() {
   local bin py v
   if command -v uv >/dev/null 2>&1; then
+    # pipefail-safe: only the value is used; the status of this assignment is never tested.
     v=$(uv tool list 2>/dev/null | awk '/^okflint /{print $2}' | tr -d 'v' | head -1)
     [ -n "$v" ] && { printf '%s' "$v"; return 0; }
   fi
@@ -963,7 +964,7 @@ doctor() {
         fi
         if [ "$ctl_ok" -eq 1 ]; then
           _okflint_probe bom '\357\273\277---\ntype: Lesson\ntitle: Probe\n---\nbody\n'
-          if [ -z "$pout" ] || printf '%s' "$pout" | grep -q '"F001"'; then bad="$bad a BOM note (okflint#8),"; fi
+          if [ -z "$pout" ] || grep -q '"F001"' <<<"$pout"; then bad="$bad a BOM note (okflint#8),"; fi
           _okflint_probe latin1 '---\ntype: Lesson\ntitle: caf\351\n---\nbody\n'
           if [ -z "$pout" ] || [ "$prc" -gt 1 ]; then bad="$bad a non-UTF-8 note (okflint#9),"; fi
           _okflint_probe baddate '---\ntype: Lesson\ntitle: Probe\ndecided: 2026-02-30\n---\nbody\n'
@@ -989,7 +990,9 @@ doctor() {
           if [ "$mrc" -eq 0 ]; then
             say "  okflint manifest check  OK   (validate-manifest accepts the shipped okf-base template)"
           else
+            # pipefail-safe: a message line for the reader; the status of the assignment is never tested.
             local mwhy; mwhy=$(cat "$TMP/manifest.out.err" "$TMP/manifest.out" 2>/dev/null | grep -i 'error' | head -1)
+            # pipefail-safe: the same message fallback; its status is never tested.
             [ -n "$mwhy" ] || mwhy=$(cat "$TMP/manifest.out.err" "$TMP/manifest.out" 2>/dev/null | grep -v '^[[:space:]]*$' | head -1)
             say "  okflint manifest check  REJECTED — $(printf '%s' "$mwhy" | cut -c1-140)"
             say "                     the shipped template no longer passes this okflint; advisory only."
@@ -1330,7 +1333,7 @@ PYEOF
   [ "$ec" -eq 0 ] || { say "  Successor        COULD NOT RUN — the successor check exited $ec"; return $EXIT_DEP; }
   n=$(printf '%s\n' "$out" | sed -n 's/^N|//p')
   [ -n "$n" ] || return 0
-  if printf '%s\n' "$out" | grep -q '^[ET]|'; then
+  if grep -q '^[ET]|' <<<"$out"; then   # not printf | grep -q: under pipefail a long $out read as no error (PF-1, PF-2)
     # T: a note (or a successor) the loader refused for its size: whether it is deprecated, or live, is not known, so not a PASS.
     ne=$(printf '%s\n' "$out" | grep -c '^E|'); nt=$(printf '%s\n' "$out" | grep -c '^T|'); sum=""
     [ "$ne" -eq 0 ] || sum="$ne error(s): a deprecated note must name its successor in superseded_by"
@@ -1436,7 +1439,7 @@ PYEOF
   layer_stopped "$ec" && return $EXIT_DEP
   [ "$ec" -eq 0 ] || { say "  Owner            COULD NOT RUN — the owner check exited $ec"; return $EXIT_DEP; }
   [ -n "$(printf '%s\n' "$out" | sed -n 's/^N|//p')" ] || return 0
-  if printf '%s\n' "$out" | grep -q '^[ET]|'; then
+  if grep -q '^[ET]|' <<<"$out"; then   # not printf | grep -q: under pipefail a long $out read as no error (PF-1, PF-2)
     # E: a note with no owner or a bad one. T: a note the loader refused for its size, so its owner is not known: not a missing owner.
     ne=$(printf '%s\n' "$out" | grep -c '^E|'); nt=$(printf '%s\n' "$out" | grep -c '^T|'); sum=""
     [ "$ne" -eq 0 ] || sum="$ne error(s): every note needs an owner"
@@ -2495,7 +2498,9 @@ selftest() {
     out=$("$fn" "$b" 2>&1; true)          # do NOT set JSON=1 here: say() would
     [ -n "$f" ] && rm -f "$b/$f"           # swallow the very output we grep
     [ -f "$TMP/selftest.keep" ] && mv "$TMP/selftest.keep" "$b/$f"
-    if printf '%s' "$out" | grep -q "$marker"; then
+    # A here-string, never `printf | grep -q`: under pipefail that pipe is false when grep exits at its match before printf
+    # has written everything (SIGPIPE, PIPESTATUS "141 0"), so a gate that fired read as NOT FIRED under CPU load (H-3b).
+    if grep -q "$marker" <<<"$out"; then
       say "    FIRED      $name"
     else
       say "    NOT FIRED  $name  (expected to match: $marker)"
@@ -2511,7 +2516,7 @@ selftest() {
   say "okf-check $VERSION — selftest (each gate must catch input that should trip it)"
   say "  baseline must be clean first:"
   local base; base=$(run_conformance "$b" 2>&1)
-  if printf '%s' "$base" | grep -q "PASS"; then say "    CLEAN    baseline bundle passes L1"
+  if grep -q "PASS" <<<"$base"; then say "    CLEAN    baseline bundle passes L1"
   else say "    BASELINE DIRTY — probes below prove nothing"; say "$base"; fails=$((fails+1)); fi
 
   say "  L0 (doctor):"
@@ -2555,8 +2560,8 @@ selftest() {
         printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\n\n[[p/%s]]\n' "$tgt" > "$bun/n.md"
         if [ "$tgt" = README ]; then hit=$(run_profile "$bun" 2>&1); else miss=$(run_profile "$bun" 2>&1); fi
       done
-      printf '%s' "$hit" | grep -q 'resolved by okf-check' && ! printf '%s' "$hit" | grep -q 'L001 x' \
-        && printf '%s' "$miss" | grep -q 'L001 x1' && echo "wikilink_root resolves an existing target only"
+      grep -q 'resolved by okf-check' <<<"$hit" && ! grep -q 'L001 x' <<<"$hit" \
+        && grep -q 'L001 x1' <<<"$miss" && echo "wikilink_root resolves an existing target only"
     }
     probe "wikilink_root resolves an existing target only" "wikilink_root resolves an existing target only" _wikilink_root_probe "" ""
   else
@@ -2639,7 +2644,7 @@ selftest() {
     rc=${o##*rc=}
     if [ -f "$TMP/selftest.base" ]; then mv "$TMP/selftest.base" "$1/okf-base.yaml"; else rm -f "$1/okf-base.yaml"; fi
     # Control leg: only bad.md may be listed. A rule that flags every note also "finds" bad.md.
-    if [ "$(printf '%s\n' "$o" | grep -c 'body is ')" -eq 1 ] && printf '%s\n' "$o" | grep -q 'bad.md: body is 60 characters'; then
+    if [ "$(printf '%s\n' "$o" | grep -c 'body is ')" -eq 1 ] && grep -q 'bad.md: body is 60 characters' <<<"$o"; then
       echo "size probe: bad.md listed, the notes under the limit are not"
     fi
     return $rc
@@ -2688,8 +2693,8 @@ selftest() {
     rm -rf "$d"; mkdir -p "$d/dir.md"
     cp -p "$1/index.md" "$1/good.md" "$d/"; "$PY" -c 'import os, sys; os.symlink("/dev/null", sys.argv[1])' "$d/dev.md"   # no `ln` on a minimal PATH
     named=$(okf_refused_notes "$d" | tr '\0' '\n'); listed=$(okf_md_files "$d" | tr '\0' '\n')
-    printf '%s\n' "$named" | grep -q 'not a regular file.*dev.md' && printf '%s\n' "$named" | grep -q "$OKF_FOLDER_WHY.*dir.md" \
-      && ! printf '%s\n' "$named" | grep -q 'good.md' && ! printf '%s\n' "$listed" | grep -q 'dev.md' && printf '%s\n' "$listed" | grep -q 'good.md' \
+    grep -q 'not a regular file.*dev.md' <<<"$named" && grep -q "$OKF_FOLDER_WHY.*dir.md" <<<"$named" \
+      && ! grep -q 'good.md' <<<"$named" && ! grep -q 'dev.md' <<<"$listed" && grep -q 'good.md' <<<"$listed" \
       && echo "refusal probe: device and folder named and not listed, regular notes listed"
   }
   probe "device and folder refused" "refusal probe: device and folder named and not listed, regular notes listed" _refuse_probe "" ""

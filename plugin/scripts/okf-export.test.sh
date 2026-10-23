@@ -2036,6 +2036,94 @@ for doc in "$HERE/../skills/okf/SKILL.md" "$HERE/../../README.md"; do
     || bad "S10-PO-25 $(basename "$doc")" "the limit sentence (setext heading inside a block quote, ATX heading) is missing"
 done
 
+# S10-PO-33: CommonMark 0.31.2 reads no link in a code span that wraps onto the next line (6.1), in an autolink (6.5) or in
+# inline raw HTML: a tag, a comment (6.6). Each [[b]] there stays as written, and the [[b]] in plain text on the same
+# lines is still rewritten.
+V="$TMP/po33/vault"; note "$V" b.md "# B"
+note "$V" a.md 'Span `start
+[[b]] end` here [[b]].
+
+A <https://x.test/[[b]]> [[b]].
+
+T <span title="[[b]]">t</span> [[b]].
+
+C <!-- [[b]] --> [[b]].'
+rc=$(run "$V" "$TMP/po33/out")
+miss=""
+for want in '[[b]] end` here [b](b.md).' 'A <https://x.test/[[b]]> [b](b.md).' 'T <span title="[[b]]">t</span> [b](b.md).' 'C <!-- [[b]] --> [b](b.md).'; do
+  grep -qFx -- "$want" "$TMP/po33/out/a.md" 2>/dev/null || miss="$miss [want: $want]"
+done
+{ [ "$rc" = 0 ] && [ -z "$miss" ]; } \
+  && ok "S10-PO-33 a [[b]] in a code span over two lines, an autolink, an HTML tag or an HTML comment stays as written; one beside them is rewritten" \
+  || bad "S10-PO-33 code span over lines, autolink, inline HTML" "rc=$rc$miss | got: $(tr '\n' '~' < "$TMP/po33/out/a.md" 2>/dev/null | cut -c1-400)"
+
+# S10-PO-35: a line that looks like a GFM delimiter row starts a table only when its cell count equals the header row's
+# (GFM 0.29, 4.10). `|-|` under a 3-cell row is paragraph text, so the code span from `x runs to the backtick after [[b]]
+# and the link stays as written. A matching delimiter row still makes a table, read row by row: the link there is rewritten.
+V="$TMP/po35/vault"; note "$V" b.md "# B"
+note "$V" a.md 'a `x | y | z
+|-|
+[[b]]`'
+note "$V" t.md 'a `x | y | z
+|-|-|-|
+[[b]]` | q | r'
+rc=$(run "$V" "$TMP/po35/out")
+{ [ "$rc" = 0 ] && grep -qFx -- '[[b]]`' "$TMP/po35/out/a.md" && grep -qFx -- '[b](b.md)` | q | r' "$TMP/po35/out/t.md"; } \
+  && ok "S10-PO-35 a delimiter-like row whose cell count differs from the header is no table: the code span over it keeps [[b]]; a matching one is a table" \
+  || bad "S10-PO-35 delimiter cell count" "rc=$rc a: $(tail -1 "$TMP/po35/out/a.md" 2>/dev/null) | t: $(tail -1 "$TMP/po35/out/t.md" 2>/dev/null)"
+
+# S10-PO-34: a paragraph is read as one text, so one paragraph of about 1 MB must still cost linear time: unclosed openers
+# of every kind (backticks, a comment, a processing instruction, CDATA, a declaration, a tag, an autolink), backtick runs
+# of 1 to 3 (the densest shape: it is timed at 3 MB and 24 MB, so its base time, about 0.6 s here, sits well above the
+# 0.25 s floor and a slowdown cannot hide under it), tags with no '>', closed items, and one code span over 60 000 lines.
+# The bound is a RATIO, as 26g: 8 times the size costs at most 24 times as much plus 0.25 s (best of 3), with a quadratic
+# control that must be caught. The 60 000-line span must also cover every line in it, and only those.
+"$REALPY" - "$EXPORT" >"$TMP/out.txt" 2>&1 <<'PY'
+import importlib.machinery, importlib.util, sys, time
+loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
+mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
+loader.exec_module(mod)
+def read(lines):
+    joins = set()
+    rows = list(mod.body_lines(lines, joins=joins))
+    return mod.raw_ranges(lines, rows, joins)
+def fill(unit):
+    return lambda n: [unit] * (n // len(unit))
+shapes = {"unclosed openers": fill("a `b ``c <!-- <? <![CDATA[ <!X <a x=\"y <http://q [[b]]\n"),
+          "backtick runs 1-3": fill("".join("`" * (k % 3 + 1) + " " for k in range(60)) + "\n"),
+          "tags with no >": fill("<a b c d e f g h i j k l m n o p q r s t u v w x y z\n"),
+          "closed items": fill("`x` <b>y</b> <!-- z --> <http://a.b> [[b]]\n"),
+          "one span": lambda n: ["`open\n"] + ["text [[b]] more\n"] * (n // 16) + ["close`\n"]}
+def best(fn, lines):
+    runs = []
+    for _ in range(3):
+        t = time.perf_counter(); fn(lines); runs.append(time.perf_counter() - t)
+    return min(runs)
+def too_slow(fn, make, small, big):
+    t1, t8 = best(fn, make(small)), best(fn, make(big))
+    return t8 > 24 * t1 + 0.25, t1, t8
+def quadratic(lines):
+    for i in range(len(lines)): lines[:i].count("x")
+caught, c1, c8 = too_slow(quadratic, lambda n: ["l"] * n, 3000, 24000)
+print("control quadratic  %.3f s -> %.3f s  %s" % (c1, c8, "caught" if caught else "NOT CAUGHT"))
+bad = [] if caught else ["the quadratic control was not caught"]
+base = {"backtick runs 1-3": 3 * 1024 * 1024}   # bytes; every other shape starts at 128 KB
+for name, make in shapes.items():
+    small = base.get(name, 128 * 1024)
+    flag, t1, t8 = too_slow(read, make, small, 8 * small)
+    print("%-18s %.3f s -> %.3f s" % (name, t1, t8))
+    if flag:
+        bad.append("%s %.2f s -> %.2f s" % (name, t1, t8))
+lines = shapes["one span"](1024 * 1024)
+got = read(lines)
+if sorted(got) != list(range(len(lines))):
+    bad.append("one span: %d of %d lines covered" % (len(got), len(lines)))
+sys.exit(1 if bad else 0)
+PY
+rc=$?
+[ "$rc" = 0 ] && ok "S10-PO-34 a 1 MB paragraph (unclosed openers, backtick runs of 1-3 at 24 MB, open tags, closed items, one span over 60 000 lines) costs linear time: 8 times the size at most 24 times as much plus 0.25 s (a quadratic control is caught)" \
+  || bad "S10-PO-34 1 MB paragraph" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt")"
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1
