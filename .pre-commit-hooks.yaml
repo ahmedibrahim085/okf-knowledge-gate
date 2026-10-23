@@ -1,13 +1,16 @@
-# pre-commit hook for okf-check. In your .pre-commit-config.yaml:
+# pre-commit hooks for okf-check and okf-verify. In your .pre-commit-config.yaml:
 #
 #   repos:
 #     - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-#       rev: v0.9.47
+#       rev: v0.9.48
 #       hooks:
 #         - id: okf-check
 #           args: [path/to/bundle, --strict-trust]
+#         - id: okf-verify
+#           args: [path/to/bundle, --repo, .]
 #
-# The hook passes no filenames: okf-check checks the whole bundle named in args (default: the repo root).
+# The hooks pass no filenames: each checks the whole bundle named in args (default: the repo root).
+# okf-verify looks the commits, paths and line citations its notes cite up in the folders named by --repo.
 # `language: script` is the name older and current pre-commit releases accept (newer ones call it unsupported_script).
 - id: okf-check
   name: okf-check (OKF bundle)
@@ -15,5 +18,13 @@
   entry: plugin/scripts/okf-check
   language: script
   args: ['.']
+  files: '(\.md|okf-base\.ya?ml|\.okfignore)$'
+  pass_filenames: false
+- id: okf-verify
+  name: okf-verify (OKF bundle claims)
+  description: Check that the commits, file paths and line citations an OKF bundle cites still exist.
+  entry: plugin/scripts/okf-verify
+  language: script
+  args: ['.', '--repo', '.']
   files: '(\.md|okf-base\.ya?ml|\.okfignore)$'
   pass_filenames: false

@@ -40,3 +40,35 @@ hygiene:
   split_candidates: warn  # S202 fires on ~90% of prose-heavy bundles — advisory only
   reserved_files: error
   unknown_fields: off     # OKF explicitly allows producer-defined keys
+
+# okf-check's own options. Every option is off until you set it. To turn one on, remove the "# " in front of its
+# line (and of the `okf_check:` line above it). A key okf-check does not know, or a value of the wrong shape, stops
+# the run (exit 2) and names the key. okflint ignores this block. Values below are examples: set your own.
+#
+# okf_check:
+#   edit_hook: true             # check each note Claude writes or edits in this bundle (L1 and Trust, one line per finding)
+#   graph: true                 # run the optional okf-memory layer: orphan notes and broken concept links (advisory)
+#   max_note_bytes: 5242880     # a note above this many bytes is refused and the run exits 1 (default 5242880)
+#   wikilink_root: ..           # the folder wikilinks like [[projects/p/README]] start from, relative to the bundle
+#   deprecated_requires: superseded_by   # every `status: deprecated` note names its replacement in `superseded_by`
+#   require_owner: true         # every note has an owner (its own `owner` key, else the folder defaults in `owners`)
+#   owners:                     # folder defaults for the owner, as globs; the last matching pattern wins
+#     "decisions/**": team:architecture
+#   size:                       # a body-size budget per note, in characters
+#     max_body_chars: 40000     # above this: a house-rule error (exit 1)
+#     warn_body_chars: 38000    # above this: a warning (must be below max_body_chars)
+#     exclude: ["generated/**"] # notes a script writes, left out of this rule
+#   facts:                      # a fact stated in many notes; a note with another value is a FACT-CONFLICT (exit 1)
+#     launch.countries:
+#       value: "A and B"
+#       patterns: ["launch countries?:? *(.+)"]   # group 1 is the stated value
+#       source: decisions/0007.md                 # the note where the value is decided
+#   duplicates:                 # for `okf-check <bundle> --duplicates`
+#     threshold: 1.0            # description word overlap that counts as a duplicate (1.0 = identical word sets)
+#     body_threshold: 0.6       # body similarity for --duplicates-body
+#     time_limit: 60            # seconds before the report stops and says CUT SHORT
+#   verify:                     # read by okf-verify
+#     repos:                    # repositories that the cited commit ids are looked up in
+#       - path: ..              # relative to the bundle, absolute, or ~/...
+#     generated: ["registers/**"]   # notes a script regenerates: a line citation into one needs an anchor
+#     remote: true              # ask the GitHub or GitLab API for a commit no searched clone holds

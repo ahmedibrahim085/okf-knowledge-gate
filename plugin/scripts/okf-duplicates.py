@@ -22,7 +22,7 @@ import unicodedata
 
 sys.dont_write_bytecode = True   # a direct run must not leave scripts/__pycache__ in the installed plugin (plugin.test.sh Z-2)
 sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
-from okf_notes import TooLarge, meta, read_note, refusal, resolve, shown  # noqa: E402
+from okf_notes import TooLarge, meta, read_manifest, read_note, refusal, resolve, shown  # noqa: E402
 from okf_validate import load_frontmatter  # noqa: E402
 
 bundle, as_json = sys.argv[1], sys.argv[3] == "1"
@@ -34,7 +34,7 @@ schema = json.load(open(sys.argv[2], encoding="utf-8"))["keys"]["duplicates"]["k
 try:
     # read_note: a bounded read of a regular file (okf-check has refused a device or pipe named okf-base.yaml up front;
     # this is the second wall, for one that appeared after that check). NoteRefused is an OSError.
-    cfg = load_frontmatter(read_note(root / "okf-base.yaml", "utf-8", "strict")) or {}
+    cfg = load_frontmatter(read_manifest(root / "okf-base.yaml", "utf-8", "strict")) or {}
 except OSError:
     cfg = {}
 opt = ((cfg.get("okf_check") or {}).get("duplicates") or {}) if isinstance(cfg, dict) else {}

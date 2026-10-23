@@ -1,14 +1,14 @@
 ---
 name: okf
 description: >-
-  Checks and gates an Open Knowledge Format (OKF) bundle with one deterministic command (okf-check):
-  spec conformance, house rules, staleness, and whether human "verified" claims can be trusted. A second
-  command (okf-verify) checks that the commit SHAs and file paths a bundle cites still exist. Use when asked
-  to validate, lint or check an OKF bundle, before committing changes to one, or when a knowledge store
-  needs a conformance, house-rule, staleness, trust or truth verdict. Also use when a folder of markdown notes
-  with YAML frontmatter (lessons, decisions, a knowledge base) must be checked.
+  Overview of the OKF Knowledge Gate, three tools over Open Knowledge Format (OKF) bundles, folders of markdown notes
+  with YAML frontmatter. okf-check gates a bundle (spec conformance, house rules, staleness, trust in "verified by a
+  human" claims), finds duplicate notes, lists where a fact is stated and proves no content was lost since a git ref.
+  okf-verify checks that cited commit SHAs, file paths and line citations still exist. okf-export turns an
+  Obsidian-style [[wikilink]] vault into a conformant bundle. Use to choose which OKF tool or /okf: skill fits, or to
+  read an exit code; each job has its own skill.
 user-invocable: true
-argument-hint: "<bundle-dir> [--fail-stale | --strict-trust | --json | --fail-on-change | --duplicates | --duplicates-body] | --doctor | --selftest | --init-house-rules <bundle-dir>"
+argument-hint: "<bundle-dir> [--fail-stale | --strict-trust | --json | --fail-on-change | --file <note> | --duplicates | --duplicates-body | --facts [NAME] | --conserve <ref>] | --doctor | --selftest | --install-deps | --init-house-rules <bundle-dir> | --init-ignore <bundle-dir>"
 allowed-tools: Bash
 ---
 
@@ -22,6 +22,18 @@ remember, so this is a single entry point.
 ```
 
 The bundle path is **required** for a check (`--doctor` and `--selftest` need none). With none the command exits 64 with a usage message.
+
+## Entry points
+
+Each job has its own skill; use the one that fits and come back here for the exit codes.
+
+| Skill | Job |
+|---|---|
+| `/okf:check` | Check a bundle; duplicates, facts, one note, content conservation |
+| `/okf:verify` | Do the cited SHAs, paths and line citations still exist (okf-verify) |
+| `/okf:export` | Turn a wikilinked vault into a bundle (okf-export) |
+| `/okf:setup` | Doctor, install plan, starter house rules and `.okfignore` |
+| `/okf:explain` | Explain one finding and the fix for the note |
 
 ## Read the exit code, then act
 
@@ -161,7 +173,7 @@ empty, inside the vault, or cannot be written). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.47`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.48`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

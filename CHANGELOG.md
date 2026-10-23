@@ -9,6 +9,21 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.48] - 2026-10-23
+
+OKF Knowledge Gate 0.9.48 makes every feature easy to find: a skill per job, complete help on the three tools, and the same option names everywhere.
+
+### Added
+- **Skills per job:** `/okf:check`, `/okf:verify`, `/okf:export`, `/okf:setup` (doctor, dependencies, starter files) and `/okf:explain` (what a finding means and how to fix it). The `okf` skill is the overview: which tool fits and how to read an exit code. Each skill may run only its own tool.
+- **Complete `--help`** on `okf-check`, `okf-verify` and `okf-export`: every option, the exit codes, the `OKF_*` variables each tool reads, and an example. A test fails when an option is added without a help line.
+- **The GitHub Action can run `okf-verify`** (`verify`, `repo`, `verify-args` inputs) and reports (`report-args`: duplicates, facts, conserve), each after the gate and without changing its result. A pre-commit hook for `okf-verify`.
+- README: a "Which tool do I use?" table, sub-headings in Use, and every user-facing environment variable; the starter `okf-base.yaml` lists every `okf_check` option, commented.
+
+### Changed
+- **The Action's `args` input accepts only options that keep the full gate run** (`--strict-trust`, `--fail-stale`, `--json`, `--fail-on-change`). A report mode there (`--duplicates`, `--facts`, `--conserve`, `--file`) used to replace the gate and pass; it now stops with exit 64. Put reports in `report-args`.
+- `--strict` and `--strict-trust` mean the same in `okf-check` and `okf-verify`.
+- The doc-reuse and lesson reminders name no tool of the author's own setup.
+
 ## [0.9.47] - 2026-10-23
 
 OKF Knowledge Gate 0.9.47 makes `okf-export` links to accented headings work on GitHub, reads tabs in block quotes as CommonMark does, and closes the gaps found by re-running every unverified claim in the register.
@@ -887,7 +902,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.47...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.48...HEAD
+[0.9.48]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.47...v0.9.48
 [0.9.47]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.46...v0.9.47
 [0.9.46]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.45...v0.9.46
 [0.9.45]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.44...v0.9.45

@@ -21,6 +21,37 @@ inputs:
       installed on the runner or the bundle has no okf-base.yaml. Without it a skipped layer is only a warning.
     required: false
     default: 'false'
+  args:
+    description: >-
+      Extra options for okf-check, separated by spaces. Only options that keep the full gate run are accepted:
+      --strict-trust, --fail-stale, --json and --fail-on-change. Every other flag is refused (exit 64), because a mode
+      such as --duplicates or --file replaces the gate run with a report that exits 0. Use report-args for reports.
+    required: false
+    default: ''
+  report-args:
+    description: >-
+      Report modes to run after the gate, separated by spaces: --duplicates, --duplicates-body, --facts [NAME] and
+      --conserve REF. The report is printed in the log and never changes the job's exit code (a failed report run
+      gives a ::warning::).
+    required: false
+    default: ''
+  verify:
+    description: >-
+      'true' also runs okf-verify on the bundle after okf-check, and checks that the commits, paths and line citations
+      its notes cite exist. Citations to commits need the history: check out with 'fetch-depth: 0'. The job takes
+      okf-check's exit code, or okf-verify's when okf-check passed.
+    required: false
+    default: 'false'
+  repo:
+    description: Folder of the repository okf-verify looks cited commits up in (its --repo). Used only with verify.
+    required: false
+    default: '.'
+  verify-args:
+    description: >-
+      Extra arguments for okf-verify, separated by spaces (for example '--strict --since origin/main'). Used only with
+      verify. --help, --version and --check-config are refused.
+    required: false
+    default: ''
 runs:
   using: composite
   steps:
@@ -32,10 +63,17 @@ runs:
         INPUT_STRICT_TRUST: ${{ inputs.strict-trust }}
         INPUT_FAIL_STALE: ${{ inputs.fail-stale }}
         INPUT_REQUIRE_HOUSE_RULES: ${{ inputs.require-house-rules }}
+        INPUT_ARGS: ${{ inputs.args }}
+        INPUT_REPORT_ARGS: ${{ inputs.report-args }}
+        INPUT_VERIFY: ${{ inputs.verify }}
+        INPUT_REPO: ${{ inputs.repo }}
+        INPUT_VERIFY_ARGS: ${{ inputs.verify-args }}
         GITHUB_ACTION_PATH: ${{ github.action_path }}
       run: |
         INPUT_REQUIRE_HOUSE_RULES=${INPUT_REQUIRE_HOUSE_RULES:-false}
-        for pair in "strict-trust=$INPUT_STRICT_TRUST" "fail-stale=$INPUT_FAIL_STALE" "require-house-rules=$INPUT_REQUIRE_HOUSE_RULES"; do
+        INPUT_VERIFY=${INPUT_VERIFY:-false}
+        INPUT_REPO=${INPUT_REPO:-.}
+        for pair in "strict-trust=$INPUT_STRICT_TRUST" "fail-stale=$INPUT_FAIL_STALE" "require-house-rules=$INPUT_REQUIRE_HOUSE_RULES" "verify=$INPUT_VERIFY"; do
           case "${pair#*=}" in
             true|false) ;;
             # The value is not echoed back: it is untrusted text, and a newline in it would start a second workflow command.
@@ -50,9 +88,47 @@ runs:
         case "$INPUT_BUNDLE" in
           -*) echo "::error::input 'bundle' must be a folder path, not a flag"; exit 64 ;;
         esac
+        # args and verify-args: words split on spaces into an array (read -a does not expand globs), passed to the tool as
+        # separate arguments, never through a shell. A flag that exits 0 without checking the bundle is refused, for the
+        # reason the bundle value is guarded above. Values are not echoed back (untrusted text in a workflow command).
+        case "$INPUT_REPO$INPUT_ARGS$INPUT_REPORT_ARGS$INPUT_VERIFY_ARGS" in
+          *$'\n'*) echo "::error::inputs repo, args, report-args and verify-args must be one line"; exit 64 ;;
+        esac
+        case "$INPUT_REPO" in
+          -*) echo "::error::input 'repo' must be a folder path, not a flag"; exit 64 ;;
+        esac
+        read -r -a extra <<< "$INPUT_ARGS"
+        read -r -a vextra <<< "$INPUT_VERIFY_ARGS"
+        read -r -a rextra <<< "$INPUT_REPORT_ARGS"
+        # args is an allow-list: every mode flag of okf-check (--doctor, --duplicates, --facts, --conserve, --file ...)
+        # replaces the gate run with another output that exits 0, and would switch the gate off in silence.
+        for a in ${extra[@]+"${extra[@]}"}; do
+          case "$a" in
+            --strict-trust|--fail-stale|--json|--fail-on-change) ;;
+            *) echo "::error::input 'args' accepts only --strict-trust, --fail-stale, --json and --fail-on-change (reports go in report-args)"; exit 64 ;;
+          esac
+        done
+        # report-args: report modes only, each run after the gate; a value (a fact name, a ref) must not look like a flag.
+        r_mode=0
+        for a in ${rextra[@]+"${rextra[@]}"}; do
+          case "$a" in
+            --duplicates|--duplicates-body|--facts|--conserve) r_mode=1 ;;
+            -*) echo "::error::input 'report-args' accepts only --duplicates, --duplicates-body, --facts and --conserve with their values"; exit 64 ;;
+          esac
+        done
+        if [ "${#rextra[@]}" -gt 0 ] && [ "$r_mode" -eq 0 ]; then
+          echo "::error::input 'report-args' needs one of --duplicates, --duplicates-body, --facts, --conserve"; exit 64
+        fi
+        for a in ${vextra[@]+"${vextra[@]}"}; do
+          case "$a" in
+            --help|-h|--version|--check-config)
+              echo "::error::input 'verify-args' holds a flag that ends the run without verifying the bundle"; exit 64 ;;
+          esac
+        done
         args=()
         if [ "$INPUT_STRICT_TRUST" = true ]; then args+=(--strict-trust); fi
         if [ "$INPUT_FAIL_STALE" = true ]; then args+=(--fail-stale); fi
+        args+=(${extra[@]+"${extra[@]}"})
         # okf-check's own exit code is the job's exit code: 0 pass, 1 L1/trust, 2 could not run, 3 house rules, 4 stale.
         # The log is kept so the job can say, with a ::warning::, when exit 0 means less than "everything was checked".
         log=$(mktemp)
@@ -75,4 +151,30 @@ runs:
           rc=3
         fi
         rm -f "$log"
+        # verify: okf-verify always runs when asked, so one failing tool does not hide the other. The job takes okf-check's
+        # exit code, or okf-verify's when okf-check passed.
+        # report-args: each report mode runs on its own, after the gate. Their exit code never decides the job (a bad ref in
+        # --conserve gets a warning).
+        run_report() {
+          "$GITHUB_ACTION_PATH/plugin/scripts/okf-check" "$INPUT_BUNDLE" "$@"
+          rrc=$?
+          if [ "$rrc" -ne 0 ]; then
+            echo "::warning::a report run (report-args) exited $rrc; it does not change the result of the job."
+          fi
+        }
+        grp=()
+        for a in ${rextra[@]+"${rextra[@]}"}; do
+          case "$a" in
+            --duplicates|--duplicates-body|--facts|--conserve)
+              if [ "${#grp[@]}" -gt 0 ]; then run_report "${grp[@]}"; fi
+              grp=("$a") ;;
+            *) grp+=("$a") ;;
+          esac
+        done
+        if [ "${#grp[@]}" -gt 0 ]; then run_report "${grp[@]}"; fi
+        if [ "$INPUT_VERIFY" = true ]; then
+          "$GITHUB_ACTION_PATH/plugin/scripts/okf-verify" "$INPUT_BUNDLE" --repo "$INPUT_REPO" ${vextra[@]+"${vextra[@]}"}
+          vrc=$?
+          if [ "$rc" -eq 0 ]; then rc=$vrc; fi
+        fi
         exit "$rc"

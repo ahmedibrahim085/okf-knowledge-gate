@@ -200,7 +200,8 @@ okfignore_mirror() {
     case "${rel##*/}" in
       *.md|*.yaml|*.yml|*.json)
         # no mkdir here: the copy helper makes the folder of each file it copies (one process, not one per folder change)
-        kind=C; case "${rel##*/}" in *.md|okf-base.yaml) kind=N;; esac   # a note and the manifest must fit the cap; other config is linked when over it
+        kind=C; case "${rel##*/}" in *.md) kind=N;; esac   # a note must fit the cap; other config is linked when over it
+        [ "$rel" = okf-base.yaml ] && kind=M   # the manifest must fit its own limit (okf_guard.manifest_cap), not the note cap
         printf '%s\t%s\0' "$kind" "$rel" >&7   # fd 7 is $lst, opened once for the whole loop
         [ "$isnote" -eq 1 ] && kept=$((kept+1));;
       *) if [ -n "$dir" ] && [ "$dir" != "$mdir" ]; then mkdir -p "$dest/$dir" || return 1; mdir=$dir; fi

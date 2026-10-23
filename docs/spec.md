@@ -321,6 +321,9 @@ and the brand-new machine this tool targets does not have it.
 | LT-24g | findings in the checked notes plus a crash | exit 3, crashed notes still named | ✅ |
 | I-1a/b | `okf-verify` on a bundle with `.okfignore` | an ignored note's claims are not verified | ✅ |
 | LT-10 | okflint crashes on a note (non-UTF-8) | L2 prints a `reason:` line with its last error line; skipped, stated, when okflint is absent | ✅ |
+| S54-MC-H1/H2/H3 | `okf_check.max_note_bytes` set below the size of `okf-base.yaml` (the starter is about 4 KB) | the manifest is read under its own limit (1 MiB, `manifest_max_bytes`): no `Refused notes` line, no `Config COULD NOT RUN`, its facts and owner rules fire; `--duplicates`, `--facts`, `okf-verify` and `--check-config` read it | ✅ |
+| S54-MC-N1 | a NOTE above `max_note_bytes` | still refused (exit 1); the manifest is not named | ✅ |
+| S54-MC-E1/E2/E3 | a manifest of exactly 1048576 bytes, and one of 1048578 | the first is read; the second is refused with `larger than 1048576 bytes (the okf-base.yaml size limit)`, not `max_note_bytes` (full run exit 1; `--facts` exit 2) | ✅ |
 
 ### L3 derived — has what the concept describes moved since? (0.5.0)
 

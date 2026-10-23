@@ -714,8 +714,8 @@ r10_help=$("$CHECK" --help 2>&1); r10_rc=$?
   && ok "R-10 --help documents --fail-on-change" || bad "R-10 --help documents --fail-on-change" "absent"
 [ "$r10_rc" -eq 0 ] && grep -qE '^#?\s*6\s' <<<"$r10_help" \
   && ok "R-10 --help documents exit code 6" || bad "R-10 --help documents exit 6" "EXIT CODES block stops at 5"
-# R-10b: --help is the script's whole header comment, and its EXIT CODES block lists every code the README table names and
-# every `exit N` / EXIT_*=N the script holds. A fixed window (lines 2-40) left out exit 64 and the usage lines.
+# R-10b: --help is the okf_help text, and its Exit codes block lists every code the README table names and
+# every `exit N` / EXIT_*=N the script holds. (Until 0.9.47 it printed the script's header comment; a fixed window of it left out exit 64.)
 # The help goes to a file and grep reads the file: no `printf | grep -q` under pipefail. Proven mechanism: bash's printf builtin
 # writes one write() per line, `grep -q` exits at its first match, a writer still running dies of SIGPIPE and pipefail makes
 # the pipe's status 141 although the pattern matched; with strace delaying one write by 20 ms the old form failed 6 of 6 runs.
@@ -723,7 +723,7 @@ r10_help=$("$CHECK" --help 2>&1); r10_rc=$?
 "$CHECK" --help > "$TMP/help.txt" 2>&1; miss=""
 for c in $( { sed -n 's/^| \([0-9][0-9]*\) |.*/\1/p' "$HERE/../../README.md"
               grep -o -E 'exit [0-9]+|EXIT_[A-Z]+=[0-9]+' "$CHECK" | sed 's/.*[ =]//'; } | sort -un); do
-  grep -qE "^# +$c " "$TMP/help.txt" || miss="$miss $c"
+  grep -qE "^ +$c +[^ ]" "$TMP/help.txt" || miss="$miss $c"
 done
 grep -q -- '--conserve <ref>' "$TMP/help.txt" || miss="$miss usage-lines"
 [ -z "$miss" ] && ok "R-10b --help lists every exit code (README table and script) and the whole usage block" \
@@ -3744,6 +3744,52 @@ B="$TMP/cp-h1"; st_bundle "$B"; "$CHECK" "$B" >"$TMP/cp.txt" 2>&1; rc=$?
   && ok "S40-CP-H1 a healthy bundle: Trust PASS as before, no L3 derived line, no too-large line (exit 0)" \
   || bad "S40-CP-H1 healthy" "rc=$rc $(grep -E 'Trust|L3 derived|too large' "$TMP/cp.txt" | tr '\n' '|')"
 # S40-CP end
+
+# S54-MC: okf-base.yaml is read under its own fixed limit (1 MiB), not under okf_check.max_note_bytes. The manifest is not a note:
+# the starter written by --init-house-rules is about 4 KB, and a person who lowers max_note_bytes below the size of their own
+# manifest lost the whole config (Config COULD NOT RUN, L2 skipped) while the notes were still within the cap.
+MC="$TMP/mc"; mkdir -p "$MC"
+mc_bundle() { # <dir> <max_note_bytes>
+  mkdir -p "$1"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$1/index.md"; printf -- '# Log\n\n## 2026-01-01\n* created\n' > "$1/log.md"
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstale_after: "2099-01-01"\n---\nbody port 8003\n' > "$1/n.md"
+  sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$1/okf-base.yaml"
+  printf 'okf_check:\n  max_note_bytes: %s\n  require_owner: true\n  owners: {"**": team:docs}\n  size: {max_body_chars: 500}\n  facts:\n    port: {value: "8001", patterns: ["port ([0-9]+)"]}\n' "$2" >> "$1/okf-base.yaml"
+}
+mc_bundle "$MC/small" 1024
+msz=$(wc -c < "$MC/small/okf-base.yaml" | tr -d ' ')
+[ "$msz" -gt 1024 ] && ok "S54-MC-H0 the fixture manifest ($msz bytes) is larger than the max_note_bytes it sets (1024)" || bad "S54-MC-H0 fixture" "manifest is $msz bytes"
+"$CHECK" "$MC/small" >"$MC/full.txt" 2>&1; rc=$?
+{ ! grep -q 'Refused notes' "$MC/full.txt" && ! grep -q 'COULD NOT RUN' "$MC/full.txt" && grep -q 'FACT-CONFLICT' "$MC/full.txt" && grep -q 'Owner' "$MC/full.txt"; } \
+  && ok "S54-MC-H1 a manifest above max_note_bytes is still read: no Refused notes line, no COULD NOT RUN, and its facts and owner rules fire (exit $rc)" \
+  || bad "S54-MC-H1 manifest above the note cap" "rc=$rc $(grep -E 'Refused|COULD NOT|okf-base|FACT|Owner' "$MC/full.txt" | head -4 | tr '\n' '|' | cut -c1-300)"
+for mode in --duplicates --facts; do
+  "$CHECK" "$MC/small" $mode >"$MC/m.txt" 2>&1; rc=$?
+  { ! grep -q 'COULD NOT RUN\|cannot read' "$MC/m.txt"; } && ok "S54-MC-H2 okf-check $mode reads the manifest above max_note_bytes (exit $rc)" || bad "S54-MC-H2 $mode" "rc=$rc $(head -2 "$MC/m.txt" | tr '\n' '|' | cut -c1-250)"
+done
+"$HERE/okf-verify" "$MC/small" --repo "$MC/small" >"$MC/v.txt" 2>&1; rc=$?
+"$HERE/okf-verify" "$MC/small" --check-config >"$MC/vc.txt" 2>&1; rcc=$?
+{ [ "$rc" -eq 0 ] && [ "$rcc" -eq 0 ] && ! grep -q 'cannot read' "$MC/v.txt" "$MC/vc.txt"; } && ok "S54-MC-H3 okf-verify and okf-verify --check-config read the manifest above max_note_bytes (exit 0, 0)" || bad "S54-MC-H3 okf-verify" "rc=$rc check-config=$rcc $(head -1 "$MC/v.txt" | cut -c1-200)"
+# the note cap still caps notes: a note above 1024 bytes is refused as before
+mc_bundle "$MC/notecap" 1024; head -c 3000 /dev/zero | tr '\0' x > "$MC/notecap/big.md"
+"$CHECK" "$MC/notecap" >"$MC/nc.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'big.md — larger than 1024 bytes (okf_check.max_note_bytes)' "$MC/nc.txt" && ! grep -q 'okf-base.yaml — larger' "$MC/nc.txt"; } && ok "S54-MC-N1 a NOTE above max_note_bytes is still refused (exit 1) and the manifest is not named" || bad "S54-MC-N1 note cap" "rc=$rc $(grep -E 'larger' "$MC/nc.txt" | head -2 | tr '\n' '|')"
+# the manifest limit: 1 MiB exactly is read, one byte more is refused with its own words
+mc_bundle "$MC/edge" 1024
+"$REALPY" - "$MC/edge/okf-base.yaml" 1048576 <<'PY'
+import sys
+p, want = sys.argv[1], int(sys.argv[2]); t = open(p).read()
+pad = want - len(t.encode())
+t += "#" * (pad - 1) + "\n" if pad > 1 else ""
+open(p, "w").write(t)
+PY
+[ "$(wc -c < "$MC/edge/okf-base.yaml" | tr -d ' ')" = 1048576 ] || bad "S54-MC-E0 fixture size" "$(wc -c < "$MC/edge/okf-base.yaml")"
+"$CHECK" "$MC/edge" --facts >"$MC/e1.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 0 ] && ! grep -q 'cannot read\|COULD NOT RUN' "$MC/e1.txt"; } && ok "S54-MC-E1 a manifest of exactly 1048576 bytes is read" || bad "S54-MC-E1 manifest at the limit" "rc=$rc $(head -2 "$MC/e1.txt" | tr '\n' '|' | cut -c1-250)"
+printf '#\n' >> "$MC/edge/okf-base.yaml"
+"$CHECK" "$MC/edge" --facts >"$MC/e2.txt" 2>&1; rc=$?
+{ [ "$rc" -ne 0 ] && grep -q 'larger than 1048576 bytes' "$MC/e2.txt" && ! grep -q 'max_note_bytes' "$MC/e2.txt"; } && ok "S54-MC-E2 a manifest of 1048578 bytes is refused with its own limit named, not max_note_bytes (exit $rc)" || bad "S54-MC-E2 manifest above the limit" "rc=$rc $(head -2 "$MC/e2.txt" | tr '\n' '|' | cut -c1-250)"
+"$CHECK" "$MC/edge" >"$MC/e3.txt" 2>&1; rc=$?
+{ [ "$rc" -eq 1 ] && grep -q 'okf-base.yaml — larger than 1048576 bytes' "$MC/e3.txt"; } && ok "S54-MC-E3 the full run names a manifest above 1 MiB as a refused file (exit 1) with the limit" || bad "S54-MC-E3 full run" "rc=$rc $(grep -E 'larger|Refused' "$MC/e3.txt" | head -2 | tr '\n' '|')"
 
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

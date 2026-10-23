@@ -5,12 +5,9 @@
 #   L1  conformance  is this valid OKF?         (vendored okf_validate.py, spec layer)
 #   L2  profile      is this valid OUR OKF?     (okflint + okf-base.yaml, house layer)
 #   L3  staleness    is it still true?          (stale_after vs today)
-#   --selftest       re-prove every gate still FIRES on input that should trip it
-#   --preflight      SessionStart check: python3 and okflint present at the supported version?
-#                    Silent when fine; one line naming the problem otherwise. Never fails.
-#   --install-deps   print the plan for the supported okflint (changes nothing);
-#                    add --yes to run it, --latest for the newest release instead of the pin.
-#                    OKF_AUTO_INSTALL=1 lets --preflight run the plan itself (off by default).
+#
+#   The modes and flags (--selftest, --preflight, --install-deps, --duplicates, --conserve ...) are listed once, in okf_help below,
+#   which is what --help prints.
 #
 # WHY ONE ENTRY POINT
 # Three tools that must be remembered get remembered zero times. The measured
@@ -42,24 +39,11 @@
 # not run" — so CI would retry or reinstall instead of failing the bundle. A
 # verdict that was REACHED always outranks a gate that could not reach one.
 #
-# Usage:
-#   okf-check <bundle>            okf-check <bundle> --json
-#   okf-check --doctor            okf-check <bundle> --selftest
-#   okf-check <bundle> --fail-stale        make L3 staleness blocking (exit 4)
-#   okf-check --init-house-rules <bundle>  write a starter <bundle>/okf-base.yaml (never overwrites)
-#   okf-check <bundle> --strict-trust      make unauthenticated human verification (C4) and near-miss
-#                                          actors (Human:dana) blocking (exit 1). Severity only: the
-#                                          findings are the same with or without the flag.
-#   okf-check <bundle> --fail-on-change    make a mid-scan change blocking (exit 6)
-#   okf-check <bundle> --duplicates        list candidate duplicate notes (advisory: exit 0)
-#   okf-check <bundle> --duplicates-body   the same, plus notes whose bodies are similar (MinHash, time-boxed)
-#   okf-check <bundle> --facts [NAME]      list every statement of the okf_check.facts (or of NAME): a dry run, exit 0
-#   okf-check <bundle> --conserve <ref>    every line removed since <ref> must reappear: MOVED, CHANGED, LOST (advisory;
-#                                          --fail-lost exits 1 on a LOST line; --deleted FILE declares intended deletions)
+# Usage: see okf_help below (the one list of modes and flags; plugin.test.sh S51 checks it against the argument loop).
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.47"
+VERSION="0.9.48"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -141,6 +125,87 @@ py_with_vendor() {  # run $PY with the vendored PyYAML visible to IT ONLY
 PINS="${OKF_PINNED_VERSIONS:-$ROOT/config/pinned-versions.txt}"
 TEMPLATE="$ROOT/config/okf-base.yaml.template"
 
+# What `okf-check --help` prints. It is the user's page: every mode and flag, the exit codes, the OKF_* variables the tool reads, one
+# example. The maintainer notes stay in the comment at the top of this file. Not listed on purpose: --fingerprint, the seam the tests use
+# to watch the change detection (plugin.test.sh S51 holds the list of what is kept out and why).
+okf_help() {
+  cat <<'HELP'
+okf-check - check an OKF bundle: a folder of markdown notes with YAML frontmatter.
+
+Usage:
+  okf-check <bundle> [--json] [--fail-stale] [--strict-trust] [--fail-on-change]
+  okf-check <bundle> --file <note>
+  okf-check <bundle> --duplicates | --duplicates-body
+  okf-check <bundle> --facts [NAME]
+  okf-check <bundle> --conserve <ref> [--fail-lost] [--deleted FILE]
+  okf-check --init-house-rules <bundle>   |   --init-ignore <bundle>
+  okf-check --doctor | --selftest | --preflight | --install-deps [--yes] [--latest]
+
+Without a mode flag, okf-check runs every layer on <bundle>:
+  L0 doctor (runtimes, dependencies, version pins), L1 conformance (valid OKF), L2 house profile
+  (okflint + okf-base.yaml; skipped, with the reason, when either is missing), L3 staleness
+  (stale_after against today), and Trust (is a "verified by a human" claim backed up).
+
+Checks of a bundle:
+  --json              print one JSON document instead of the text report
+  --fail-stale        a stale note blocks (exit 4); without it staleness is a warning
+  --strict-trust      an unproven human verification and a near-miss actor (Human:dana) block (exit 1);
+                      alias: --strict. Severity only: the findings are the same without it
+  --fail-on-change    a bundle that changes during the scan blocks (exit 6)
+  --file <note>       L1 and Trust for one note: one line per finding, nothing when clean (for edit hooks)
+  --duplicates        list candidate duplicate notes (advisory, exit 0)
+  --duplicates-body   the same, plus notes whose bodies are similar (MinHash, time-boxed)
+  --facts [NAME]      list every place the okf_check.facts (or the fact NAME) are stated; a dry run, exit 0
+  --conserve <ref>    every line removed since git ref <ref> must reappear: MOVED, CHANGED or LOST (advisory)
+  --fail-lost         with --conserve: a LOST line blocks (exit 1)
+  --deleted FILE      with --conserve: FILE declares the deletions that are intended
+
+Set-up and the machine:
+  --init-house-rules <bundle>   write a starter <bundle>/okf-base.yaml (never overwrites)
+  --init-ignore <bundle>        write a starter <bundle>/.okfignore (never overwrites)
+  --doctor            what is installed, and whether okflint behaves
+  --selftest          re-prove that every gate still fires on input that should trip it
+  --preflight         the session-start check: silent when python3 and okflint are fine, else one line; never fails
+  --install-deps      print the plan to install the supported okflint (changes nothing)
+  --yes               with --install-deps: run the plan
+  --latest            with --install-deps: the newest release instead of the pinned one
+  --version, -h, --help
+
+Exit codes (in order of precedence: a verdict that was reached outranks a gate that could not run):
+    5  --selftest failed: a gate stopped firing
+    1  L1 not conformant, or an okf_check house-rule error, or (with --strict-trust) a trust failure;
+       also --init-ignore / --init-house-rules refusing to overwrite a file
+    3  L2 house-profile error
+    2  a layer could not run (a missing runtime, a timeout, an unreadable folder)
+    6  the bundle changed mid-scan (only with --fail-on-change)
+    4  stale notes (only with --fail-stale)
+    0  every gate passed
+   64  usage error: no bundle, an unknown flag, or a path that is not a folder
+  130  interrupted (Ctrl-C), no verdict
+  143  terminated, no verdict
+
+Environment variables (all optional):
+  OKF_L1_TIMEOUT      120      seconds L1's validator may run in all; past it L1 is COULD NOT RUN (exit 2)
+  OKF_LAYER_TIMEOUT   300      seconds the Python layers (Trust, Successor, Owner, Size, L3, --duplicates,
+                               --file) may run in all; 0 or a non-number means the default, 1 is refused (exit 64)
+  OKF_L2_TIMEOUT      120      seconds before a hung okflint is cut off in L2 (exit 2)
+  OKF_L2_MAX_RSS_MB   2048     megabytes okflint and its children may hold before they are stopped (exit 2)
+  OKF_L2_ISOLATE_MAX  200      when okflint crashes on a bundle of at most this many notes, L2 names the crashing notes
+  OKF_FACTS_TIMEOUT   60       seconds the okf_check.facts patterns may run before the Facts line says COULD NOT RUN
+  OKF_MEMORY_BIN      okf on PATH   the okf-memory binary for the L2 graph layer; setting it also turns the layer on
+  OKF_GRAPH_TIMEOUT   60       seconds okf-memory may run before the L2 graph line says COULD NOT RUN
+  OKF_SEARCH_BIN      okf on PATH   the okf search binary --doctor reports (the doc-reuse reminder uses it too)
+  OKF_INSTALL_TIMEOUT 200      seconds before --install-deps stops the installer
+  OKF_AUTO_INSTALL    off      1 lets --preflight run the install plan itself
+
+Example:
+  okf-check ./notes --fail-stale --strict-trust --json
+
+See also: okf-verify (do the commits and paths a note cites still exist?) and okf-export (a vault of
+[[wikilinks]] to a bundle). The README has the full reference.
+HELP
+}
+
 BUNDLE=""; MODE="check"; DUP_BODY=0; JSON=0; FAIL_STALE=0; STRICT_TRUST=0; ASSUME_YES=0; USE_LATEST=0
 for a in "$@"; do
   case "$a" in
@@ -148,7 +213,7 @@ for a in "$@"; do
     --selftest)    MODE="selftest" ;;
     --json)        JSON=1 ;;
     --fail-stale)  FAIL_STALE=1 ;;
-    --strict-trust) STRICT_TRUST=1 ;;
+    --strict-trust|--strict) STRICT_TRUST=1 ;;   # --strict: the spelling okf-verify uses for the same idea
     --file)        if [ "${_want_file:-0}" = 1 ] || [ -n "${SCOPED_FILE:-}" ]; then echo "error: --file given twice - check one note at a time" >&2; exit 64; fi
                    MODE="scoped"; _want_file=1 ;;   # its value is the next argument (run_scoped)
     --fail-on-change) FAIL_ON_CHANGE=1 ;;
@@ -166,7 +231,7 @@ for a in "$@"; do
     --yes)         ASSUME_YES=1 ;;
     --latest)      USE_LATEST=1 ;;
     --version)     echo "okf-check $VERSION"; exit 0 ;;
-    -h|--help)     awk 'NR > 1 && !/^#/ { exit } NR > 1' "$_self"; exit 0 ;;   # the whole header comment: a fixed line window dropped exit 64
+    -h|--help)     okf_help; exit 0 ;;
     -*)            if [ "${_want_file:-0}" = 1 ] && [ -f "$a" ]; then SCOPED_FILE="$a"; _want_file=0; continue; fi   # a note named -d.md
                    echo "unknown flag: $a" >&2; exit 64 ;;
     *)             if [ "${_want_file:-0}" = 1 ]; then SCOPED_FILE="$a"; _want_file=0; continue; fi
@@ -1210,10 +1275,10 @@ import os, pathlib, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter
-    from okf_notes import meta, resolve, read_note, TooLarge, shown
+    from okf_notes import meta, resolve, read_manifest, read_note, TooLarge, shown
     # The bounded loader for the manifest too: an alias bomb in okf-base.yaml must not expand here (LT-35a), and a bounded
-    # read: the manifest is judged like a note (a device or a file over the cap is not read).
-    cfg = load_frontmatter(read_note(sys.argv[2], "utf-8", "replace"))
+    # read under the manifest's own limit (a device, or a file over it, is not read; okf_check.max_note_bytes does not apply).
+    cfg = load_frontmatter(read_manifest(sys.argv[2], "utf-8", "replace"))
 except Exception:
     sys.exit(0)
 opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}
@@ -1294,8 +1359,8 @@ run_owner() {
 import os, sys
 sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
 from okf_validate import load_frontmatter   # bounded: an alias bomb in okf-base.yaml must not expand (LT-35a)
-from okf_notes import read_note   # and so is the read itself: the manifest is judged like a note
-d = load_frontmatter(read_note(sys.argv[1], "utf-8", "replace"))
+from okf_notes import read_manifest   # and so is the read itself: bounded by the manifest limit, not the note cap
+d = load_frontmatter(read_manifest(sys.argv[1], "utf-8", "replace"))
 o = (d.get("okf_check") or {}) if isinstance(d, dict) else {}
 w = o.get("owners") if isinstance(o, dict) and o.get("require_owner") is True else None
 for k, v in (w.items() if isinstance(w, dict) else []):
@@ -1323,8 +1388,8 @@ import json, os, pathlib, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter, check_actor, Report
-    from okf_notes import meta, INVALID, TooLarge, read_note, shown
-    cfg = load_frontmatter(read_note(sys.argv[2], "utf-8", "replace"))
+    from okf_notes import meta, INVALID, TooLarge, read_manifest, read_note, shown
+    cfg = load_frontmatter(read_manifest(sys.argv[2], "utf-8", "replace"))
 except Exception:
     sys.exit(0)
 opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}
@@ -1406,8 +1471,8 @@ run_size() {
 import os, sys
 sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
 from okf_validate import load_frontmatter
-from okf_notes import read_note
-d = load_frontmatter(read_note(sys.argv[1], "utf-8", "replace"))
+from okf_notes import read_manifest
+d = load_frontmatter(read_manifest(sys.argv[1], "utf-8", "replace"))
 o = (d.get("okf_check") or {}) if isinstance(d, dict) else {}
 z = o.get("size") if isinstance(o, dict) else None
 for p in ((z.get("exclude") or []) if isinstance(z, dict) else []):
@@ -1434,8 +1499,8 @@ import json, os, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter
-    from okf_notes import body_chars, read_note, shown
-    cfg = load_frontmatter(read_note(sys.argv[2], "utf-8", "replace"))
+    from okf_notes import body_chars, read_manifest, read_note, shown
+    cfg = load_frontmatter(read_manifest(sys.argv[2], "utf-8", "replace"))
 except Exception:
     sys.exit(0)
 opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}

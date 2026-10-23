@@ -774,11 +774,43 @@ def hidden_hard_links(vault: Path, files: list[Path], outside: list | None = Non
     return gone + [(rel, "a hard link to a hidden file or folder of the vault" if ident in hidden else why) for rel, ident, _ in multi if ident in hidden or why]
 
 
+HELP_TOP = """\
+okf-export - write a vault of [[wikilinked]] notes out as an OKF bundle (the vault stays the source).
+
+What it does:
+  - turns [[note]], [[note|alias]], [[note#heading]] and [[#heading]] into relative Markdown links, and checks
+    each target and heading (a target is matched as Obsidian matches it)
+  - copies frontmatter, code and raw HTML blocks unchanged, and every file that is not a note
+  - leaves out dot files and folders (.obsidian, .git) and names each file it skips
+  - renames a vault index.md note to dir/dir.md (index.md is reserved), writes a generated index.md in every folder that
+    holds a note (okf_version at the root), and turns a vault log.md into the dated log the spec describes
+
+Nothing is written when it stops with exit 2. Run okf-check on <out> afterwards.
+"""
+
+HELP_END = """\
+Exit codes:
+  0  exported, nothing to report
+  1  exported, and the report on stdout lists a problem as file:line: a missing or ambiguous target or heading, a
+     malformed log, or a file that was skipped or refused (the bundle is still written)
+  2  nothing was written: <vault> is not a readable folder, <out> is not empty, is inside the vault or cannot be
+     written, or two notes would be written to one name; also a command-line error
+
+Environment variables: none.
+
+Example:
+  okf-export ~/vault ./bundle && okf-check ./bundle
+
+See also: okf-check (gate the bundle) and okf-verify (check what it cites). The README has the full reference.
+"""
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Export an Obsidian-style vault folder to an OKF bundle.")
-    ap.add_argument("--version", action="version", version=f"okf-export {plugin_version()}")
-    ap.add_argument("vault", type=Path)
-    ap.add_argument("out", type=Path)
+    ap = argparse.ArgumentParser(prog="okf-export", usage="okf-export <vault> <out>",
+                                 formatter_class=argparse.RawDescriptionHelpFormatter, description=HELP_TOP, epilog=HELP_END)
+    ap.add_argument("--version", action="version", version=f"okf-export {plugin_version()}", help="print the version and exit")
+    ap.add_argument("vault", type=Path, help="the Obsidian-style folder of notes to read; it is only read, never changed")
+    ap.add_argument("out", type=Path, help="where the bundle is written: a new folder, or an empty one; never inside the vault")
     args = ap.parse_args()
     vault, out = args.vault.resolve(), args.out.resolve()
     # Exit 2 before anything is written: the vault is only read, and <out> is never merged into.

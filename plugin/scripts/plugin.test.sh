@@ -646,6 +646,21 @@ if command -v pre-commit >/dev/null 2>&1; then
   { [ "$rc" -eq 0 ] && grep -q 'Skipped' "$TMP_W/pc_c3.txt"; } \
     && ok "LT-29o3 S22-E1 (REAL pre-commit) a commit that stages no .md file: the hook is Skipped" \
     || bad "LT-29o3 S22-E1 real pre-commit" "rc=$rc $(tail -3 "$TMP_W/pc_c3.txt" | tr '\n' ' ')"
+  # 0.9.48: the okf-verify hook through the real pre-commit tool. The hook repo above holds the new .pre-commit-hooks.yaml.
+  PCV2="$PCX/vwork"; mkdir -p "$PCV2"; pcgit "$PCV2" init -q; printf 'x\n' > "$PCV2/code.txt"; pcgit "$PCV2" add code.txt; pcgit "$PCV2" commit -qm "code"
+  PCV2_SHA=$(pcgit "$PCV2" rev-parse --short HEAD)
+  mkab "$PCV2"; printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nFixed in %s.\n' "$PCV2_SHA" > "$PCV2/n.md"
+  printf 'repos:\n  - repo: %s\n    rev: %s\n    hooks:\n      - id: okf-verify\n        args: [., --repo, ., --strict]\n' "$PCX/hookrepo" "$PCREV" > "$PCV2/.pre-commit-config.yaml"
+  ( cd "$PCV2" && pcenv pre-commit install >/dev/null 2>&1 )
+  pcgit "$PCV2" add -A; pcgit "$PCV2" commit -qm "cited commit" >"$TMP_W/pcv_c1.txt" 2>&1; rc=$?
+  { [ "$rc" -eq 0 ] && grep -q 'okf-verify' "$TMP_W/pcv_c1.txt" && grep -q 'Passed' "$TMP_W/pcv_c1.txt"; } \
+    && ok "LT-49o (REAL pre-commit) the okf-verify hook confirms a note's cited commit and the commit goes through" \
+    || bad "LT-49o real pre-commit okf-verify" "rc=$rc $(tail -3 "$TMP_W/pcv_c1.txt" | tr '\n' ' ')"
+  printf -- '---\ntype: Lesson\ntitle: U\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nNo citation here.\n' > "$PCV2/u.md"
+  pcgit "$PCV2" add -A; pcgit "$PCV2" commit -qm "no claim" >"$TMP_W/pcv_c2.txt" 2>&1; rc=$?
+  { [ "$rc" -ne 0 ] && grep -q 'Failed' "$TMP_W/pcv_c2.txt" && [ "$(pcgit "$PCV2" rev-list --count HEAD)" = 2 ]; } \
+    && ok "LT-49p (REAL pre-commit) with --strict in the user's args a note with no checkable claim BLOCKS the commit; HEAD unchanged" \
+    || bad "LT-49p real pre-commit okf-verify --strict" "rc=$rc $(tail -4 "$TMP_W/pcv_c2.txt" | tr '\n' ' ')"
 else
   skip "LT-29n S22 end-to-end through the real pre-commit tool — pre-commit is not installed; unlock it with tools/install-dev-deps.sh --yes (UNVERIFIED end-to-end until then)"
 fi
@@ -959,6 +974,348 @@ runact "$AB1" false false "$MKT_ROOT" yes; rc=$?
 { [ "$rc" -eq 64 ] && grep -q "require-house-rules must be 'true' or 'false'" "$TMP_W/act_out.txt"; } \
   && ok "LT-47d a require-house-rules value other than true/false is refused (exit 64)" \
   || bad "LT-47d invalid require-house-rules" "rc=$rc $(head -1 "$TMP_W/act_out.txt")"
+
+# --- S51 (0.9.48): the three tools say what they do. Every user-facing flag, exit code and OKF_* variable is in --help ----------
+# The flag, exit-code and variable lists are READ FROM THE CODE (the option parsing of each tool), not typed here, so a flag or
+# a variable added without a help line fails this test. What is deliberately kept out of --help is named below with its reason.
+S51="$TMP_W/s51"; mkdir -p "$S51"
+CHK="$PLUGIN/scripts/okf-check"; VER="$PLUGIN/scripts/okf-verify"; EXP="$PLUGIN/scripts/okf-export"
+"$CHK" --help > "$S51/check.txt" 2>&1; rc_hc=$?
+"$VER" --help > "$S51/verify.txt" 2>&1; rc_hv=$?
+"$EXP" --help > "$S51/export.txt" 2>&1; rc_he=$?
+# flags the parsers accept, one per line. okf-check: the arms of its argument loop; the others: add_argument(...) names.
+sed -n '/^for a in "\$@"; do/,/^done/p' "$CHK" | grep -oE '^ +-[-a-zA-Z|]*\)' | tr -d ' )' | tr '|' '\n' | grep -E '^--' | sort -u > "$S51/check.flags"
+for t in verify export; do
+  grep -h 'add_argument(' "$PLUGIN/scripts/okf-$t" | grep -oE '"--[a-z][a-z-]*"' | tr -d '"' | sort -u > "$S51/$t.flags"   # every long option string, whatever comes first in the call
+  printf -- '--help\n' >> "$S51/$t.flags"; sort -u -o "$S51/$t.flags" "$S51/$t.flags"
+done
+# INTERNAL, kept out of the user help: okf-check --fingerprint is the test seam of the change detection (its only caller is
+# okf-check.test.sh); okf-verify --check-config/--manifest-dir are how okf-check asks okf-verify to read the okf_check block.
+inner_check="--fingerprint"; inner_verify="--check-config --manifest-dir"; inner_export=""
+for t in check verify export; do
+  eval "inner=\$inner_$t"; miss=""; n=$(wc -l < "$S51/$t.flags" | tr -d ' ')
+  while IFS= read -r f; do
+    case " $inner " in *" $f "*) continue ;; esac
+    grep -qE -- "(^|[^-a-z])$f([^-a-z]|\$)" "$S51/$t.txt" || miss="$miss $f"
+  done < "$S51/$t.flags"
+  [ -z "$miss" ] && [ "$n" -ge 2 ] && ok "S51-HP-H1 okf-$t --help names every user-facing flag its parser accepts ($n read from the code)" \
+    || bad "S51-HP-H1 okf-$t --help flags" "not in the help:$miss (flags read from the parser: $n)"
+done
+inn=""
+for f in $inner_check; do grep -q -- "$f" "$S51/check.txt" && inn="$inn $f"; done
+for f in $inner_verify; do grep -q -- "$f" "$S51/verify.txt" && inn="$inn $f"; done
+[ -z "$inn" ] && ok "S51-HP-N1 the internal flags (--fingerprint, --check-config, --manifest-dir) are not in the user help" \
+  || bad "S51-HP-N1 internal flags in the help" "shown:$inn"
+{ [ "$rc_hc" -eq 0 ] && [ "$rc_hv" -eq 0 ] && [ "$rc_he" -eq 0 ]; } && ok "S51-HP-H2 --help exits 0 on all three tools" \
+  || bad "S51-HP-H2 --help exit" "okf-check=$rc_hc okf-verify=$rc_hv okf-export=$rc_he"
+# the sections every help carries
+miss=""
+for t in check verify export; do
+  for h in '^[Uu]sage:' '^Exit codes' '^Environment' '^Example'; do
+    grep -qE -- "$h" "$S51/$t.txt" || miss="$miss okf-$t:$h"
+  done
+done
+[ -z "$miss" ] && ok "S51-HP-H3 each help has a Usage, an Exit codes, an Environment and an Example section" || bad "S51-HP-H3 help sections" "missing:$miss"
+# exit codes: okf-check's are the README table and the codes the script holds; okf-verify and okf-export return 0, 1 and 2
+miss=""
+for c in $( { sed -n 's/^| \([0-9][0-9]*\) |.*/\1/p' "$PLUGIN/../README.md"
+              grep -o -E 'exit [0-9]+|EXIT_[A-Z]+=[0-9]+' "$CHK" | sed 's/.*[ =]//'; } | sort -un); do
+  grep -qE "^ +$c +[^ ]" "$S51/check.txt" || miss="$miss okf-check:$c"
+done
+for t in verify export; do for c in 0 1 2; do grep -qE "^ +$c +[^ ]" "$S51/$t.txt" || miss="$miss okf-$t:$c"; done; done
+[ -z "$miss" ] && ok "S51-HP-H4 each help lists its exit codes (okf-check: every code of the README table and the script)" || bad "S51-HP-H4 exit codes in the help" "missing:$miss"
+# variables: every OKF_* name the code reads, minus the plumbing and test-only names, is in that tool's help and in the README table
+INTERNAL_ENV=" OKF_SCRIPTS_DIR OKF_VENDOR_DIR OKF_MAX_NOTE_BYTES OKF_KEEP_LIST OKF_FOLDER_WHY OKF_STOP_WHY OKF_OWNERS_TSV OKF_SYMLINKED_LST OKF_SIZES_JSONL OKF_PLAIN_RE OKF_L3_ROOT OKF_L2_CRASHED OKF_GRAPH_JSON OKF_FACTS_JSONL OKF_TODAY OKF_PINNED_VERSIONS OKF_FORGE_API_BASE OKF_VERSION "
+# plumbing: set by one script for another, or the okf_check.max_note_bytes setting in its env form; OKF_TODAY, OKF_PINNED_VERSIONS and
+# OKF_FORGE_API_BASE exist for tests and replays (README); OKF_VERSION in okf-export is a Python name imported from the validator.
+miss_h=""; miss_r=""; nvars=0
+for t in check verify export; do
+  for v in $(grep -hoE '\bOKF_[A-Z0-9_]+' "$PLUGIN/scripts/okf-$t" | sort -u); do
+    case "$INTERNAL_ENV" in *" $v "*) continue ;; esac
+    nvars=$((nvars+1))
+    grep -q -- "$v" "$S51/$t.txt" || miss_h="$miss_h okf-$t:$v"
+    grep -qE "^\| \`$v\` \|" "$PLUGIN/../README.md" || miss_r="$miss_r $v"
+  done
+done
+[ -z "$miss_h" ] && [ "$nvars" -gt 10 ] && ok "S51-HP-H5 each help names every user-facing OKF_* variable its tool reads ($nvars read from the code)" || bad "S51-HP-H5 variables in the help" "missing:$miss_h (read from the code: $nvars)"
+[ -z "$miss_r" ] && ok "S51-HP-H6 the README Environment variables table has a row for each of them (OKF_VERIFY_WALK_LIMIT and OKF_VERIFY_SPAN_LIMIT included)" || bad "S51-HP-H6 README table" "no row for:$miss_r"
+miss=""
+for v in GITHUB_TOKEN GH_TOKEN GITLAB_TOKEN; do grep -q "$v" "$S51/verify.txt" || miss="$miss $v"; done
+for w in CONFIRMED REFUTED UNRESOLVED MOVED; do grep -q "$w" "$S51/verify.txt" || miss="$miss $w"; done
+[ -z "$miss" ] && ok "S51-HP-H7 okf-verify --help names the forge tokens it reads and the four verdict words" || bad "S51-HP-H7 okf-verify tokens and verdicts" "missing:$miss"
+# the maintainer notes are code comments, not help
+miss=""
+for w in 'WHY ONE ENTRY POINT' 'PORTABILITY' 'max(rc)' 'bash 3.2'; do grep -qF -- "$w" "$S51/check.txt" && miss="$miss '$w'"; done
+[ -z "$miss" ] && ok "S51-HP-N2 okf-check --help carries no maintainer notes" || bad "S51-HP-N2 maintainer notes in the help" "still there:$miss"
+# aliases: one spelling for one concept across the tools; the old name still works and gives the same output and exit code
+A1="$S51/a_verify"; mkdir -p "$A1"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nPure prose, nothing checkable at all.\n' > "$A1/c.md"
+"$VER" "$A1" --strict > "$S51/v1.txt" 2>&1; r1=$?; "$VER" "$A1" --strict-trust > "$S51/v2.txt" 2>&1; r2=$?; "$VER" "$A1" > "$S51/v0.txt" 2>&1; r0=$?
+{ [ "$r1" -eq 1 ] && [ "$r2" -eq 1 ] && [ "$r0" -eq 0 ] && cmp -s "$S51/v1.txt" "$S51/v2.txt"; } \
+  && ok "S51-AL-H1 okf-verify --strict-trust is --strict: same report, exit 1 on an uncheckable corpus (exit 0 without)" \
+  || bad "S51-AL-H1 okf-verify --strict-trust" "strict=$r1 strict-trust=$r2 plain=$r0 $(diff "$S51/v1.txt" "$S51/v2.txt" | head -2 | tr '\n' ' ')"
+# an abbreviation that worked before the alias keeps working: --strict-trust is rewritten, not registered, so --str is not ambiguous
+"$VER" "$A1" --str > "$S51/v3.txt" 2>&1; r3=$?; "$VER" "$A1" --stric > "$S51/v4.txt" 2>&1; r4=$?
+{ [ "$r3" -eq 1 ] && [ "$r4" -eq 1 ] && cmp -s "$S51/v1.txt" "$S51/v3.txt" && cmp -s "$S51/v1.txt" "$S51/v4.txt"; } \
+  && ok "S51-AL-E1 okf-verify --str and --stric still mean --strict (same report, exit 1), as before the alias" \
+  || bad "S51-AL-E1 okf-verify abbreviation of --strict" "--str=$r3 --stric=$r4 $(head -2 "$S51/v3.txt" | tr '\n' ' ')"
+A2="$S51/a_check"; mkdir -p "$A2"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: draft\ntags: [t]\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - by: human:finance-owner\n    at: "2026-02-01"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$A2/n.md"
+"$CHK" "$A2" --strict-trust > "$S51/c1.txt" 2>&1; r1=$?; "$CHK" "$A2" --strict > "$S51/c2.txt" 2>&1; r2=$?; "$CHK" "$A2" > "$S51/c0.txt" 2>&1; r0=$?
+{ [ "$r1" -eq 1 ] && [ "$r2" -eq 1 ] && [ "$r0" -eq 0 ] && cmp -s "$S51/c1.txt" "$S51/c2.txt"; } \
+  && ok "S51-AL-H2 okf-check --strict is --strict-trust: same report, exit 1 on a draft with a human verifier (exit 0 without)" \
+  || bad "S51-AL-H2 okf-check --strict" "strict-trust=$r1 strict=$r2 plain=$r0 $(diff "$S51/c1.txt" "$S51/c2.txt" | head -2 | tr '\n' ' ')"
+# --- 0.9.48 entry points (cases S51): one skill per job, a description that names all three tools, generic hook texts ---
+# Plugin reference (code.claude.com/docs/en/skills, frontmatter table): `description` says what the skill does and when to use it
+# (the description and when_to_use text is cut at 1,536 characters in the skill listing); a plugin skill runs as /<plugin>:<skill>.
+SKD="$PLUGIN/skills"
+ENTRY_SKILLS="check verify export setup explain"
+sk48_bad=""
+for sk in $ENTRY_SKILLS; do
+  f="$SKD/$sk/SKILL.md"
+  if [ ! -f "$f" ]; then sk48_bad="$sk48_bad [$sk: no SKILL.md]"; continue; fi
+  r=$(pyyaml - "$f" "$sk" <<'PY' 2>&1
+import re, sys, yaml
+text = open(sys.argv[1]).read(); want = sys.argv[2]
+fm = yaml.safe_load(text.split("---")[1])
+d = fm.get("description", "")
+bad = []
+if fm.get("name") != want: bad.append("name is %r, folder is %r" % (fm.get("name"), want))
+if not 40 <= len(d) <= 600: bad.append("description is %d characters (40..600)" % len(d))
+if "Use when" not in d: bad.append("description has no 'Use when'")
+if re.match(r"\s*(Check|Use|Run|Validate|Verify|Export|Set|Explain)\b", d): bad.append("description is an imperative, not third person")
+if not fm.get("argument-hint"): bad.append("no argument-hint")
+if len(text.splitlines()) > 90: bad.append("body is %d lines (short skills: 90 at most)" % len(text.splitlines()))
+tools = fm.get("allowed-tools")
+need = {"check": ["okf-check"], "verify": ["okf-verify"], "export": ["okf-export", "okf-check"], "setup": ["okf-check"], "explain": ["okf-check"]}[want]
+if not isinstance(tools, list): bad.append("allowed-tools is not a list")
+else:
+    if "Bash" in tools: bad.append("allowed-tools grants all of Bash")
+    for t in need:
+        if not any(x.startswith("Bash(") and "/scripts/" + t + '"' in x for x in tools): bad.append("allowed-tools has no Bash(...) pattern for scripts/" + t)
+print("; ".join(bad))
+PY
+  )
+  [ -z "$r" ] || sk48_bad="$sk48_bad [$sk: $r]"
+done
+[ -z "$sk48_bad" ] && ok "LT-48a skills check, verify, export, setup and explain each exist: name = folder, third-person description with 'Use when' (40-600 chars), argument-hint, at most 90 lines, an allowed-tools list scoped to the scripts it runs (not bare Bash)" || bad "LT-48a entry-point skills" "$sk48_bad"
+sk48_bad=""
+want_cmd() { grep -qF -- "$2" "$SKD/$1/SKILL.md" 2>/dev/null || sk48_bad="$sk48_bad [$1: no '$2']"; }
+want_cmd check '"${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" $ARGUMENTS'
+want_cmd verify '"${CLAUDE_PLUGIN_ROOT}/scripts/okf-verify" $ARGUMENTS'
+want_cmd export '"${CLAUDE_PLUGIN_ROOT}/scripts/okf-export" $ARGUMENTS'
+for fl in --doctor --install-deps --init-house-rules --init-ignore; do want_cmd setup "scripts/okf-check\" $fl"; done
+want_cmd explain 'references/layers.md'
+want_cmd explain '#what-it-checks'
+[ -z "$sk48_bad" ] && ok "LT-48b each skill names its exact command: check/verify/export run their tool with \$ARGUMENTS, setup has the four setup commands, explain points to the layer reference and the README row" || bad "LT-48b skill commands" "$sk48_bad"
+# Every flag a skill names must exist in the tool it names (a skill that teaches a flag the tool lacks is a wrong answer).
+flag_bad=""
+for f in "$SKD"/{check,verify,export,setup,explain}/SKILL.md; do
+  [ -f "$f" ] || continue
+  for fl in $(grep -o -- '--[a-z][a-z-]*' "$f" | sort -u); do
+    grep -qF -- "$fl" "$PLUGIN/scripts/okf-check" "$PLUGIN/scripts/okf-verify" "$PLUGIN/scripts/okf-export" "$PLUGIN/scripts/okf-limit.py" 2>/dev/null || flag_bad="$flag_bad [$(basename "$(dirname "$f")") $fl]"
+  done
+done
+[ -z "$flag_bad" ] && ok "LT-48c every --flag named in the five entry-point skills exists in okf-check, okf-verify or okf-export" || bad "LT-48c flags named in skills" "$flag_bad"
+# Reachability: every user-facing mode of the three tools is documented in at least one entry point.
+reach_bad=""
+for fl in --doctor --selftest --json --fail-stale --strict-trust --file --fail-on-change --duplicates --duplicates-body --facts --conserve --fail-lost --deleted --init-ignore --init-house-rules --install-deps --yes --latest --repo --host-paths --since --remote --strict; do
+  grep -rqF -- "$fl" "$SKD" || reach_bad="$reach_bad $fl"
+done
+[ -z "$reach_bad" ] && ok "LT-48d every user-facing flag of okf-check and okf-verify appears in at least one skill (entry point)" || bad "LT-48d flags with no entry point" "$reach_bad"
+# The umbrella description names all three tools and their jobs; the body points at the five entry points.
+pyyaml - "$SKD/okf/SKILL.md" <<'PY' 2>"$TMP_W/skd_err.txt"
+import sys, yaml
+text = open(sys.argv[1]).read()
+fm = yaml.safe_load(text.split("---")[1]); d = fm["description"]
+for w in ("okf-check", "okf-verify", "okf-export", "duplicate", "wikilink", "citation", "lost"):
+    assert w in d, "description does not say %r" % w
+assert len(d) <= 1024, len(d)
+for w in ("validate", "lint", "deduplicating", "before committing"):
+    assert w not in d, "the umbrella description carries the job trigger %r (the job skills own those)" % w
+assert "Use to choose" in d or "Use when unsure" in d, "no umbrella trigger"
+for s in ("check", "verify", "export", "setup", "explain"):
+    assert "/okf:" + s in text, "body does not name /okf:" + s
+for fl in ("--file", "--facts", "--conserve", "--init-ignore", "--install-deps"):
+    assert fl in fm["argument-hint"], "argument-hint lacks " + fl
+PY
+[ $? -eq 0 ] && ok "LT-48e the okf skill description names okf-check, okf-verify and okf-export with duplicates, wikilinks, citations and lost content; the body names /okf:check .. /okf:explain; the argument-hint lists the missing flags" || bad "LT-48e umbrella skill" "$(head -2 "$TMP_W/skd_err.txt" | tr '\n' ' ')"
+# No private ticket numbers in the new shipped text.
+nn=$(grep -nE '(^|[^A-Za-z0-9_-])#[0-9]+' "$SKD"/{check,verify,export,setup,explain}/SKILL.md "$SKD/okf/SKILL.md" 2>/dev/null || true)
+[ -z "$nn" ] && ok "LT-48f no #NNN issue number in the entry-point skills or the okf skill" || bad "LT-48f private numbers" "$(printf '%s' "$nn" | head -2 | tr '\n' ' ')"
+# Hook texts: nothing that only one author's machine or tools can use.
+if command -v jq >/dev/null 2>&1; then
+  g48_bad=""; G48="$TMP_W/g48"; mkdir -p "$G48/proj/docs" "$G48/home/.claude/lessons" "$G48/cfg" "$G48/extra/area"
+  printf '%s\n' "$G48/extra/*" > "$G48/cfg/doc-dirs"
+  for fp in "$G48/home/.claude/lessons/new-one.md" "$G48/proj/docs/new-doc.md" "$G48/extra/area/new-note.md"; do
+    o=$(printf '{"tool_name":"Write","tool_input":{"file_path":"%s","content":"x"}}' "$fp" | HOME="$G48/home" OKF_DOC_DIRS_FILE="$G48/cfg/doc-dirs" OKF_SEARCH_BIN=/nonexistent bash "$PLUGIN/scripts/doc-reuse-guard.sh" 2>&1)
+    [ -n "$o" ] || { g48_bad="$g48_bad [silent for ${fp#$G48/}]"; continue; }
+    for w in search_notes 'index lag' '~/.claude' 'families' 'parent note'; do grep -qF -- "$w" <<<"$o" && g48_bad="$g48_bad [${fp#$G48/} says '$w']"; done
+    grep -qF -- "Doc-reuse check" <<<"$o" || grep -qF -- "Lesson-reuse check" <<<"$o" || g48_bad="$g48_bad [${fp#$G48/} lost its heading]"
+  done
+  grep -qF 'rules/tool-selection' "$PLUGIN/scripts/doc-reuse-guard.sh" && g48_bad="$g48_bad [guard header names the author's rule file]"
+  grep -qF 'migrate script' "$PLUGIN/scripts/lessons-staleness-check.sh" && g48_bad="$g48_bad [staleness hook says 'migrate script']"
+  [ -z "$g48_bad" ] && ok "LT-48g the doc-reuse reminder (lesson, docs and doc-dirs branches) and the staleness hook carry no author-specific tool or path text, and the reminder still fires" || bad "LT-48g generic hook texts" "$g48_bad"
+else
+  skip "LT-48g — jq absent and the guard exits 0 without it (a skip, not a pass)"
+fi
+# README line on the PreToolUse hook: it reminds, it does not stop (the script header says "Non-blocking, fail-open").
+hookline=$(grep -n 'doc-reuse-guard.sh' "$README" | head -1)
+{ grep -qi 'remind' <<<"$hookline" && ! grep -qi 'stops' <<<"$hookline"; } && ok "LT-48h the README says the PreToolUse hook reminds (it is non-blocking) and does not say it stops a write" || bad "LT-48h README hook line" "$hookline"
+
+# --- 0.9.48 docs and CI surfaces (cases S52): which-tool table, split Use section, starter config, Action verify, pre-commit verify ---
+python3 - "$README" <<'PY' 2>"$TMP_W/rd_err.txt"
+import re, sys
+text = open(sys.argv[1]).read(); lines = text.split("\n")
+def slug(h): return re.sub(r"[^a-z0-9 _-]", "", h.lower()).replace(" ", "-")
+heads = [l for l in lines if re.match(r"#{2,4} ", l)]
+anchors = {slug(re.sub(r"^#+ ", "", h)) for h in heads}
+i = next(i for i, l in enumerate(lines) if l == "## Which tool do I use?")
+tbl = []
+for l in lines[i + 1:]:
+    if l.startswith("## "): break
+    if l.startswith("|"): tbl.append(l)
+assert len(tbl) >= 12, "which-tool table has %d lines" % len(tbl)
+body = "\n".join(tbl)
+for need in ("okf-check", "okf-verify", "okf-export", "/okf:check", "/okf:verify", "/okf:export", "/okf:setup", "/okf:explain", "--conserve", "--duplicates", "--facts", "--doctor"):
+    assert need in body, "table lacks " + need
+use = []
+on = False
+for l in lines:
+    if l == "## Use": on = True; continue
+    if on and l.startswith("## "): break
+    if on and l.startswith("### "): use.append(l[4:])
+for h in ("Check", "Verify", "Export", "Options", "Ignore", "Environment"):
+    assert any(u.startswith(h) for u in use), "Use has no '### %s' sub-heading (has %r)" % (h, use)
+contents = []
+on = False
+for l in lines:
+    if l == "## Contents": on = True; continue
+    if on and l.startswith("## "): break
+    if on: contents += re.findall(r"\]\(#([^)]+)\)", l)
+broken = [a for a in contents if a not in anchors]
+assert contents and not broken, "Contents links that land on no heading: %r" % broken
+assert "which-tool-do-i-use" in contents, "Contents does not list the table"
+assert sum(1 for a in contents if a in {slug(u) for u in use}) >= 4, "Contents does not link the Use sub-headings"
+PY
+[ $? -eq 0 ] && ok "LT-49a the README has a 'Which tool do I use?' table (all three tools, the slash commands, the extra modes), the Use section has Check/Verify/Export/Options/Ignore/Environment sub-headings, and every Contents link lands on a heading" || bad "LT-49a README structure" "$(tail -1 "$TMP_W/rd_err.txt" | cut -c1-300)"
+bl=$(grep -n 'Cowork' "$README" | head -3)
+{ grep -q 'claude.ai' <<<"$bl" && grep -q 'bin/' "$README"; } && ok "LT-49b the README says whether the plugin's bin/ folder matters on claude.ai and Cowork" || bad "LT-49b bin/ note" "no README line with claude.ai and Cowork"
+{ grep -q 'plugin/bin' <<<"$(grep -n 'Cowork' "$README")" || grep -q 'plugin root' <<<"$(grep -n 'Cowork' "$README")"; } && [ -d "$PLUGIN/bin" ] && ok "LT-49c the Cowork note names the folder that triggers it, and plugin/bin exists as it says" || bad "LT-49c bin/ note facts" "the note does not name plugin/bin (or the plugin root), or $PLUGIN/bin is missing"
+# Starter config: a commented okf_check block with every option of the schema; uncommented, it passes the config check.
+TPL="$PLUGIN/config/okf-base.yaml.template"
+"$REALPY" - "$TPL" "$PLUGIN/config/okf-check-block.json" <<'PY' 2>"$TMP_W/tpl_err.txt"
+import json, sys
+tpl = open(sys.argv[1]).read().split("\n"); schema = json.load(open(sys.argv[2]))
+cm = "\n".join(l for l in tpl if l.lstrip().startswith("#"))
+assert "# okf_check:" in cm, "no commented okf_check: block"
+assert not any(l.startswith("okf_check:") for l in tpl), "the block must stay commented"
+def keys(node, out):
+    for k, v in node.get("keys", {}).items():
+        out.add(k); keys(v, out)
+        for sub in ("list", "map"):
+            if isinstance(v.get(sub), dict): keys(v[sub], out)
+    return out
+allk = keys(schema, set()) | {"path"}
+missing = sorted(k for k in allk if k not in cm)
+assert not missing, "options missing from the commented block: %r" % missing
+PY
+[ $? -eq 0 ] && ok "LT-49d the starter template carries a commented okf_check: block that names every option of plugin/config/okf-check-block.json" || bad "LT-49d starter okf_check block" "$(tail -1 "$TMP_W/tpl_err.txt" | cut -c1-300)"
+TB="$TMP_W/tplb"; mkdir -p "$TB/refs"; mkab "$TB"
+"$REALPY" - "$TPL" "$TB/okf-base.yaml" <<'PY'
+import re, sys
+out, on = [], False
+for l in open(sys.argv[1]).read().split("\n"):
+    if l.strip() == "# okf_check:": on = True
+    if on and l.startswith("# "): l = l[2:]
+    elif on and l.strip() == "#": l = ""
+    elif on and not l.startswith("#"): on = False
+    out.append(l)
+open(sys.argv[2], "w").write("\n".join(out))
+PY
+chk48=$("$PLUGIN/scripts/okf-verify" "$TB" --check-config 2>&1); rc=$?
+{ [ "$rc" -eq 0 ] && grep -q '^okf_check:' "$TB/okf-base.yaml"; } && ok "LT-49e with the okf_check block uncommented, okf-verify --check-config accepts the starter (the example values are valid)" || bad "LT-49e uncommented starter" "rc=$rc $(printf '%s' "$chk48" | head -2 | tr '\n' ' ')"
+# GitHub Action: verify, repo, args and verify-args inputs.
+pyyaml - "$ACT" <<'PY' 2>"$TMP_W/act2_err.txt"
+import sys, yaml
+d = yaml.safe_load(open(sys.argv[1])); i = d["inputs"]; env = d["runs"]["steps"][0]["env"]
+assert str(i["verify"]["default"]) == "false", "verify default"
+assert str(i["repo"]["default"]) == ".", "repo default"
+for k in ("args", "verify-args", "report-args"):
+    assert k in i and i[k].get("required") is False, k
+for k, v in (("INPUT_VERIFY", "verify"), ("INPUT_REPO", "repo"), ("INPUT_ARGS", "args"), ("INPUT_VERIFY_ARGS", "verify-args"), ("INPUT_REPORT_ARGS", "report-args")):
+    assert env[k] == "${{ inputs.%s }}" % v, k
+assert "${{" not in d["runs"]["steps"][0]["run"]
+PY
+[ $? -eq 0 ] && ok "LT-49f action.yml declares verify (default false), repo (default .), args, verify-args and report-args, each reaching the script through env" || bad "LT-49f action inputs" "$(tail -1 "$TMP_W/act2_err.txt" | cut -c1-300)"
+runact2() { # <bundle> <env assignments...> -- the same contract as runact, with the 0.9.48 inputs
+  local b="$1"; shift
+  ( cd "$ACTWD" && env INPUT_BUNDLE="$b" INPUT_STRICT_TRUST=false INPUT_FAIL_STALE=false GITHUB_ACTION_PATH="$MKT_ROOT" "$@" \
+      bash --noprofile --norc -eo pipefail "$TMP_W/act_run.sh" ) >"$TMP_W/act_out.txt" 2>&1
+}
+ACTWD="$TMP_W/actwd"; mkdir -p "$ACTWD/bundle"; ( cd "$ACTWD" && g=$(command -v git) && "$g" init -q . && "$g" config user.email a@b && "$g" config user.name n && printf 'x\n' > code.txt && "$g" add code.txt && "$g" commit -q -m first )
+mkab "$ACTWD/bundle"; AW_SHA=$(cd "$ACTWD" && git rev-parse --short HEAD)
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nFixed in %s.\n' "$AW_SHA" > "$ACTWD/bundle/n.md"
+runact2 bundle INPUT_VERIFY=true; rc=$?
+{ [ "$rc" -eq 0 ] && grep -q '^okf-verify' "$TMP_W/act_out.txt" && grep -q 'CONFIRMED 1' "$TMP_W/act_out.txt"; } && ok "LT-49g verify: true runs okf-verify after okf-check on the workspace repo: the citation is CONFIRMED, exit 0" || bad "LT-49g verify input" "rc=$rc $(tail -3 "$TMP_W/act_out.txt" | tr '\n' ' ')"
+runact2 bundle INPUT_VERIFY=true INPUT_VERIFY_ARGS="--strict"; rc=$?
+printf -- '---\ntype: Lesson\ntitle: U\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nNo citation here.\n' > "$ACTWD/bundle/u.md"
+runact2 bundle INPUT_VERIFY=true INPUT_VERIFY_ARGS="--strict"; rc2=$?
+{ [ "$rc" -eq 0 ] && [ "$rc2" -eq 1 ]; } && ok "LT-49h verify-args reach okf-verify: --strict passes a bundle with only checkable claims (0) and fails one note with no claim (1)" || bad "LT-49h verify-args" "rc=$rc rc2=$rc2 $(tail -2 "$TMP_W/act_out.txt" | tr '\n' ' ')"
+rm -f "$ACTWD/bundle/u.md"
+runact2 bundle INPUT_VERIFY=false; rc=$?
+{ [ "$rc" -eq 0 ] && ! grep -q '^okf-verify' "$TMP_W/act_out.txt"; } && ok "LT-49i verify: false (and the unset default) does not run okf-verify" || bad "LT-49i verify off" "rc=$rc"
+mkabnote "$ACTWD/bundle" draft agent/1 2099-01-01
+runact2 bundle INPUT_ARGS="--strict-trust"; rc=$?
+runact2 bundle; rcn=$?
+{ [ "$rc" -eq 1 ] && [ "$rcn" -eq 0 ]; } && ok "LT-49j args reach okf-check: --strict-trust fails a draft with a human verifier (1), the same bundle without args passes (0)" || bad "LT-49j args input" "with=$rc without=$rcn"
+rm -f "$ACTWD/bundle/n.md"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nFixed in %s.\n' "$AW_SHA" > "$ACTWD/bundle/n.md"
+guard_bad=""
+for pair in "INPUT_ARGS=--duplicates|" "INPUT_ARGS=--duplicates-body|" "INPUT_ARGS=--facts|" "INPUT_ARGS=--facts launch.countries|" "INPUT_ARGS=--conserve HEAD|" "INPUT_ARGS=--duplicates --conserve HEAD|" "INPUT_ARGS=--file n.md|" "INPUT_ARGS=--fail-lost|" "INPUT_ARGS=--deleted x|" "INPUT_ARGS=--yes|" "INPUT_ARGS=--latest|" "INPUT_ARGS=--nope|" "INPUT_ARGS=--doctor|" "INPUT_ARGS=--strict-trust --selftest|" "INPUT_ARGS=-h|" "INPUT_ARGS=--init-house-rules|" "INPUT_ARGS=--install-deps|" $'INPUT_ARGS=--json\n::error::injected|' "INPUT_VERIFY=yes|" "INPUT_VERIFY=true|INPUT_REPO=--help" "INPUT_VERIFY=true|INPUT_VERIFY_ARGS=--help" "INPUT_VERIFY=true|INPUT_VERIFY_ARGS=--check-config"; do
+  ga="${pair%%|*}"; gb="${pair#*|}"
+  if [ -n "$gb" ]; then runact2 bundle "$ga" "$gb"; else runact2 bundle "$ga"; fi; rc=$?
+  nerr=$(grep -c '^::error::' "$TMP_W/act_out.txt")
+  { [ "$rc" -eq 64 ] && [ "$nerr" -eq 1 ] && ! grep -q 'injected' "$TMP_W/act_out.txt"; } || guard_bad="$guard_bad [$(printf '%s' "$pair" | head -1) rc=$rc errors=$nerr]"
+done
+[ -z "$guard_bad" ] && ok "LT-49k args other than --strict-trust, --fail-stale, --json and --fail-on-change (every report mode --duplicates, --duplicates-body, --facts, --conserve, --file included, alone or after an allowed flag) , a bad verify value, a repo starting with '-' and an injected newline are refused: exit 64, one ::error:: line" || bad "LT-49k input guards" "$guard_bad"
+# args keeps the full gate run: the four options that change a verdict or its form are accepted, and a gate failure stays a failure.
+printf -- '---\ntitle: no type\n---\n\nbody\n' > "$ACTWD/bundle/notype.md"
+runact2 bundle INPUT_ARGS="--strict-trust --fail-stale --json --fail-on-change"; rc=$?
+runact2 bundle INPUT_ARGS="--duplicates"; rcd=$?
+{ [ "$rc" -eq 1 ] && [ "$rcd" -eq 64 ] && ! grep -q 'Duplicates' "$TMP_W/act_out.txt"; } && ok "LT-49q a bundle with a note that has no type fails the job (1) with the four allowed args, and args '--duplicates' is refused (64) instead of replacing the gate run with a report that exits 0" || bad "LT-49q args cannot switch the gate off" "allowed=$rc duplicates=$rcd"
+# report-args: report modes run AFTER the gate and never change its exit code.
+runact2 bundle INPUT_REPORT_ARGS="--duplicates"; rc=$?
+grep -q 'Duplicates' "$TMP_W/act_out.txt" && sawd=1 || sawd=0
+rm -f "$ACTWD/bundle/notype.md"
+runact2 bundle INPUT_REPORT_ARGS="--facts --duplicates"; rcok=$?
+grep -q 'Duplicates' "$TMP_W/act_out.txt" && grep -q 'nothing to list' "$TMP_W/act_out.txt" && sawok=1 || sawok=0
+{ [ "$rc" -eq 1 ] && [ "$sawd" -eq 1 ] && [ "$rcok" -eq 0 ] && [ "$sawok" -eq 1 ]; } && ok "LT-49r report-args runs each report on its own after the gate (--facts and --duplicates both print) and does not change the exit code: a failing bundle still exits 1 (report printed), a clean one 0 (report printed)" || bad "LT-49r report-args" "failing=$rc saw=$sawd clean=$rcok saw=$sawok"
+rg_bad=""
+for pair in "INPUT_REPORT_ARGS=--strict-trust|" "INPUT_REPORT_ARGS=--doctor|" "INPUT_REPORT_ARGS=--fail-lost|" "INPUT_REPORT_ARGS=--file n.md|" "INPUT_REPORT_ARGS=HEAD|" $'INPUT_REPORT_ARGS=--duplicates\n::error::injected|'; do
+  ga="${pair%%|*}"; runact2 bundle "$ga"; rc=$?
+  nerr=$(grep -c '^::error::' "$TMP_W/act_out.txt")
+  { [ "$rc" -eq 64 ] && [ "$nerr" -eq 1 ] && ! grep -q 'injected' "$TMP_W/act_out.txt"; } || rg_bad="$rg_bad [$(printf '%s' "$pair" | head -1) rc=$rc errors=$nerr]"
+done
+[ -z "$rg_bad" ] && ok "LT-49s report-args accepts only --duplicates, --duplicates-body, --facts and --conserve (with their values) and needs one of them: anything else is refused, exit 64, one ::error:: line" || bad "LT-49s report-args guards" "$rg_bad"
+# pre-commit: an okf-verify hook next to okf-check.
+pyyaml - "$PCH" "$MKT_ROOT" <<'PY' 2>"$TMP_W/pch2_err.txt"
+import os, re, sys, yaml
+hooks = yaml.safe_load(open(sys.argv[1])); root = sys.argv[2]
+h = [x for x in hooks if x["id"] == "okf-verify"][0]
+for k in ("id", "name", "description", "entry", "language"):
+    assert h.get(k), k
+assert h["language"] == "script" and h["pass_filenames"] is False
+assert os.access(os.path.join(root, h["entry"]), os.X_OK), h["entry"]
+assert h["args"] == [".", "--repo", "."], h["args"]
+rx = re.compile(h["files"]); assert rx.search("notes/a.md") and not rx.search("src/app.py")
+PY
+[ $? -eq 0 ] && ok "LT-49l .pre-commit-hooks.yaml has an okf-verify hook: script entry that exists and is executable, no filenames, default args '. --repo .', selects Markdown" || bad "LT-49l okf-verify hook" "$(tail -1 "$TMP_W/pch2_err.txt" | cut -c1-300)"
+PCV="$TMP_W/pcv"; cp -R "$ACTWD" "$PCV"
+( cd "$PCV" && "$MKT_ROOT/plugin/scripts/okf-verify" bundle --repo . ) >"$TMP_W/pcv_out.txt" 2>&1; rc=$?
+( cd "$PCV" && "$MKT_ROOT/plugin/scripts/okf-verify" bundle --repo . --strict ) >/dev/null 2>&1; rcs=$?
+{ [ "$rc" -eq 0 ] && grep -q 'CONFIRMED 1' "$TMP_W/pcv_out.txt"; } && ok "LT-49m (emulated) the hook's command, entry plus its args, confirms a cited commit of the repository (exit 0)" || bad "LT-49m okf-verify hook command" "rc=$rc $(tail -2 "$TMP_W/pcv_out.txt" | tr '\n' ' ')"
+{ grep -q 'id: okf-verify' "$README" && grep -qE 'verify: .?.true' "$README" && grep -q 'report-args' "$README" && ! grep -qE "^ +args: '--(duplicates|facts|conserve|file)" "$README"; } && ok "LT-49n the README shows the okf-verify hook, the Action's verify input and report-args, and no report mode as an Action 'args' example" || bad "LT-49n README CI examples" "id: okf-verify, 'verify: true' or report-args missing, or a report mode is shown under args"
 
 echo
 if [ "$SKIPPED" -gt 0 ]; then

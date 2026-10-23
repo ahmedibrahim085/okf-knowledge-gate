@@ -33,8 +33,16 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
 
 - [Why use it](#why-use-it)
 - [What it checks](#what-it-checks)
+- [Which tool do I use?](#which-tool-do-i-use)
 - [Install](#install)
 - [Use](#use)
+  - [Check](#check)
+  - [Verify](#verify)
+  - [Export](#export)
+  - [Ignore](#ignore)
+  - [Options](#options)
+  - [Conservation, limits and duplicates](#conservation-limits-and-duplicates)
+  - [Environment variables](#environment-variables)
 - [Use in CI and git](#use-in-ci-and-git)
 - [Tools it uses](#tools-it-uses)
 - [Platforms](#platforms)
@@ -61,7 +69,7 @@ Also shipped:
 
 - A SessionStart preflight that reports a missing or unsupported prerequisite (`okf-check --preflight`).
 - A SessionStart hook that reports stale lessons (`lessons-staleness-check.sh`).
-- A PreToolUse hook that stops a duplicate document being written (`doc-reuse-guard.sh`). With an
+- A PreToolUse hook that reminds Claude to look for an existing document before it writes a new one (`doc-reuse-guard.sh`; it never blocks the write). With an
   [`okf`](https://github.com/GoogleCloudPlatform/open-knowledge-format) search binary on PATH (or
   `OKF_SEARCH_BIN`) it also names the three closest existing notes. The plugin never installs it.
 - An opt-in PostToolUse hook (`okf-edit-hook.py`) that checks each note Claude writes or edits inside a bundle
@@ -72,7 +80,25 @@ Also shipped:
   switches it on for every note below it; that is by design, because the hook runs only the plugin's own code.
   `okf-check --doctor` says whether the hook is on for the current folder (or the bundle you name), which file switched
   it on, and whether its config (`config/edit-hook.json`) is readable: the hook stays silent when it is not.
-- A skill, `okf`, so an agent knows how to run the gate and read its result.
+- Skills, so an agent knows how to run each tool and read its result: `okf` (the gate and its exit codes) and one per job, invoked as `/okf:check`, `/okf:verify`, `/okf:export`, `/okf:setup` and `/okf:explain`.
+
+## Which tool do I use?
+
+| I want to... | Run | In Claude Code |
+|---|---|---|
+| Check a bundle before a commit, or in CI | `okf-check <bundle>` | `/okf:check` |
+| Fail CI on stale notes | `okf-check <bundle> --fail-stale` | `/okf:check` |
+| Fail on an unproven "verified by a human" | `okf-check <bundle> --strict-trust` | `/okf:check` |
+| Check the one note I just edited | `okf-check <bundle> --file <note>` | `/okf:check` |
+| See whether the cited commits, paths and lines still exist | `okf-verify <bundle> --repo <dir>` | `/okf:verify` |
+| Convert an Obsidian vault into a bundle | `okf-export <vault> <out>`, then `okf-check <out>` | `/okf:export` |
+| Set up a new bundle | `okf-check --init-house-rules <bundle>`, `okf-check --init-ignore <bundle>` | `/okf:setup` |
+| Find what is missing on this machine | `okf-check --doctor`, `okf-check --install-deps` | `/okf:setup` |
+| Find duplicate notes | `okf-check <bundle> --duplicates` (`--duplicates-body` compares bodies too) | `/okf:check` |
+| Make sure an edit or a split lost nothing | `okf-check <bundle> --conserve <ref>` | `/okf:check` |
+| List every place a declared fact is stated | `okf-check <bundle> --facts [NAME]` | `/okf:check` |
+| Prove the gates still fire | `okf-check --selftest` | `/okf:check` |
+| Understand one finding and fix the note | read the output, then ask | `/okf:explain` |
 
 ## Install
 
@@ -87,6 +113,10 @@ claude plugin install okf@ahmedmaged-okf
 
 While the plugin is enabled, Claude Code puts `okf-check`, `okf-verify` and `okf-export` on the Bash tool's PATH (the plugin's `bin/`
 folder), so the bare commands below work in a session. Outside Claude Code, run `plugin/scripts/okf-check` from a clone.
+
+claude.ai and Cowork do not install a plugin that has a `bin/` folder (Claude Code plugins reference, "Standard layout").
+This plugin's root is `plugin/` and `plugin/bin/` is that folder, so claude.ai and Cowork do not install it: use Claude Code.
+We have not tried an install on either. The skills and hooks call `scripts/` and not `bin/`, which only puts the bare commands on PATH.
 
 Restart Claude Code to load a new version. Update with `claude plugin update okf@ahmedmaged-okf`.
 
@@ -107,7 +137,7 @@ because a plugin should not install software unasked.
 ```bash
 okf-check <bundle>                 # all layers
 okf-check <bundle> --fail-stale    # staleness blocks (exit 4)
-okf-check <bundle> --strict-trust  # unauthenticated human verification and near-miss actors block (exit 1)
+okf-check <bundle> --strict-trust  # unauthenticated human verification and near-miss actors block (exit 1); `--strict` is the same flag
 okf-check <bundle> --fail-on-change   # exit 6 if the bundle changes during the scan
 okf-check <bundle> --json          # machine-readable summary (`layers_not_run[]` names each layer that printed `COULD NOT RUN`, `[]` when none; `l2_findings[]` lists house-rule errors; `l2_advisories[]` the advisories behind `l2_warnings`, as `RULE file — message`, cut at 200 with a count (after a crash on some notes the advisories of the notes okflint checked are listed, as in the text); `warnings[]` also lists the `okf_check.size` warnings; `misplaced_keys[]` appears only when an `okf_check` option sits at the top level of `okf-base.yaml`; `reason` appears only on a run that stopped before its layers (a folder that cannot be read, an `.okfignore` that cannot be applied, no python3), with the stop named in `layers_not_run[]` and the reason on stderr too, exit 2; `sizes[]` only when `okf_check.size` is set, `facts[]` only when `okf_check.facts` is)
 okf-check <bundle> --duplicates    # list candidate duplicate notes (a report, always exit 0)
@@ -120,8 +150,11 @@ okf-check --selftest               # re-prove every gate still fires
 okf-check --init-ignore <bundle>   # write a starter .okfignore (never automatic, never overwrites)
 okf-check --init-house-rules <bundle>   # write a starter okf-base.yaml so L2 runs (never automatic, never overwrites)
 okf-verify <bundle> --repo DIR     # L4: are the cited commits real? DIR is where SHAs are looked up
+okf-verify <bundle> --strict       # an UNRESOLVED claim or a note with no checkable claim fails too (exit 1); `--strict-trust` is the same flag
 okf-export <vault> <out>           # write a vault of [[wikilinked]] notes out as a bundle
 ```
+
+### Check
 
 What a run looks like (real output; four more lines are left out: the version header, two lines of advice and the L2 index line). The note says a human
 verified it, but it is still a draft. `okf-check` cannot prove who a person is, so it flags the claim.
@@ -143,6 +176,24 @@ A Trust warning counts as an advisory in the last line, so the run still passes 
 The last line counts every warning the sections above list and names each layer's share. A finding that two layers
 list is counted once per layer: a link to a missing file is an L1 warning and an L2 `L002`, so it counts 2
 (`(advisories: L1 1 + L2 1)`).
+
+A near-miss actor is a wrongly written actor such as `Human:dana`. OKF reads it as an agent, so a person's review is
+lost without any other symptom. `--strict-trust` fails on it.
+
+Read the exit code, do not just test for zero:
+
+| Exit | Meaning |
+|---|---|
+| 0 | No gate failed. Skipped layers and warnings print above the verdict: read them |
+| 1 | L1: the bundle is not conformant OKF, an `okf_check` house-rule error (`deprecated_requires`, `require_owner`, a body above `size.max_body_chars`, a note that is not a regular file or is above `max_note_bytes`, a `FACT-CONFLICT`), or (with `--strict-trust`) a trust policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite an existing file |
+| 2 | A gate could not run. Never treat as a pass |
+| 3 | L2: house rules broken, or `index.md` miscounts |
+| 4 | L3: stale concepts (with `--fail-stale`) |
+| 5 | `--selftest` failed: a gate stopped firing |
+| 6 | The bundle changed during the scan (with `--fail-on-change`) |
+| 64 | Usage error: no bundle, an unknown flag, or a path that is not a folder |
+
+### Verify
 
 `okf-verify` checks four kinds of claim and answers CONFIRMED, REFUTED or UNRESOLVED for each (and MOVED for a citation
 whose quoted text is now on another line):
@@ -170,6 +221,8 @@ In a shallow clone (the `actions/checkout` default), commits older than the clon
 The full rules (declared repositories, line ranges, anchors, generated notes, paths that contain a space, what is not a
 citation) are in
 [the okf-verify reference](plugin/skills/okf/references/verify-and-install.md#what-counts-as-a-claim-and-how-each-is-judged).
+
+### Export
 
 `okf-export` is for a team that edits in an Obsidian-style vault, whose backlinks and graph count only `[[wikilinks]]`.
 The vault stays the source; the export is a bundle `okf-check` can gate. Body `[[note]]`, `[[note|alias]]`,
@@ -205,29 +258,17 @@ the vault; the other names are outside it: exported`, exit 1). Limit: a name out
 a count that a mount (SMB, NFS) reports as 1 gives no warning; use a copy or a symlink, which is refused, to keep the file out. A folder that cannot be listed is named (its files are not
 exported), and a file with a second name is skipped and named while a folder (dot or visible) cannot be listed or entered; a file that cannot be examined is named too. A folder that lists but cannot be entered is named too.
 
-A near-miss actor is a wrongly written actor such as `Human:dana`. OKF reads it as an agent, so a person's review is
-lost without any other symptom. `--strict-trust` fails on it.
+### Ignore
 
-Read the exit code, do not just test for zero:
-
-| Exit | Meaning |
-|---|---|
-| 0 | No gate failed. Skipped layers and warnings print above the verdict: read them |
-| 1 | L1: the bundle is not conformant OKF, an `okf_check` house-rule error (`deprecated_requires`, `require_owner`, a body above `size.max_body_chars`, a note that is not a regular file or is above `max_note_bytes`, a `FACT-CONFLICT`), or (with `--strict-trust`) a trust policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite an existing file |
-| 2 | A gate could not run. Never treat as a pass |
-| 3 | L2: house rules broken, or `index.md` miscounts |
-| 4 | L3: stale concepts (with `--fail-stale`) |
-| 5 | `--selftest` failed: a gate stopped firing |
-| 6 | The bundle changed during the scan (with `--fail-on-change`) |
-| 64 | Usage error: no bundle, an unknown flag, or a path that is not a folder |
-
-**Leave paths out:** put globs in `<bundle>/.okfignore` (`archive/`, `.trash/`; a leading `**/` matches at any depth,
+Put globs in `<bundle>/.okfignore` (`archive/`, `.trash/`; a leading `**/` matches at any depth,
 the root included). Every layer skips them and the run says how many files it excluded. A symlinked note whose target is
 ignored is ignored too, and a symlinked folder that `.okfignore` excludes is not named on the `symlinks` line (`--json`
 `symlinked_folders` lists the ones it names). The plugin never creates the file by itself. White space around a pattern
 is trimmed: space, tab, CR, VT and FF only, so a trailing no-break or ideographic space is part of the pattern.
 
-**okf-check's own options** live in one `okf_check:` block of `okf-base.yaml`. Every option is off until you set it.
+### Options
+
+`okf-check`'s own options live in one `okf_check:` block of `okf-base.yaml`. Every option is off until you set it.
 `okflint` ignores the block (measured: the L2 warning count is the same with and without it), and both `okf-check` and
 `okf-verify` check it against one schema, `plugin/config/okf-check-block.json`: a key it does not know, or a value of the
 wrong shape, exits 2 and names the key, so a typo cannot switch an option off without a word. Known keys: `verify`
@@ -343,6 +384,8 @@ limit (`OKF_FACTS_TIMEOUT`), so a pattern that backtracks without end gives COUL
 change a value, `okf-check <bundle> --facts launch.countries` lists every occurrence with its line, marks the ones that
 differ, and always exits 0.
 
+### Conservation, limits and duplicates
+
 **Conservation:** `okf-check <bundle> --conserve <ref>` (okf-knowledge-gate#16) asks whether a change kept what was
 there. A split, a section moved to a companion note or a merge should keep every line; an agent that compresses a note to
 pass a size limit does not announce what it dropped. Each line removed since `<ref>` (`git diff -w`, the working tree
@@ -365,6 +408,12 @@ folders  WARN` line (`d.md — a folder, not a note: skipped`, counted as an adv
 A device or pipe named `okf-base.yaml` is refused the same way, in every mode: `--duplicates` stops with exit 2 and
 names it (with `--json`, in one JSON document: `exit`, `layers_not_run`, `reason`; so does every other stop of that mode), a full run exits 1. Why: a symlink to `/dev/zero` named like a note made `okflint` read for ever and grow to
 112 GB (2026-10-18).
+
+`okf-base.yaml` is not a note, so `max_note_bytes` does not apply to it: it is read under its own fixed limit of 1 MiB
+(1048576 bytes; `manifest_max_bytes` in `plugin/config/okf-check-block.json`), by `okf-check`, `okf-verify` and every helper. A manifest
+above that is named as a refused file (`okf-base.yaml — larger than 1048576 bytes`, exit 1; with `--duplicates`, `--facts` or
+`okf-verify`, exit 2): a manifest that large is not a real configuration. Lowering `max_note_bytes` below the size of your manifest
+does not stop it from being read.
 
 **What every layer reads:** `okf-check` judges the paths by `stat` first, then copies the notes and config it will read
 into a private frozen copy with a bounded read that checks the type and size of the file it actually opened (at most the
@@ -401,7 +450,9 @@ compared), the report says `among the notes read`, and `--json` has `unread[]` a
 and then checked exactly, within the same time limit. A body under 5 words (a stub such as `TODO`) is not compared on its
 body, since every such stub is the same single shingle; the report counts those notes (`--json` `body_short`).
 
-**Environment variables** (all optional):
+### Environment variables
+
+All optional:
 
 | Variable | Default | Effect |
 |---|---|---|
@@ -418,12 +469,15 @@ body, since every such stub is the same single shingle; the report counts those 
 | `OKF_EDIT_HOOK_TIMEOUT` | `plugin/config/edit-hook.json` | Seconds the edit hook waits for the check before it gives up silently, capped at `max_seconds`. A value that is not a positive number uses the default. The hook's check runs under `OKF_LAYER_TIMEOUT` too, but this box (4 s by default, 4.5 s at most) is far smaller and fires first: the hook stays silent, exits 0 and the check is stopped with it, so the layer limit matters in the hook only when set below the box. |
 | `OKF_MEMORY_BIN` | `okf` on PATH | The okf-memory binary for the L2 graph layer; setting it also turns the layer on. |
 | `OKF_GRAPH_TIMEOUT` | 60 | Seconds okf-memory may run before the L2 graph line says COULD NOT RUN. |
+| `OKF_FACTS_TIMEOUT` | 60 | Seconds the `okf_check.facts` patterns may run before the Facts line says COULD NOT RUN (a pattern that backtracks). |
+| `OKF_GITLAB_HOSTS` | none | Comma-separated self-hosted GitLab hosts that `okf-verify --remote` may ask, next to github.com and gitlab.com. The host is matched exactly. |
+| `OKF_VERIFY_WALK_LIMIT` | 100000 | Entries (files and folders) of a searched repository that `okf-verify` looks at when git cannot list it. Past it the walk stops, and a cited file with a space in its name is reported as not ruled out. |
+| `OKF_VERIFY_SPAN_LIMIT` | 16777216 | Bytes of a cited file's lines that `okf-verify` holds to compare a quoted text. Past it the claim is UNRESOLVED (`the cited lines are more than N bytes`). |
 
 `OKF_TODAY`, `OKF_PINNED_VERSIONS`, `OKF_BUNDLE_DIR`, `OKF_DUP_TIME_LIMIT`, `OKF_DUP_CUT_AT` and `OKF_FORGE_API_BASE` exist for tests and replays.
 `okf-verify --remote` reads `GITHUB_TOKEN` (or `GH_TOKEN`) for GitHub and `GITLAB_TOKEN` for GitLab, each sent only to its own
 forge (a self-hosted GitLab must be named in `OKF_GITLAB_HOSTS`); without one it asks anonymously (GitHub allows 60 lookups an
-hour). `OKF_FACTS_TIMEOUT` (default 60) is the seconds the `okf_check.facts` patterns may run before the Facts line says
-COULD NOT RUN.
+hour). `okf-check --help`, `okf-verify --help` and `okf-export --help` print the flags, the exit codes and the variables each tool reads.
 
 ## Use in CI and git
 
@@ -438,13 +492,38 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.47
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.48
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
           fail-stale: 'false'     # optional, default 'false'
           require-house-rules: 'false'   # optional; 'true' fails the job (exit 3) when L2 was skipped
+          args: '--fail-on-change --json'   # optional; extra options for okf-check: only those four, see below
+          report-args: '--duplicates'       # optional; reports run after the gate: they print, and never change the exit code
 ```
+
+To check the commits, paths and line citations the notes cite as well, add `verify` (the checkout needs the history,
+`fetch-depth: 0`). `okf-verify` runs after `okf-check`, and the job takes `okf-check`'s exit code, or `okf-verify`'s when
+`okf-check` passed:
+
+```yaml
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.48
+        with:
+          bundle: path/to/bundle
+          verify: 'true'                  # also run okf-verify; default 'false'
+          repo: .                         # the repository cited commits are looked up in (okf-verify --repo); default '.'
+          verify-args: '--strict --since origin/main'   # optional; extra arguments for okf-verify
+```
+
+`args`, `report-args` and `verify-args` are passed as separate arguments, never through a shell. `args` accepts only the
+options that keep the full gate run: `--strict-trust`, `--fail-stale`, `--json` and `--fail-on-change`. Every other flag
+is refused with exit 64, because a mode such as `--duplicates`, `--facts`, `--conserve`, `--file` or `--doctor` replaces
+the gate run with a report that exits 0. `report-args` runs those reports (`--duplicates`, `--duplicates-body`,
+`--facts [NAME]`, `--conserve REF`) one after the other once the gate has run: the report is in the log, and the job keeps
+the gate's exit code (a report that fails gives a `::warning::`).
 
 The job logs a `::warning::` when the bundle has 0 concepts and for every skipped layer, because both end in exit 0. GitHub's runners do not ship `okflint`, so L2 is skipped there unless an earlier step installs it; set `require-house-rules: 'true'` to make that a failure.
 
@@ -454,16 +533,19 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.47
+    rev: v0.9.48
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
+      - id: okf-verify
+        args: [path/to/bundle, --repo, .]
 ```
 
-Your `args` replace the hook's default (`.`, which only works when the repository root is the bundle: a root `README.md` without frontmatter is a concept that fails L1). pre-commit 4.7.0 accepts the hook's `language: script`. Its source maps
+Your `args` replace a hook's default (`.` for `okf-check`, `. --repo .` for `okf-verify`, which only work when the repository root is the bundle: a root `README.md` without frontmatter is a concept that fails L1). pre-commit 4.7.0 accepts the hook's `language: script`. Its source maps
 that name to `unsupported_script`; it prints no removal notice today. The hook has been run end to end by pre-commit 4.7.0
 on macOS: a clean bundle commits, a draft note with a human verifier is blocked, and a commit that stages no Markdown
-file skips the hook.
+file skips the hook. The `okf-verify` hook has been run the same way (macOS, pre-commit 4.7.0): a note that cites a commit of the
+repository commits, and with `--strict` in `args` a note with no checkable claim blocks the commit.
 
 ## Tools it uses
 

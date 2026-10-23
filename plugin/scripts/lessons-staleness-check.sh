@@ -69,7 +69,7 @@ report=$(okf_md_files "$L" | xargs -0 awk -v today="$TODAY" -v statuses="${L3_ST
     if (expired != "") printf "Lessons past their stale_after horizon — re-verify or extend:%s\n", expired
     if (malformed != "") printf "Lessons with a stale_after that is not a date:%s\n", malformed
     if (nonstd  != "") printf "Lessons with an unknown status (not one of %s):%s\n", statuses, nonstd
-    if (missing != "") printf "Lessons missing OKF frontmatter (run the migrate script):%s\n", missing
+    if (missing != "") printf "Lessons missing OKF frontmatter (add it; okf-check names what is missing):%s\n", missing
   }
 ' 2>/dev/null)
 

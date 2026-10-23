@@ -29,7 +29,7 @@ import re
 import sys
 
 sys.path[:0] = [os.environ.get("OKF_SCRIPTS_DIR", ""), os.environ.get("OKF_VENDOR_DIR", "")]
-from okf_notes import load_frontmatter, read_note, shown  # noqa: E402  (bounded reads: a manifest or note is not exempt)
+from okf_notes import load_frontmatter, read_manifest, read_note, shown  # noqa: E402  (bounded reads: a manifest or note is not exempt)
 
 FENCE = re.compile(r"^(\s*)(`{3,}|~{3,})")
 INDENTED = re.compile(r"^(?: {4,}|\t)")
@@ -94,7 +94,7 @@ def statements(bundle, files, facts):
 def main(argv):
     bundle, manifest, lst, mode = argv[1:5]
     try:
-        cfg = load_frontmatter(read_note(manifest, "utf-8", "replace"))
+        cfg = load_frontmatter(read_manifest(manifest, "utf-8", "replace"))
     except Exception:
         cfg = {}
     opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}

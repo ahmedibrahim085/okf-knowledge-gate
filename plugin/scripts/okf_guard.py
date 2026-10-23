@@ -205,8 +205,8 @@ def note_cap(bundle=None, env=True):
     if base and os.path.isfile(base):   # stat first: opening a FIFO here would block for ever
         try:
             from okf_validate import load_frontmatter   # late: only a bundle that has a manifest needs the YAML reader
-            # read_note, not open(): the path was a regular file a moment ago and can be a FIFO now, which open() would wait on
-            cfg = load_frontmatter(read_note(base, "utf-8", "replace", cap=node["default"]))   # the manifest is not exempt from the cap
+            # read_manifest, not open(): the path was a regular file a moment ago and can be a FIFO now, which open() would wait on
+            cfg = load_frontmatter(read_manifest(base, "utf-8", "replace"))
             v = (cfg.get("okf_check") or {}).get("max_note_bytes") if isinstance(cfg, dict) else None
         except Exception:   # a missing or bad manifest is reported once by run_config; the default stays in force
             v = None
@@ -215,7 +215,23 @@ def note_cap(bundle=None, env=True):
     return node["default"]
 
 
-def refusal(p, cap=None):
+NOTE_WHAT = "okf_check.max_note_bytes"   # what the refusal text names as the source of a note's limit
+MANIFEST_WHAT = "the okf-base.yaml size limit"
+
+
+def manifest_cap():
+    """The byte limit for okf-base.yaml: fixed, in config/okf-check-block.json (`manifest_max_bytes`) next to the note
+    cap's default. The manifest is not a note, so okf_check.max_note_bytes does not apply to it: a person who lowers that
+    option below the size of their own manifest would otherwise lose the whole config."""
+    return int(json.loads(SCHEMA.read_text(encoding="utf-8"))["manifest_max_bytes"])
+
+
+def read_manifest(p, encoding="utf-8", errors="replace"):
+    """The text of an okf-base.yaml: read_note under the manifest's own limit, not the note cap."""
+    return read_note(p, encoding, errors, cap=manifest_cap(), what=MANIFEST_WHAT)
+
+
+def refusal(p, cap=None, what=NOTE_WHAT):
     """Why note `p` must not be opened, or None. Only stats: a device, a pipe or a socket is never opened to find out.
 
     A missing path or a dangling link gives None: callers skip those as they always did.
@@ -228,11 +244,11 @@ def refusal(p, cap=None):
         return "not a regular file (device/pipe/...)"
     cap = cap or note_cap()
     if st.st_size > cap:
-        return "larger than %d bytes (okf_check.max_note_bytes)" % cap
+        return "larger than %d bytes (%s)" % (cap, what)
     return None
 
 
-def read_note(p, encoding="utf-8-sig", errors="replace", cap=None, newline=None):
+def read_note(p, encoding="utf-8-sig", errors="replace", cap=None, newline=None, what=NOTE_WHAT):
     """The text of note `p`, read as `open(p, encoding=...).read()` reads it (universal newlines unless `newline` says
     otherwise), but bounded.
 
@@ -241,7 +257,7 @@ def read_note(p, encoding="utf-8-sig", errors="replace", cap=None, newline=None)
     one character past the cap, so a file that grows while it is read cannot fill memory.
     """
     cap = cap or note_cap()
-    why = refusal(p, cap)
+    why = refusal(p, cap, what)
     if why:
         raise NoteRefused(why)
     # O_NONBLOCK: opening a FIFO with no writer would block. O_NOCTTY: opening a tty must not become our terminal.
@@ -250,7 +266,7 @@ def read_note(p, encoding="utf-8-sig", errors="replace", cap=None, newline=None)
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode) or st.st_size > cap:
             raise NoteRefused("not a regular file (device/pipe/...)" if not stat.S_ISREG(st.st_mode)
-                              else "larger than %d bytes (okf_check.max_note_bytes)" % cap)
+                              else "larger than %d bytes (%s)" % (cap, what))
         with os.fdopen(fd, "r", encoding=encoding, errors=errors, newline=newline) as fh:
             fd = -1   # fdopen owns the descriptor now
             t = fh.read(cap + 1)
@@ -258,19 +274,19 @@ def read_note(p, encoding="utf-8-sig", errors="replace", cap=None, newline=None)
         if fd != -1:
             os.close(fd)
     if len(t) > cap:
-        raise NoteRefused("larger than %d bytes (okf_check.max_note_bytes)" % cap)
+        raise NoteRefused("larger than %d bytes (%s)" % (cap, what))
     return t
 
 
-def _refuse_text(st_mode, size, cap):
+def _refuse_text(st_mode, size, cap, what=NOTE_WHAT):
     if not stat.S_ISREG(st_mode):
         return "not a regular file (device/pipe/...)"
     if size > cap:
-        return "larger than %d bytes (okf_check.max_note_bytes)" % cap
+        return "larger than %d bytes (%s)" % (cap, what)
     return None
 
 
-def freeze_one(src, dst, cap, must_fit):
+def freeze_one(src, dst, cap, must_fit, what=NOTE_WHAT):
     """Copy `src` to `dst` with a read that cannot run away. Returns None when copied, "link" when a config file is over
     the cap (the caller links it: nothing here reads it), "gone" when it vanished, else the reason it was refused.
 
@@ -291,7 +307,7 @@ def freeze_one(src, dst, cap, must_fit):
         if not stat.S_ISREG(st.st_mode):
             return _refuse_text(st.st_mode, 0, cap)
         if st.st_size > cap:
-            return "link" if not must_fit else _refuse_text(st.st_mode, st.st_size, cap)
+            return "link" if not must_fit else _refuse_text(st.st_mode, st.st_size, cap, what)
         with os.fdopen(fd, "rb") as fh:
             fd = -1   # fdopen owns the descriptor now
             data = fh.read(cap + 1)
@@ -299,7 +315,7 @@ def freeze_one(src, dst, cap, must_fit):
         if fd != -1:
             os.close(fd)
     if len(data) > cap:
-        return "link" if not must_fit else _refuse_text(st.st_mode, len(data), cap)
+        return "link" if not must_fit else _refuse_text(st.st_mode, len(data), cap, what)
     os.makedirs(os.path.dirname(dst), exist_ok=True)
     with open(dst, "wb") as out:
         out.write(data)
@@ -309,8 +325,8 @@ def freeze_one(src, dst, cap, must_fit):
 
 
 def freeze_main(src_root, dst_root, cap):
-    """Records on stdin, NUL-separated: `N<TAB>rel` (a note or the manifest: must fit the cap) or `C<TAB>rel` (other
-    config: linked when over the cap). Prints, NUL-separated, `reason<TAB>rel` for every record refused now. Exit 1 on an
+    """Records on stdin, NUL-separated: `N<TAB>rel` (a note: must fit the cap), `M<TAB>rel` (the manifest: must fit its own
+    limit, manifest_cap()) or `C<TAB>rel` (other config: linked when over the cap). Prints, NUL-separated, `reason<TAB>rel` for every record refused now. Exit 1 on an
     error that is not a refusal, naming it on stderr; a file this user may not read is a refusal: a note is never dropped silently."""
     src_root = os.path.abspath(src_root)
     for rec in sys.stdin.buffer.read().decode("utf-8", "surrogateescape").split("\0"):
@@ -318,7 +334,10 @@ def freeze_main(src_root, dst_root, cap):
             continue
         kind, _, rel = rec.partition("\t")
         try:
-            res = freeze_one(os.path.join(src_root, rel), os.path.join(dst_root, rel), cap, kind == "N")
+            if kind == "M":
+                res = freeze_one(os.path.join(src_root, rel), os.path.join(dst_root, rel), manifest_cap(), True, MANIFEST_WHAT)
+            else:
+                res = freeze_one(os.path.join(src_root, rel), os.path.join(dst_root, rel), cap, kind == "N")
             if res == "link":
                 os.makedirs(os.path.dirname(os.path.join(dst_root, rel)), exist_ok=True)
                 os.symlink(os.path.join(src_root, rel), os.path.join(dst_root, rel))

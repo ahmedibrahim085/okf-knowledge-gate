@@ -1,6 +1,6 @@
 #!/bin/bash
-# PreToolUse[Write] — mechanical arm of the doc-reuse rule (rules/tool-selection.md):
-# creating a NEW .md in a durable-doc location injects a search-first reminder.
+# PreToolUse[Write] — creating a NEW .md in a durable-doc location injects a search-first reminder
+# (search for an existing home, update it, create a new document only when none fits).
 # Non-blocking, fail-open. Edits to existing files pass silently.
 command -v jq >/dev/null 2>&1 || exit 0
 INPUT=$(cat 2>/dev/null)
@@ -45,10 +45,10 @@ case "$FP" in
   */.claude/lessons/index.md|*/.claude/lessons/log.md|*/.claude/lessons/README.md) ;;
   */.claude/lessons/*)
     # The lessons store is small and fully readable — a duplicate is always avoidable.
-    jq -n --arg fp "$FP" --arg extra "$(closest_notes)" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:("Lesson-reuse check (hook-enforced): you are about to CREATE a new lesson at " + $fp + ". FIRST read ~/.claude/lessons/index.md (read it, do not guess) and check whether an existing lesson already owns this failure class; lessons are grouped into families, each with a parent note. Prefer ADDING an addendum to the owning lesson and linking it from its family parent. Create a new file only when the trap is genuinely distinct, and say in one line which existing lesson it is NOT." + $extra)}}'
+    jq -n --arg fp "$FP" --arg idx "$(dirname "$FP")/index.md" --arg extra "$(closest_notes)" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:("Lesson-reuse check (hook-enforced): you are about to CREATE a new lesson at " + $fp + ". FIRST read " + $idx + " (read it, do not guess) and check whether an existing lesson already owns this failure class. Prefer ADDING an addendum to the owning lesson and linking it from the notes that group it. Create a new file only when the trap is genuinely distinct, and say in one line which existing lesson it is NOT." + $extra)}}'
     exit 0 ;;
   */docs/*|*/doc/*)
-    jq -n --arg fp "$FP" --arg extra "$(closest_notes)" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:("Doc-reuse check (hook-enforced): you are about to CREATE a new durable doc at " + $fp + ". FIRST search for an existing home (your knowledge-base search for vault content, or grep existing *.md in the repo) and prefer UPDATING it. Note: search_notes is title-biased with index lag — no hits does not mean absent. Create new only when no suitable home exists, and state why in one line." + $extra)}}'
+    jq -n --arg fp "$FP" --arg extra "$(closest_notes)" '{hookSpecificOutput:{hookEventName:"PreToolUse",additionalContext:("Doc-reuse check (hook-enforced): you are about to CREATE a new durable doc at " + $fp + ". FIRST search for an existing home (your knowledge-base search for vault content, or grep existing *.md in the repo) and prefer UPDATING it. A search that returns nothing may only mean the index is behind, so check the folder too. Create new only when no suitable home exists, and state why in one line." + $extra)}}'
     exit 0 ;;
 esac
 

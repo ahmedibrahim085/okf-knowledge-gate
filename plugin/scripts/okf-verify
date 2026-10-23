@@ -1248,7 +1248,7 @@ def load_manifest(bundle: Path, source: Path | None = None) -> tuple[dict, dict]
     except (OSError, ValueError) as e:
         raise BaseConfigError(f"cannot be checked: the schema {schema_file} is unreadable ({type(e).__name__})")
     try:
-        text = _guard().read_note(base, "utf-8", "strict")   # bounded: a manifest is not exempt from the cap
+        text = _guard().read_manifest(base, "utf-8", "strict")   # bounded by the manifest's own limit, not the note cap
         data = load_frontmatter(text)
     except OSError as e:
         raise BaseConfigError(f"cannot read: {e.strerror or str(e) or type(e).__name__}")
@@ -1360,7 +1360,7 @@ def yaml11_booleans(base: Path, schema: dict) -> None:
     walk(schema, "okf_check")
     if not names:
         return
-    text = okf_check_text(_guard().read_note(base, "utf-8", "replace"))
+    text = okf_check_text(_guard().read_manifest(base, "utf-8", "replace"))
     key = "|".join(re.escape(k) for k in names)
     for m in re.finditer(rf"(?m)(?:^|[{{,\s])({key})\s*:[ \t]*([A-Za-z]+)[ \t]*(?=$|[,}}#])", text):
         if YAML11_WORDS.match(m.group(2)):
@@ -1661,30 +1661,78 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False, since: tup
     return results, no_claims, unrecognized
 
 
+HELP_TOP = """\
+okf-verify - check that what the notes of a bundle cite still exists (layer L4).
+
+It reads each note for four kinds of claim (a commit SHA, a file path, a line citation, a quoted text)
+and answers one verdict per claim:
+  CONFIRMED   the commit, path or line is there
+  REFUTED     it is not there: the note is wrong
+  UNRESOLVED  it could not be checked (no repository holds the SHA, no network): NOT a soft REFUTED
+  MOVED       a cited line's text is still in the file, at another line (with --since)
+"""
+
+HELP_END = """\
+Exit codes:
+  0  no claim is REFUTED or MOVED (with --strict: and none is UNRESOLVED or uncheckable)
+  1  a claim is REFUTED or MOVED, or --strict found one UNRESOLVED or a note with no checkable claim
+  2  no verdict was possible: the bundle is not a readable folder, an okf-base.yaml that cannot be read,
+     an unknown --since ref, an .okfignore that excludes every note; also a command-line error
+
+Environment variables (all optional):
+  OKF_GITLAB_HOSTS         (none)    comma-separated self-hosted GitLab hosts that --remote may ask,
+                                     next to github.com and gitlab.com
+  OKF_VERIFY_WALK_LIMIT    100000    entries of a searched repository to look at when git cannot list it;
+                                     past it the walk stops, and a cited file with a space in its name
+                                     is reported as not ruled out
+  OKF_VERIFY_SPAN_LIMIT    16777216  bytes of a cited file's lines to hold when a quoted text is compared;
+                                     past it the claim is UNRESOLVED
+  GITHUB_TOKEN, GH_TOKEN   (none)    --remote sends it to GitHub only; without one the lookup is anonymous
+                                     (GitHub allows 60 an hour)
+  GITLAB_TOKEN             (none)    --remote sends it to GitLab only
+
+Example:
+  okf-verify ./notes --repo . --since main --strict
+
+See also: okf-check (the gate over the whole bundle). The README has the full reference.
+"""
+
+
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Verify that a bundle's claims still hold (L4).")
+    ap = argparse.ArgumentParser(
+        prog="okf-verify", usage="okf-verify <bundle> [--repo DIR]... [--strict] [--json] [--remote] [--since REF] [--host-paths]",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=HELP_TOP, epilog=HELP_END)
     try:   # the plugin's version (.claude-plugin/plugin.json), the one place bump-version.sh moves for this tool
         _v = json.loads((Path(__file__).resolve().parent.parent / ".claude-plugin" / "plugin.json").read_text(encoding="utf-8"))["version"]
     except (OSError, ValueError, KeyError):
         _v = "unknown"
-    ap.add_argument("--version", action="version", version=f"okf-verify {_v}")
-    ap.add_argument("bundle", type=Path)
-    ap.add_argument("--repo", type=Path, action="append", default=[],
-                    help="repository to resolve cited SHAs in (repeatable)")
+    ap.add_argument("--version", action="version", version=f"okf-verify {_v}", help="print the version and exit")
+    ap.add_argument("bundle", type=Path, help="the folder of notes to verify")
+    ap.add_argument("--repo", type=Path, action="append", default=[], metavar="DIR",
+                    help="repository to resolve cited SHAs in (repeatable; okf_check.verify.repos in okf-base.yaml names more)")
     ap.add_argument("--host-paths", action="store_true",
                     help="also look up cited absolute paths outside the bundle and the --repo folders")
-    ap.add_argument("--json", action="store_true")
-    ap.add_argument("--check-config", action="store_true",
-                    help="only check the okf_check block of okf-base.yaml (okf-check calls this): exit 0 when fine, else one error line and exit 2; one \"misplaced<TAB>key<TAB>[duplicate]\" line per okf_check option written outside the block (duplicate: the block holds it too)")
-    ap.add_argument("--manifest-dir", type=Path, default=None,
-                    help="with --check-config: read okf-base.yaml from this folder (okf-check's frozen copy); the paths it names are still resolved against the bundle")
-    ap.add_argument("--strict", action="store_true", help="also fail on UNRESOLVED")
+    ap.add_argument("--json", action="store_true", help="print one JSON document instead of the text report")
+    # INTERNAL, hidden from --help: okf-check runs `okf-verify --check-config <bundle> --manifest-dir <frozen copy>` to read the
+    # okf_check block of okf-base.yaml with this tool's own reader, so the two tools cannot disagree about it (LT-52). Exit 0 when the
+    # block is fine, else one error line and exit 2; one "misplaced<TAB>key<TAB>[duplicate]" line per okf_check option written
+    # outside the block (duplicate: the block holds it too). --manifest-dir reads okf-base.yaml from that folder (okf-check's frozen
+    # copy) while the paths it names are still resolved against the bundle.
+    ap.add_argument("--check-config", action="store_true", help=argparse.SUPPRESS)
+    ap.add_argument("--manifest-dir", type=Path, default=None, help=argparse.SUPPRESS)
+    ap.add_argument("--strict", action="store_true",
+                    help="also fail (exit 1) on UNRESOLVED and on a note with no checkable claim (alias: --strict-trust, okf-check's name for the same idea)")
     ap.add_argument("--remote", action="store_true",
                     help="ask the GitHub or GitLab API (read-only) for a SHA no searched clone holds; also okf_check.verify.remote")
     ap.add_argument("--since", metavar="REF", default=None,
                     help="compare each line citation into a file changed since this git ref with the file at the ref: "
                          "text that moved is MOVED, text that changed in place gets a warning")
-    a = ap.parse_args()
+    # --strict-trust is okf-check's spelling of --strict. It is rewritten here and not registered: a second option string with the
+    # same prefix made the abbreviations --str, --stri and --stric "ambiguous", and they worked before. Arguments after "--" are left alone.
+    argv = sys.argv[1:]
+    end = argv.index("--") if "--" in argv else len(argv)
+    a = ap.parse_args(["--strict" if x == "--strict-trust" else x for x in argv[:end]] + argv[end:])
 
     try:
         is_dir = _guard().path_is_dir(a.bundle)
