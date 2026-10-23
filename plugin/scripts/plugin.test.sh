@@ -1025,7 +1025,7 @@ done
 for t in verify export; do for c in 0 1 2; do grep -qE "^ +$c +[^ ]" "$S51/$t.txt" || miss="$miss okf-$t:$c"; done; done
 [ -z "$miss" ] && ok "S51-HP-H4 each help lists its exit codes (okf-check: every code of the README table and the script)" || bad "S51-HP-H4 exit codes in the help" "missing:$miss"
 # variables: every OKF_* name the code reads, minus the plumbing and test-only names, is in that tool's help and in the README table
-INTERNAL_ENV=" OKF_SCRIPTS_DIR OKF_VENDOR_DIR OKF_MAX_NOTE_BYTES OKF_KEEP_LIST OKF_FOLDER_WHY OKF_STOP_WHY OKF_OWNERS_TSV OKF_SYMLINKED_LST OKF_SIZES_JSONL OKF_PLAIN_RE OKF_L3_ROOT OKF_L2_CRASHED OKF_GRAPH_JSON OKF_FACTS_JSONL OKF_TODAY OKF_PINNED_VERSIONS OKF_FORGE_API_BASE OKF_VERSION "
+INTERNAL_ENV=" OKF_SCRIPTS_DIR OKF_VENDOR_DIR OKF_MAX_NOTE_BYTES OKF_KEEP_LIST OKF_FOLDER_WHY OKF_OUTSIDE_WHY OKF_STOP_WHY OKF_OWNERS_TSV OKF_SYMLINKED_LST OKF_SIZES_JSONL OKF_PLAIN_RE OKF_L3_ROOT OKF_L2_CRASHED OKF_GRAPH_JSON OKF_FACTS_JSONL OKF_TODAY OKF_PINNED_VERSIONS OKF_FORGE_API_BASE OKF_VERSION "
 # plumbing: set by one script for another, or the okf_check.max_note_bytes setting in its env form; OKF_TODAY, OKF_PINNED_VERSIONS and
 # OKF_FORGE_API_BASE exist for tests and replays (README); OKF_VERSION in okf-export is a Python name imported from the validator.
 miss_h=""; miss_r=""; nvars=0

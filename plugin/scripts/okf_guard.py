@@ -202,11 +202,11 @@ def note_cap(bundle=None, env=True):
         return int(given)
     node = json.loads(SCHEMA.read_text(encoding="utf-8"))["keys"]["max_note_bytes"]
     base = os.path.join(str(bundle), "okf-base.yaml") if bundle is not None else ""
-    if base and os.path.isfile(base):   # stat first: opening a FIFO here would block for ever
+    if base and os.path.isfile(base) and not outside(base, bundle):   # stat first: opening a FIFO here would block for ever
         try:
             from okf_validate import load_frontmatter   # late: only a bundle that has a manifest needs the YAML reader
             # read_manifest, not open(): the path was a regular file a moment ago and can be a FIFO now, which open() would wait on
-            cfg = load_frontmatter(read_manifest(base, "utf-8", "replace"))
+            cfg = load_frontmatter(read_manifest(base, "utf-8", "replace", root=bundle))
             v = (cfg.get("okf_check") or {}).get("max_note_bytes") if isinstance(cfg, dict) else None
         except Exception:   # a missing or bad manifest is reported once by run_config; the default stays in force
             v = None
@@ -217,6 +217,29 @@ def note_cap(bundle=None, env=True):
 
 NOTE_WHAT = "okf_check.max_note_bytes"   # what the refusal text names as the source of a note's limit
 MANIFEST_WHAT = "the okf-base.yaml size limit"
+OUTSIDE_WHY = "points outside the bundle"   # the refusal of a path whose real path is outside the bundle; bash twin OKF_OUTSIDE_WHY
+
+
+def outside(p, root):
+    """True when the real path of `p` (symlinks resolved) is not `root` or below it. Each folder of the real path, from the
+    file up, is compared with `root` by (st_dev, st_ino), not by spelling: on a case-insensitive disk `/x/Kb` and `/x/kb`
+    are one folder. Fails closed: a folder that cannot be stat'd counts as outside."""
+    try:
+        top = os.stat(str(root))
+    except OSError:
+        return True
+    d = os.path.realpath(str(p))
+    while True:
+        try:
+            st = os.stat(d)
+        except OSError:
+            return True
+        if (st.st_dev, st.st_ino) == (top.st_dev, top.st_ino):
+            return False
+        up = os.path.dirname(d)
+        if up == d:
+            return True
+        d = up
 
 
 def manifest_cap():
@@ -226,15 +249,16 @@ def manifest_cap():
     return int(json.loads(SCHEMA.read_text(encoding="utf-8"))["manifest_max_bytes"])
 
 
-def read_manifest(p, encoding="utf-8", errors="replace"):
-    """The text of an okf-base.yaml: read_note under the manifest's own limit, not the note cap."""
-    return read_note(p, encoding, errors, cap=manifest_cap(), what=MANIFEST_WHAT)
+def read_manifest(p, encoding="utf-8", errors="replace", *, root):
+    """The text of an okf-base.yaml: read_note under the manifest's own limit, not the note cap. `root`: the bundle."""
+    return read_note(p, encoding, errors, cap=manifest_cap(), what=MANIFEST_WHAT, root=root)
 
 
-def refusal(p, cap=None, what=NOTE_WHAT):
+def refusal(p, cap=None, what=NOTE_WHAT, root=None):
     """Why note `p` must not be opened, or None. Only stats: a device, a pipe or a socket is never opened to find out.
 
-    A missing path or a dangling link gives None: callers skip those as they always did.
+    A missing path or a dangling link gives None: callers skip those as they always did. With `root` (the bundle), a path
+    whose real path is outside it is refused too.
     """
     try:
         st = os.stat(p)   # follows a symlink: the target's type and size are what a reader would meet
@@ -245,19 +269,25 @@ def refusal(p, cap=None, what=NOTE_WHAT):
     cap = cap or note_cap()
     if st.st_size > cap:
         return "larger than %d bytes (%s)" % (cap, what)
+    if root is not None and outside(p, root):   # after the type and size: a link to a device keeps its own reason
+        return OUTSIDE_WHY
     return None
 
 
-def read_note(p, encoding="utf-8-sig", errors="replace", cap=None, newline=None, what=NOTE_WHAT):
+def read_note(p, encoding="utf-8-sig", errors="replace", cap=None, newline=None, what=NOTE_WHAT, *, root):
     """The text of note `p`, read as `open(p, encoding=...).read()` reads it (universal newlines unless `newline` says
     otherwise), but bounded.
 
     Raises NoteRefused for a path that is not a regular file or holds more than `cap` bytes. Checked on the stat BEFORE
     anything is opened, and again on the opened descriptor (the path can change in between); the read itself stops
     one character past the cap, so a file that grows while it is read cannot fill memory.
+
+    `root` is required: the bundle the note belongs to. The file is refused when its real path is outside it, on the path
+    and again on the opened descriptor (a path swapped after the first check is caught at the second). Only a caller that
+    reads a file which is not a bundle's note or config (a list the user names) passes root=None.
     """
     cap = cap or note_cap()
-    why = refusal(p, cap, what)
+    why = refusal(p, cap, what, root)
     if why:
         raise NoteRefused(why)
     # O_NONBLOCK: opening a FIFO with no writer would block. O_NOCTTY: opening a tty must not become our terminal.
@@ -267,6 +297,8 @@ def read_note(p, encoding="utf-8-sig", errors="replace", cap=None, newline=None,
         if not stat.S_ISREG(st.st_mode) or st.st_size > cap:
             raise NoteRefused("not a regular file (device/pipe/...)" if not stat.S_ISREG(st.st_mode)
                               else "larger than %d bytes (%s)" % (cap, what))
+        if root is not None and opened_outside(p, root, st):
+            raise NoteRefused(OUTSIDE_WHY)
         with os.fdopen(fd, "r", encoding=encoding, errors=errors, newline=newline) as fh:
             fd = -1   # fdopen owns the descriptor now
             t = fh.read(cap + 1)
@@ -286,9 +318,23 @@ def _refuse_text(st_mode, size, cap, what=NOTE_WHAT):
     return None
 
 
-def freeze_one(src, dst, cap, must_fit, what=NOTE_WHAT):
+def opened_outside(src, root, st):
+    """True when the file opened from `src` (its fstat `st`) is not the file at a real path inside `root`: the real path is
+    outside, or the link changed between the open and this check (another file at that path now)."""
+    if outside(src, root):
+        return True
+    try:
+        real = os.stat(os.path.realpath(src))
+    except OSError:
+        return True
+    return (real.st_dev, real.st_ino) != (st.st_dev, st.st_ino)
+
+
+def freeze_one(src, dst, cap, must_fit, what=NOTE_WHAT, root=None):
     """Copy `src` to `dst` with a read that cannot run away. Returns None when copied, "link" when a config file is over
     the cap (the caller links it: nothing here reads it), "gone" when it vanished, else the reason it was refused.
+    With `root`, a path whose real path is outside it is refused: the pre-scan judged the link, this judges it again
+    on the opened descriptor, after the type (a link to a device keeps its own reason) and before the size.
 
     The type and size are judged on the OPENED descriptor, not on the path: a path that was a note when the pre-scan
     stat it can be /dev/zero now, and the descriptor is what is read. O_NONBLOCK, so a FIFO opens at once; the read
@@ -306,6 +352,8 @@ def freeze_one(src, dst, cap, must_fit, what=NOTE_WHAT):
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
             return _refuse_text(st.st_mode, 0, cap)
+        if root is not None and opened_outside(src, root, st):   # before "link": an outside file is never linked either
+            return OUTSIDE_WHY
         if st.st_size > cap:
             return "link" if not must_fit else _refuse_text(st.st_mode, st.st_size, cap, what)
         with os.fdopen(fd, "rb") as fh:
@@ -335,9 +383,9 @@ def freeze_main(src_root, dst_root, cap):
         kind, _, rel = rec.partition("\t")
         try:
             if kind == "M":
-                res = freeze_one(os.path.join(src_root, rel), os.path.join(dst_root, rel), manifest_cap(), True, MANIFEST_WHAT)
+                res = freeze_one(os.path.join(src_root, rel), os.path.join(dst_root, rel), manifest_cap(), True, MANIFEST_WHAT, src_root)
             else:
-                res = freeze_one(os.path.join(src_root, rel), os.path.join(dst_root, rel), cap, kind == "N")
+                res = freeze_one(os.path.join(src_root, rel), os.path.join(dst_root, rel), cap, kind == "N", root=src_root)
             if res == "link":
                 os.makedirs(os.path.dirname(os.path.join(dst_root, rel)), exist_ok=True)
                 os.symlink(os.path.join(src_root, rel), os.path.join(dst_root, rel))
@@ -360,7 +408,7 @@ def read_main(p, cap, trim=False):
     in the C locale. ignore-lib.sh trimmed in bash, where each strip tried every prefix or suffix of the line: a line of
     80 KB of spaces took over a minute. One pass here is linear in the file."""
     try:
-        t = read_note(p, "utf-8-sig", "replace", cap=cap)
+        t = read_note(p, "utf-8-sig", "replace", cap=cap, root=os.path.dirname(os.path.abspath(p)))   # .okfignore: its bundle is its folder
     except NoteRefused as exc:
         sys.stdout.write(str(exc))
         return 3

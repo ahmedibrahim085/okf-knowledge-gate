@@ -678,50 +678,63 @@ printf 'y\n' > "$REPO2/g.txt"; git -C "$REPO2" add g.txt
 git -C "$REPO2" -c commit.gpgsign=false -c credential.helper= commit -qm "fix: a commit in the second repository"
 SHA2=$(git -C "$REPO2" rev-parse --short HEAD)
 
-# S1-H1: a declared repository is searched with no --repo flag
+# 0.9.50 okf-verify searches only the repositories given with --repo. A repository named in okf-base.yaml is not
+# searched (the file arrives with the bundle, so it is not the user's choice); each one is named on its own line with
+# the --repo flag to use instead, so it is never dropped in silence, and it never reads as REFUTED or CONFIRMED.
+cfgline() { # <path part> — the number of "not searched ... pass --repo <path>" details naming it (an [repo] UNRESOLVED line must exist)
+  grep -qE '^  unresolved .*\[repo\]' "$TMP/out.txt" || { echo 0; return; }
+  grep -F 'okf_check.verify.repos is not searched since 0.9.50; to search it, pass --repo' "$TMP/out.txt" | grep -cF -- "$1"; }
+
+# S1-H1: a declared repository is not searched: its SHA is UNRESOLVED, the entry is named with --repo, exit 0
 note5 "$TMP/s1h1" "Fixed in commit $REAL_SHA."; decl "$TMP/s1h1" "$REPO"
 rc=$(run "$TMP/s1h1")
-vok "RV-1 (S1-H1) a SHA in a repository declared in okf-base.yaml is CONFIRMED with no --repo"
+{ [ "$rc" = "0" ] && ! grep -qE '^  ok  ' "$TMP/out.txt" && grep -q 'repos searched: NONE' "$TMP/out.txt" && [ "$(cfgline "$REPO")" = "1" ]; } \
+  && ok "RV-1 (S1-H1) a repository named in okf-base.yaml is not searched; one line names it and the --repo flag (exit 0)" \
+  || bad "RV-1 (S1-H1) config repo not searched" "rc=$rc $(head -8 "$TMP/out.txt" | tr '\n' ' ')"
 
-# S1-H2: --repo adds to the declared list
+# S1-H2: the same SHA is CONFIRMED when the repository is given with --repo
 note5 "$TMP/s1h2" "Fixed in commit $REAL_SHA and in commit $SHA2."; decl "$TMP/s1h2" "$REPO"
 rc=$(run "$TMP/s1h2" --repo "$REPO2")
-[ "$(grep -cE '^  ok  ' "$TMP/out.txt")" = "2" ] && ok "RV-2 (S1-H2) --repo adds to the declared repositories: both SHAs are CONFIRMED" \
-  || bad "RV-2 (S1-H2) declared + --repo" "$(grep -E '^  (ok|unresolved)' "$TMP/out.txt" | tr '\n' ' ')"
+{ [ "$(grep -cE '^  ok  ' "$TMP/out.txt")" = "1" ] && grep -qE "^  ok  .*$SHA2" "$TMP/out.txt"; } \
+  && ok "RV-2 (S1-H2) only the --repo repository is searched: its SHA is CONFIRMED, the config repo's SHA is not" \
+  || bad "RV-2 (S1-H2) --repo only" "$(grep -E '^  (ok|unresolved)' "$TMP/out.txt" | tr '\n' ' ')"
 
-# S1-N1: a declared path that does not exist is named, with its reason, and does not change the exit code
-note5 "$TMP/s1n1" "Fixed in commit $REAL_SHA."; decl "$TMP/s1n1" "$TMP/no-such-repo-dir" "$REPO"
-rc=$(run "$TMP/s1n1")
-grep -qE 'declared repository not found: .*/no-such-repo-dir$' "$TMP/out.txt" && grep -qE '^  unresolved .*\[repo\]' "$TMP/out.txt" \
-  && ok "RV-3 (S1-N1) a declared path that does not exist is UNRESOLVED and the reason says 'declared repository not found'" \
-  || bad "RV-3 (S1-N1) missing declared path" "$(head -8 "$TMP/out.txt" | tr '\n' ' ')"
-[ "$rc" = "0" ] && ok "RV-3 (S1-N1) the declaration alone does not change the exit code" || bad "RV-3 (S1-N1) exit code" "exit $rc"
-vok "RV-3 (S1-N1) a valid declared repository next to the missing one is still searched"
-
-# S1-N2: a declared folder that is not a git repository
+# S1-N1/N2: a declared path that does not exist, or is not a git repository, is named the same way; it is never looked at
 mkdir -p "$TMP/s1-plain"
-note5 "$TMP/s1n2" "Fixed in commit $REAL_SHA."; decl "$TMP/s1n2" "$TMP/s1-plain"
-rc=$(run "$TMP/s1n2")
-grep -qE 'not a git repository: .*/s1-plain$' "$TMP/out.txt" && grep -qE '^  unresolved .*\[repo\]' "$TMP/out.txt" \
-  && ok "RV-4 (S1-N2) a declared folder that is not a git repository is UNRESOLVED with 'not a git repository'" \
-  || bad "RV-4 (S1-N2) non-git declared folder" "$(head -8 "$TMP/out.txt" | tr '\n' ' ')"
+note5 "$TMP/s1n1" "Fixed in commit $REAL_SHA."; decl "$TMP/s1n1" "$TMP/no-such-repo-dir" "$TMP/s1-plain"
+rc=$(run "$TMP/s1n1")
+{ [ "$rc" = "0" ] && [ "$(cfgline no-such-repo-dir)" = "1" ] && [ "$(cfgline s1-plain)" = "1" ]; } \
+  && ok "RV-3 (S1-N1/N2) a missing or non-git declared path gets the same one line, exit 0" \
+  || bad "RV-3 (S1-N1/N2) missing/non-git declared path" "rc=$rc $(head -8 "$TMP/out.txt" | tr '\n' ' ')"
+rc=$(run "$TMP/s1n1" --strict)
+[ "$rc" = "1" ] && ok "RV-3 (S1-N1) under --strict an unsearched config repo fails the run (it is UNRESOLVED, not a pass)" || bad "RV-3 strict" "exit $rc"
 
-# S1-E1: ~ is the home folder, a relative path is read from the bundle folder (not from the working directory)
-mkdir -p "$S1H/src"; git clone -q "$REPO" "$S1H/src/x" 2>/dev/null
-note5 "$TMP/s1e1" "Fixed in commit $REAL_SHA."; decl "$TMP/s1e1" "~/src/x"
-rc=$(HOME="$S1H" run "$TMP/s1e1")
-vok "RV-5 (S1-E1) a declared '~/src/x' expands to the home folder"
+# S1-E1: the suggested --repo path is the one the entry names, read from the bundle folder
 mkdir -p "$TMP/s1rel"; git clone -q "$REPO" "$TMP/s1rel/svc" 2>/dev/null
 note5 "$TMP/s1rel/b" "Fixed in commit $REAL_SHA."; decl "$TMP/s1rel/b" "../svc"
 rc=$(cd / && run "$TMP/s1rel/b")
-vok "RV-5 (S1-E1) a declared '../svc' is read from the bundle folder, whatever the working directory"
+{ ! grep -qE '^  ok  ' "$TMP/out.txt" && grep -qF -- "--repo $TMP/s1rel/b/../svc" "$TMP/out.txt"; } \
+  && ok "RV-5 (S1-E1) a relative declared path is not searched; the line names --repo <bundle>/../svc" \
+  || bad "RV-5 (S1-E1) relative path hint" "$(head -8 "$TMP/out.txt" | tr '\n' ' ')"
 
-# S1-E2: the same repository declared and passed is searched once
+# S1-E2: a repository named in okf-base.yaml AND given with --repo is searched once, with no "not searched" line
 note5 "$TMP/s1e2" "Fixed in commit $REAL_SHA."; decl "$TMP/s1e2" "$REPO"
 rc=$(run "$TMP/s1e2" --repo "$REPO/.")
 n=$(grep -oE 'repos searched: .*' "$TMP/out.txt" | tr ',' '\n' | grep -c "$(basename "$REPO")")
-[ "$n" = "1" ] && ok "RV-6 (S1-E2) a repository declared and passed with --repo is searched once" \
-  || bad "RV-6 (S1-E2) searched once" "$(grep 'repos searched' "$TMP/out.txt")"
+{ [ "$n" = "1" ] && grep -qE '^  ok  ' "$TMP/out.txt" && ! grep -q 'not searched' "$TMP/out.txt"; } \
+  && ok "RV-6 (S1-E2) a repository declared and passed with --repo is searched once and not reported" \
+  || bad "RV-6 (S1-E2) searched once" "$(head -6 "$TMP/out.txt" | tr '\n' ' ')"
+
+# The read routes the advisory names: a line citation into the declared repository's committed file and its untracked
+# .md, and an absolute path, are not resolved through a config-named repository (no CONFIRMED, no REFUTED).
+CR="$TMP/s1cr"; mkdir -p "$CR/docs"; git -C "$CR" init -q; printf 'a\nb\nc\n' > "$CR/docs/t.md"
+git -C "$CR" add docs/t.md; git -C "$CR" -c user.email=t@t -c user.name=t -c commit.gpgsign=false -c credential.helper= commit -qm c
+CRS=$(git -C "$CR" rev-parse --short HEAD); printf 'x\ny\n' > "$CR/docs/u.md"
+note5 "$TMP/s1cr-b" "See docs/t.md:3 @$CRS and docs/u.md:2 and $CR/docs/u.md:1."; decl "$TMP/s1cr-b" "$CR"
+rc=$(run "$TMP/s1cr-b")
+{ [ "$rc" = "0" ] && ! grep -qE '^  (ok  |REFUTED)' "$TMP/out.txt"; } \
+  && ok "RV-34 committed, untracked and absolute citations are not resolved through a config-named repository" \
+  || bad "RV-34 config repo read routes" "rc=$rc $(grep -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ')"
 
 # S1-N3: an okf-base.yaml that cannot be read, or whose declaration is not a list of {path: str}, stops the run (exit 2) with ONE line
 # naming the file and the problem. Ignoring it would read as "no repositories declared" and the SHAs would say "no repository searched".
@@ -797,17 +810,18 @@ for c in "cc6|true|true" "cc7||null" "cc8|\"x \"|\"x \""; do
     && ok "RV-24 the refused value '$val' is shown as JSON: $shown" || bad "RV-24 JSON value $id" "exit $rc: $(head -2 "$TMP/out.txt" | tr '\n' ' ')"
 done
 
-# --- 0.9.4 review round 2: a declared path that cannot be resolved is UNRESOLVED, never a crash ---------------------
+# --- 0.9.4 review round 2: a declared path that cannot be resolved is UNRESOLVED 'not searched' (0.9.50), never a crash ---------------------
 # `~nosuchuser/x` made expanduser() raise RuntimeError and an unreadable parent made exists() raise PermissionError: a traceback and exit 1,
-# and exit 1 means "a claim was REFUTED". The entry is reported with the reason "cannot resolve" and the run goes on (exit 0, no REFUTED).
-unres() { # <label> <bundle> — the run for <bundle> (already made) must report that declared repo as UNRESOLVED 'cannot resolve', in text and in --json
+# and exit 1 means "a claim was REFUTED". Since 0.9.50 the entry is not searched; it is still reported (UNRESOLVED, the
+# --repo hint) and the run goes on (exit 0, no REFUTED, no traceback).
+unres() { # <label> <bundle> — the run for <bundle> (already made) must report that declared repo as UNRESOLVED 'not searched', in text and in --json
   local lbl="$1" b="$2" rc1 rc2
   rc2=$(run "$b" --repo "$REPO" --json)
-  { [ "$rc2" = "0" ] && ! grep -q 'Traceback' "$TMP/out.txt" && grep -q '"kind": "repo"' "$TMP/out.txt" && grep -q 'cannot resolve' "$TMP/out.txt" && ! grep -q '"verdict": "REFUTED"' "$TMP/out.txt"; } \
-    && ok "RV-18 $lbl, --json: UNRESOLVED 'cannot resolve', exit 0" || bad "RV-18 $lbl --json" "exit $rc2: $(head -6 "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
+  { [ "$rc2" = "0" ] && ! grep -q 'Traceback' "$TMP/out.txt" && grep -q '"kind": "repo"' "$TMP/out.txt" && grep -q 'not searched since 0.9.50' "$TMP/out.txt" && ! grep -q '"verdict": "REFUTED"' "$TMP/out.txt"; } \
+    && ok "RV-18 $lbl, --json: UNRESOLVED 'not searched', exit 0" || bad "RV-18 $lbl --json" "exit $rc2: $(head -6 "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
   rc1=$(run "$b" --repo "$REPO")
-  { [ "$rc1" = "0" ] && ! grep -q 'Traceback' "$TMP/out.txt" && grep -qE '^  unresolved .*\[repo\]' "$TMP/out.txt" && grep -q 'cannot resolve' "$TMP/out.txt" && ! grep -qE '^  REFUTED ' "$TMP/out.txt"; } \
-    && ok "RV-18 $lbl: UNRESOLVED 'cannot resolve', exit 0, no traceback" || bad "RV-18 $lbl" "exit $rc1: $(head -6 "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
+  { [ "$rc1" = "0" ] && ! grep -q 'Traceback' "$TMP/out.txt" && grep -qE '^  unresolved .*\[repo\]' "$TMP/out.txt" && grep -q 'not searched since 0.9.50' "$TMP/out.txt" && ! grep -qE '^  REFUTED ' "$TMP/out.txt"; } \
+    && ok "RV-18 $lbl: UNRESOLVED 'not searched', exit 0, no traceback" || bad "RV-18 $lbl" "exit $rc1: $(head -6 "$TMP/out.txt" | tr '\n' ' ' | cut -c1-300)"
   vok "RV-18 $lbl: the other (--repo) repository is still searched"
 }
 note5 "$TMP/u1" "Fixed in commit $REAL_SHA."; decl "$TMP/u1" "~nosuchuser_zz/x"
@@ -862,13 +876,16 @@ cite "$TMP/c3b" "\`src/a.py:3 @$C1\`"
 rc=$(run "$TMP/c3b" --repo "$CREPO")
 vrefuted "RV-9 (S2-N1) a file that exists at HEAD but not at the cited commit is REFUTED"
 
-# S1 x S2 seam: a citation resolves against a repository declared in okf-base.yaml, with no --repo flag
+# S1 x S2 seam (0.9.50): a citation does not resolve against a repository named only in okf-base.yaml: not CONFIRMED and
+# not REFUTED (a missing path at that commit would otherwise tell the bundle's author what the repository holds)
 cite "$TMP/seam1" "\`src/a.py:10 @$C2\`"; decl "$TMP/seam1" "$CREPO"
 rc=$(run "$TMP/seam1")
-vok "RV-19 (S1 x S2) a path:line @sha citation is CONFIRMED against a repository declared in okf-base.yaml (no --repo)"
+{ [ "$rc" = "0" ] && ! grep -qE '^  (ok  |REFUTED)' "$TMP/out.txt"; } && ok "RV-19 (S1 x S2) a path:line @sha citation is not resolved against a config-named repository" \
+  || bad "RV-19 (S1 x S2) config seam" "rc=$rc $(grep -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ')"
 cite "$TMP/seam2" "\`src/nope.py:3 @$C2\`"; decl "$TMP/seam2" "$CREPO"
 rc=$(run "$TMP/seam2")
-vrefuted "RV-19 (S1 x S2) ... and REFUTED the same way when the path is missing at that commit"
+{ [ "$rc" = "0" ] && ! grep -qE '^  (ok  |REFUTED)' "$TMP/out.txt"; } && ok "RV-19 (S1 x S2) ... nor REFUTED when the path is missing at that commit" \
+  || bad "RV-19 (S1 x S2) config seam refuted" "rc=$rc $(grep -E '^  (ok|REFUTED|unresolved)' "$TMP/out.txt" | tr '\n' ' ')"
 
 # S2-N3: the sha is in no searched repository -> UNRESOLVED, never REFUTED
 cite "$TMP/c4" "\`src/a.py:10 @deadbe3\`"
@@ -1251,8 +1268,8 @@ PYEOF
       || bad "S39-PY-11 $lbl" "exit $rc: $(head -3 "$TMP/out.txt" | cut -c1-200 | tr '\n' '|')"
     chmod 000 "$PYB/inner"
     rc=$(run "$PYB/b4"); chmod 755 "$PYB/inner"
-    { [ "$rc" = "0" ] && ! grep -q Traceback "$TMP/out.txt" && grep -q 'cannot resolve' "$TMP/out.txt" && ! grep -q 'declared repository not found' "$TMP/out.txt"; } \
-      && ok "S39-PY-05 $lbl: a declared repository under a folder nobody may enter is 'cannot resolve', not 'not found' (exit 0)" \
+    { [ "$rc" = "0" ] && ! grep -q Traceback "$TMP/out.txt" && grep -q 'not searched since 0.9.50' "$TMP/out.txt"; } \
+      && ok "S39-PY-05 $lbl: a declared repository under a folder nobody may enter is reported 'not searched', no traceback (exit 0)" \
       || bad "S39-PY-05 $lbl" "exit $rc: $(head -4 "$TMP/out.txt" | cut -c1-200 | tr '\n' '|')"
   }
   py_unreadable "as run"

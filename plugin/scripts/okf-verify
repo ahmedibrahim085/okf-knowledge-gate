@@ -41,12 +41,8 @@ Which is why SHAs and paths are treated ASYMMETRICALLY:
 Usage:
     okf-verify <bundle> [--repo DIR]... [--json] [--strict]
     okf-verify <bundle> --check-config    only validate the okf_check block of okf-base.yaml
-    Source repositories can be declared once in <bundle>/okf-base.yaml:
-        okf_check:
-          verify:
-            repos:
-              - path: ../svc      # relative to the bundle, absolute, or ~/...
-    --repo adds to them.
+    Only the repositories given with --repo are searched. Since 0.9.50 a repository named in
+    okf-base.yaml (okf_check.verify.repos) is not searched; each is reported with the --repo to pass.
     --strict  also fail on UNRESOLVED (for a corpus that must stay checkable)
 """
 from __future__ import annotations
@@ -953,11 +949,14 @@ def check_line(target: str, lines: str, by_name: bool, note_dir: Path, bundle: P
         return early
     if found is None:
         return None
-    why = guard.refusal(found)
+    # A cited note of the bundle whose real path is outside it is not opened; a file of a searched repository outside
+    # the bundle is judged as before.
+    note_root = None if os.path.relpath(found, bundle).split(os.sep)[0] == ".." else bundle
+    why = guard.refusal(found, root=note_root)
     if why:
         return UNRESOLVED, f"{shown} was not opened: {why}"
     try:
-        text = guard.read_note(found, "utf-8", "replace")
+        text = guard.read_note(found, "utf-8", "replace", root=note_root)
     except OSError as e:
         return UNRESOLVED, f"{shown} cannot be read ({type(e).__name__})"
     count = text.count("\n") + (1 if text and not text.endswith("\n") else 0)
@@ -1236,6 +1235,8 @@ def load_manifest(bundle: Path, source: Path | None = None) -> tuple[dict, dict]
         raise BaseConfigError(f"cannot read: {e.strerror or type(e).__name__}")
     if not present:
         return {}, {}
+    if _guard().outside(base, source or bundle):   # a manifest whose real path is outside the bundle is not read
+        raise BaseConfigError(f"{_guard().OUTSIDE_WHY}: not read")
     # PyYAML and the bounded loader ship beside the scripts in the plugin. The loader refuses a YAML alias bomb (a
     # small file whose aliases nest into billions of items) as an ordinary YAML error, as it does for L1 and the trust helper.
     vendor = Path(__file__).resolve().parent.parent / "vendor"
@@ -1248,7 +1249,7 @@ def load_manifest(bundle: Path, source: Path | None = None) -> tuple[dict, dict]
     except (OSError, ValueError) as e:
         raise BaseConfigError(f"cannot be checked: the schema {schema_file} is unreadable ({type(e).__name__})")
     try:
-        text = _guard().read_manifest(base, "utf-8", "strict")   # bounded by the manifest's own limit, not the note cap
+        text = _guard().read_manifest(base, "utf-8", "strict", root=base.parent)   # bounded by the manifest's own limit, not the note cap
         data = load_frontmatter(text)
     except OSError as e:
         raise BaseConfigError(f"cannot read: {e.strerror or str(e) or type(e).__name__}")
@@ -1360,7 +1361,7 @@ def yaml11_booleans(base: Path, schema: dict) -> None:
     walk(schema, "okf_check")
     if not names:
         return
-    text = okf_check_text(_guard().read_manifest(base, "utf-8", "replace"))
+    text = okf_check_text(_guard().read_manifest(base, "utf-8", "replace", root=base.parent))
     key = "|".join(re.escape(k) for k in names)
     for m in re.finditer(rf"(?m)(?:^|[{{,\s])({key})\s*:[ \t]*([A-Za-z]+)[ \t]*(?=$|[,}}#])", text):
         if YAML11_WORDS.match(m.group(2)):
@@ -1376,40 +1377,38 @@ def misplaced_keys(data: dict, schema: dict) -> list[str]:
     return [k for k in data if k in schema.get("keys", {})]
 
 
-def declared_repos(bundle: Path) -> tuple[list[Path], list[dict]]:
-    """Repositories the bundle declares in okf-base.yaml (okf_check.verify.repos).
+def declared_repos(bundle: Path, given: list[Path]) -> list[dict]:
+    """One UNRESOLVED finding per repository okf-base.yaml names (okf_check.verify.repos) that `given` (--repo) does not.
 
-    A declared path that cannot be used is reported, never dropped: a silently
-    dropped repository would turn every SHA cited from it into "no repository
-    searched" and hide the real cause.
+    Since 0.9.50 only --repo is searched: okf-base.yaml arrives with the bundle, so a repository it names is not
+    the user's choice (the trust model of git's safe.directory). Nothing in the entry's repository is read; it is
+    named with the flag to use instead, never dropped: a silent drop would read as "no repository declared".
+    Reversal: search these again behind an explicit --trust-config flag.
     """
-    node = load_block(bundle).get("verify", {}).get("repos", [])
-    usable, problems = [], []
-    for e in node:
+    def key(p) -> str:
+        # Spelling only, never the disk: an entry's path is not looked at, not even to follow a symlink. os.path's
+        # expanduser leaves `~nosuchuser` as it is instead of raising (a crash is exit 1, "a claim was REFUTED").
+        return os.path.normpath(os.path.abspath(os.path.expanduser(str(p))))
+    searched = {key(r) for r in given}
+    problems = []
+    for e in load_block(bundle).get("verify", {}).get("repos", []):
         raw = e["path"]
-        # `~nosuchuser` makes expanduser() raise and an unreadable parent makes the stat raise. A crash here is exit 1,
-        # which means "a claim was REFUTED"; the entry is UNRESOLVED instead: nobody could look.
-        try:
-            p = Path(raw).expanduser()
-            p = p if p.is_absolute() else bundle / p
-            if not _guard().path_exists(p):
-                detail = f"declared repository not found: {p}"
-            elif not _guard().path_exists(p / ".git"):
-                detail = f"not a git repository: {p}"
-            else:
-                usable.append(p)
-                continue
-        except (RuntimeError, KeyError, OSError) as err:
-            detail = f"cannot resolve: {raw} ({err})"
-        problems.append({"concept": "okf-base.yaml", "kind": "repo", "claim": raw,
-                         "verdict": UNRESOLVED, "detail": detail})  # claim is cut at 48 chars; the detail is not
-    return usable, problems
+        p = Path(raw) if raw.startswith(("/", "~")) else bundle / raw
+        if key(p) in searched:
+            continue
+        problems.append({"concept": "okf-base.yaml", "kind": "repo", "claim": raw, "verdict": UNRESOLVED,
+                         "detail": f"okf_check.verify.repos is not searched since 0.9.50; to search it, pass --repo {p}"})
+    return problems
+
+
+class IgnoreRefused(Exception):
+    """The .okfignore was refused (not read); the message is ignore-lib.sh's reason."""
 
 
 def not_ignored(bundle: Path):
     """The set of notes .okfignore leaves in, from the one shared matcher (ignore-lib.sh), so L4
     and okf-check cannot disagree. None = no .okfignore, or the matcher could not run (then
-    nothing is excluded: a broken matcher must not hide a note)."""
+    nothing is excluded: a broken matcher must not hide a note). Raises IgnoreRefused when the file was refused."""
     if not (bundle / ".okfignore").is_file():
         return None
     lib = Path(__file__).resolve().parent / "ignore-lib.sh"
@@ -1417,6 +1416,8 @@ def not_ignored(bundle: Path):
         r = subprocess.run(["bash", str(lib), "--list", str(bundle)], capture_output=True, timeout=60)
     except (OSError, subprocess.SubprocessError):
         return None
+    if r.returncode == 2:   # the .okfignore was refused (its reason is on ignore-lib.sh's stderr): no verdict, as for okf-base.yaml
+        raise IgnoreRefused(r.stderr.decode("utf-8", "replace").strip() or ".okfignore could not be applied")
     if r.returncode != 0:
         return None
     return {x for x in r.stdout.decode("utf-8", "surrogateescape").split("\0") if x}   # names: surrogateescape, as rglob reads them
@@ -1480,15 +1481,15 @@ def verify(bundle: Path, repos: list[Path], host_paths: bool = False, since: tup
             rel = str(f.relative_to(bundle))
         except ValueError:
             rel = f.name
-        why = guard.refusal(f)
-        if why:   # a device, pipe, folder or oversize file is never opened; nobody looked, so UNRESOLVED
+        why = guard.refusal(f, root=bundle)
+        if why:   # a link out of the bundle, a device, pipe, folder or oversize file is never opened; nobody looked, so UNRESOLVED
             results.append({"concept": rel, "kind": "file", "claim": str(f), "verdict": UNRESOLVED,
                             "detail": f"refused: {why}"})
             continue
         if not f.is_file():
             continue   # a dangling link
         try:
-            text = guard.read_note(f, "utf-8-sig", "strict")   # a BOM before the fence is no content, so frontmatter_end finds the fence
+            text = guard.read_note(f, "utf-8-sig", "strict", root=bundle)   # a BOM before the fence is no content, so frontmatter_end finds the fence
         except (OSError, UnicodeDecodeError):
             results.append({"concept": rel, "kind": "file", "claim": str(f),
                             "verdict": UNRESOLVED, "detail": "unreadable"})
@@ -1710,7 +1711,7 @@ def main() -> int:
     ap.add_argument("--version", action="version", version=f"okf-verify {_v}", help="print the version and exit")
     ap.add_argument("bundle", type=Path, help="the folder of notes to verify")
     ap.add_argument("--repo", type=Path, action="append", default=[], metavar="DIR",
-                    help="repository to resolve cited SHAs in (repeatable; okf_check.verify.repos in okf-base.yaml names more)")
+                    help="repository to resolve cited SHAs in (repeatable; the only repositories searched)")
     ap.add_argument("--host-paths", action="store_true",
                     help="also look up cited absolute paths outside the bundle and the --repo folders")
     ap.add_argument("--json", action="store_true", help="print one JSON document instead of the text report")
@@ -1782,7 +1783,6 @@ def main() -> int:
     try:
         # One cap for this process and for ignore-lib.sh, which not_ignored() runs: the bundle's setting, else the default.
         os.environ["OKF_MAX_NOTE_BYTES"] = str(_guard().note_cap(a.bundle))
-        declared, declared_problems = declared_repos(a.bundle)
     except BaseConfigError as e:
         print(f"error: {a.bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
         return 2
@@ -1793,14 +1793,23 @@ def main() -> int:
         except OSError as e:   # a folder above it that nobody may enter: stat raises instead of answering
             return False, e.strerror or type(e).__name__
     looked = [(r, *git_dir(r)) for r in a.repo]
+    try:
+        declared_problems = declared_repos(a.bundle, [r for r, found, _ in looked if found])
+    except BaseConfigError as e:
+        print(f"error: {a.bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
+        return 2
     repos, seen_repos = [], set()
-    for r in [*declared, *(r for r, found, _ in looked if found)]:
-        if r.resolve() not in seen_repos:  # declared and passed with --repo: searched once
+    for r in (r for r, found, _ in looked if found):
+        if r.resolve() not in seen_repos:  # passed twice with --repo: searched once
             seen_repos.add(r.resolve())
             repos.append(r)
     skipped = [str(r) for r, found, why in looked if not found and not why]
     unreadable = [{"path": str(r), "why": why} for r, found, why in looked if why]
-    keep = not_ignored(a.bundle)
+    try:
+        keep = not_ignored(a.bundle)
+    except IgnoreRefused as e:
+        print(f"error: {e}", file=sys.stderr)
+        return 2
     if keep is not None:
         total = sum(1 for f in a.bundle.rglob("*.md") if f.is_file() and f.name not in RESERVED)
         left = sum(1 for k in keep if Path(k).name not in RESERVED)

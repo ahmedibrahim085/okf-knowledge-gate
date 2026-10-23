@@ -43,7 +43,7 @@ inputs:
     required: false
     default: 'false'
   repo:
-    description: Folder of the repository okf-verify looks cited commits up in (its --repo). Used only with verify.
+    description: Folder of the repository okf-verify looks cited commits up in (its --repo). Used only with verify. This and any --repo in verify-args are the only repositories searched; okf_check.verify.repos in okf-base.yaml is not (since 0.9.50).
     required: false
     default: '.'
   verify-args:

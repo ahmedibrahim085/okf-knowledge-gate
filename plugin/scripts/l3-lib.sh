@@ -74,7 +74,7 @@ okf_md_files() {
   cap=$(okf_note_cap)
   while IFS= read -r -d '' f; do
     [ -f "$f" ] || continue
-    [ -L "$f" ] && [ -n "$(okf_note_refusal "$f")" ] && continue
+    [ -L "$f" ] && [ -n "$(okf_note_refusal "$f" "$1")" ] && continue   # $1: a link out of the root is not read
     printf '%s\0' "$f"
   done < <(find -H "$1" -name '*.md' \( \( -type f ! -size +"${cap}"c \) -o -type l \) -print0 2>/dev/null)
 }

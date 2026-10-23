@@ -23,7 +23,7 @@ sys.dont_write_bytecode = True   # a direct run must not leave scripts/__pycache
 sys.path.insert(0, str(HERE.parent / "vendor"))
 sys.path.insert(0, str(HERE))
 import okf_validate as v  # noqa: E402
-from okf_guard import read_note, refusal  # noqa: E402  (stat-based refusal and a bounded read)
+from okf_guard import OUTSIDE_WHY, read_note, refusal  # noqa: E402  (stat-based refusal and a bounded read)
 
 _spec = importlib.util.spec_from_file_location("okf_trust", HERE / "okf-trust.py")
 trust = importlib.util.module_from_spec(_spec)
@@ -36,9 +36,9 @@ NEAR_MISS = "is a near-miss of `human:`/`process:`"
 def main(argv: list) -> int:
     bundle, rel, strict = Path(argv[1]), argv[2], "--strict-trust" in argv[3:]
     path = bundle / rel
-    why = refusal(path)   # the target note: the bash side has judged it already; this is the same rule for a direct caller
+    why = refusal(path, root=bundle)   # the target note: the bash side has judged it already; this is the same rule for a direct caller
     if why:
-        print(f"{rel}: L1 error: refused, {why}: skipped")   # the line shape the edit hook warns on
+        print(f"{rel}: L1 error: refused, {why}: {'not read' if why == OUTSIDE_WHY else 'skipped'}")   # the line shape the edit hook warns on
         return 1
     report = v.Report()
     if path.name == "index.md":
@@ -53,7 +53,7 @@ def main(argv: list) -> int:
     if os.environ.get("OKF_KEEP_LIST"):
         keep = {x for x in open(os.environ["OKF_KEEP_LIST"], encoding="utf-8", errors="surrogateescape").read().split("\0") if x}
     # refusal(): a sibling that is a device or over the cap is never read for its links
-    v.check_links(bundle, sorted(p for p in bundle.rglob("*.md") if p.is_file() and refusal(p) is None
+    v.check_links(bundle, sorted(p for p in bundle.rglob("*.md") if p.is_file() and refusal(p, root=bundle) is None
                                  and (keep is None or str(p.relative_to(bundle)) in keep)), report)
     mine = len(rel) + 2
     errors = [m[mine:] for m in report.errors if m.startswith(rel + ": ")]
@@ -62,7 +62,7 @@ def main(argv: list) -> int:
     rows, too_large = [], None
     if path.name not in ("index.md", "log.md"):   # Trust reads concepts only, as okf-trust.py does
         try:
-            raw, _ = v.split_frontmatter(read_note(path, "utf-8-sig", "strict"))
+            raw, _ = v.split_frontmatter(read_note(path, "utf-8-sig", "strict", root=bundle))
             meta = v.load_frontmatter(raw) if raw is not None else None
         except v.AliasBombError as e:   # the loader's size cap: its trust claims are unread, which is not "no finding" (L1 reports the cap too)
             meta, too_large = None, str(e)

@@ -141,7 +141,7 @@ def main(argv):
         try:
             # A note name keeps its bytes (surrogateescape, as git's list of names is read); a `line:` entry is text and is
             # decoded as the diff text is (replace), so a line holding a byte that is not UTF-8 still matches.
-            for line in read_note(deleted_file, "utf-8", "surrogateescape").split("\n"):
+            for line in read_note(deleted_file, "utf-8", "surrogateescape", root=None).split("\n"):   # --deleted names a file of the user's, not a note
                 line = line.strip()
                 if not line or line.startswith("#"):
                     continue
@@ -159,7 +159,7 @@ def main(argv):
         for f in files:
             if f.endswith(".md"):
                 try:
-                    corpus.update(norm(x) for x in read_note(os.path.join(root, f), "utf-8", "replace").split("\n"))
+                    corpus.update(norm(x) for x in read_note(os.path.join(root, f), "utf-8", "replace", root=real_bundle).split("\n"))
                 except OSError:
                     pass
 

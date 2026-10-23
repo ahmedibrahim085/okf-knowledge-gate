@@ -310,15 +310,17 @@ expect_match "concepts" "E-6a symlinked bundle still counts concepts" "$CHECK" "
 # E-6b is the one with teeth. `find -type f` does NOT match a symlink, so a
 # symlinked concept is counted by L1 (python is_file() follows links) and MISSED
 # by L3 — the two layers disagree about what is in the bundle. Same class as
-# lessons/readdir-symlink-dirent-trap.md, in bash instead of Node.
-printf -- '---\ntype: Lesson\ntitle: S\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2000-01-01"\n---\nbody\n' > "$TMP/e6outside.md"
-ln -s "$TMP/e6outside.md" "$E6/linked.md"
+# lessons/readdir-symlink-dirent-trap.md, in bash instead of Node. The target is inside the bundle: a link whose real path
+# is outside it is not read at all (S58).
+mkdir -p "$E6/real"
+printf -- '---\ntype: Lesson\ntitle: S\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2000-01-01"\n---\nbody\n' > "$E6/real/target.md"
+ln -s real/target.md "$E6/linked.md"
 expect_match "linked.md (stale_after" "E-6b L3 sees a SYMLINKED concept file" "$CHECK" "$E6"
 "$CHECK" "$E6" >"$TMP/e6.txt" 2>&1
 l1=$(grep -oE '[0-9]+ concepts' "$TMP/e6.txt" | grep -oE '[0-9]+')
 l3=$(grep -cE 'stale_after 2000' "$TMP/e6.txt")
-[ "${l1:-0}" -eq 2 ] && [ "${l3:-0}" -ge 1 ] \
-  && ok "E-6b L1 and L3 agree on bundle contents (both see 2)" \
+[ "${l1:-0}" -eq 3 ] && [ "${l3:-0}" -ge 2 ] \
+  && ok "E-6b L1 and L3 agree on bundle contents (L1 counts 3, L3 flags the target and its link)" \
   || bad "E-6b L1 and L3 agree on bundle contents" "L1 counted ${l1:-?} concepts, L3 flagged ${l3:-0} expired"
 
 # E-9: concepts in SUBDIRECTORIES. Same class as E-6b, one level deeper and
@@ -360,13 +362,15 @@ fp_after=$("$CHECK" --fingerprint "$E9B" 2>/dev/null)
 fp_again=$("$CHECK" --fingerprint "$E9B" 2>/dev/null)
 [ "$fp_after" = "$fp_again" ] && ok "E-9b an untouched bundle yields a stable fingerprint" \
   || bad "E-9b stable fingerprint on an untouched bundle" "changed with no write — CONCURRENT would false-positive"
-# a SYMLINKED concept's target changing must also be visible
-printf -- '---\ntype: Lesson\ntitle: S\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nbody\n' > "$TMP/e9b_target.md"
-ln -s "$TMP/e9b_target.md" "$E9B/linked.md"
-fp_l1=$("$CHECK" --fingerprint "$E9B" 2>/dev/null)
-printf -- '---\ntype: Lesson\ntitle: S\ndescription: D CHANGED AND LONGER\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nbody body body\n' > "$TMP/e9b_target.md"
-fp_l2=$("$CHECK" --fingerprint "$E9B" 2>/dev/null)
-[ "$fp_l1" != "$fp_l2" ] \
+# a SYMLINKED concept's target changing must also be visible, on the LINK's own line: the target is inside the bundle (a
+# link out of it is not read, S58) and has a line of its own, which changes anyway
+mkdir -p "$E9B/t"
+printf -- '---\ntype: Lesson\ntitle: S\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nbody\n' > "$E9B/t/e9b_target.md"
+ln -s t/e9b_target.md "$E9B/linked.md"
+fp_l1=$(grep '/linked\.md$' <<< "$("$CHECK" --fingerprint "$E9B" 2>/dev/null)")
+printf -- '---\ntype: Lesson\ntitle: S\ndescription: D CHANGED AND LONGER\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nbody body body\n' > "$E9B/t/e9b_target.md"
+fp_l2=$(grep '/linked\.md$' <<< "$("$CHECK" --fingerprint "$E9B" 2>/dev/null)")
+[ -n "$fp_l1" ] && [ "$fp_l1" != "$fp_l2" ] \
   && ok "E-9c rewriting a SYMLINKED concept's target changes the fingerprint" \
   || bad "E-9c symlinked target change is visible" "identical — stat without -L reads the link, not the target"
 
@@ -1758,11 +1762,11 @@ cat >> "$LLP/scripts/okf_notes.py" <<'STUB'
 _real_body_chars = body_chars
 
 
-def body_chars(p):   # test stub: the size layer's reader sleeps when asked to
+def body_chars(p, *, root):   # test stub: the size layer's reader sleeps when asked to
     if os.environ.get("OKF_STUB_SIZE_SLEEP"):
         import time
         time.sleep(30)
-    return _real_body_chars(p)
+    return _real_body_chars(p, root=root)
 STUB
 LLS="$TMP/lls"; mkbundle "$LLS"
 sed 's/^  name: CHANGE ME/  name: T/' "$HERE/../config/okf-base.yaml.template" > "$LLS/okf-base.yaml"

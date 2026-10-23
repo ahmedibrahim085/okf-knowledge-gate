@@ -30,7 +30,7 @@ sys.dont_write_bytecode = True   # a direct run must not leave scripts/__pycache
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "vendor"))
 from okf_validate import AliasBombError, load_frontmatter, split_frontmatter  # noqa: E402  (the validator's own splitter, so both agree)
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from okf_guard import read_note, shown  # noqa: E402  (bounded read)
+from okf_guard import read_note, refusal, shown  # noqa: E402  (bounded read, refusal: a link out of the bundle)
 
 # `<producer>/<version>` or an `agent:<id>` actor; `human:` and `process:` are never agents.
 AGENT_FORM = re.compile(r"^(?:agent:\S+|[^\s:/]+/\S+|[^\s:/]+)$")   # a bare token (`claudebot`) is an agent too; `team:<id>` is not
@@ -162,11 +162,11 @@ def main():
     bundle, out_path = Path(sys.argv[1]), sys.argv[2]
     records = []
     for path in sorted(bundle.rglob("*.md")):
-        if path.name in ("index.md", "log.md") or not path.is_file():
+        if path.name in ("index.md", "log.md") or not path.is_file() or refusal(path, root=bundle):   # not a link out of the bundle
             continue
         try:
             # utf-8-sig: a BOM would hide the opening fence, and L1 counts such a note.
-            raw, _ = split_frontmatter(read_note(path, "utf-8-sig", "strict"))
+            raw, _ = split_frontmatter(read_note(path, "utf-8-sig", "strict", root=bundle))
             meta = load_frontmatter(raw) if raw is not None else None
         except AliasBombError as e:   # the loader's size cap: a trust claim in this note is unread, which is not "no finding" (L1 reports the cap too)
             print(f"T|{shown(path.relative_to(bundle).as_posix())}: the note was too large to read, so its trust claims were not checked: {e}")

@@ -269,12 +269,13 @@ grep -q 'negation' "$TMP/g2c.txt" && ok "S21-LC-G2b a negated generated glob is 
 section "review fixes (0.9.34)"
 # S21-LC-R1 (review B1): a symlink in the bundle that points outside it (a note or a folder) is not followed: its target is
 # outside the bundle and the searched repositories, so the citation is UNRESOLVED and nothing of the target is read. Before,
-# an anchor turned CONFIRMED / REFUTED into an oracle on the target's text (a link to /proc/self/environ).
+# an anchor turned CONFIRMED / REFUTED into an oracle on the target's text (a link to /proc/self/environ). The fourth
+# "outside the bundle" line is env.md itself: a note whose real path is outside the bundle is not read (S58).
 mkdir -p "$TMP/r1out"; printf 'HOME=/root\nTOKEN=s3cret\nthird\n' > "$TMP/r1out/creds.md"
 B="$TMP/r1"; mkbundle "$B"; ln -s "$TMP/r1out/creds.md" "$B/env.md"; ln -s "$TMP/r1out" "$B/link"
 note "$B/a.md" 'env:1 "HOME=/root", env.md:2 "TOKEN=nope" and link/creds.md:3'
 rc=$(runjson "$B"); got=$(lineres); run "$B" >/dev/null
-{ [ "$rc" = 0 ] && [ "$got" = '[["env.md:2", "UNRESOLVED"], ["link/creds.md:3", "UNRESOLVED"], ["env:1", "UNRESOLVED"]]' ] && [ "$(grep -c 'outside the bundle' "$TMP/out.txt")" = 3 ]; } \
+{ [ "$rc" = 0 ] && [ "$got" = '[["env.md:2", "UNRESOLVED"], ["link/creds.md:3", "UNRESOLVED"], ["env:1", "UNRESOLVED"]]' ] && [ "$(grep -c 'outside the bundle' "$TMP/out.txt")" = 4 ]; } \
   && ok "S21-LC-R1 a symlink to a file or folder outside the bundle is not followed (UNRESOLVED, not read)" || bad "S21-LC-R1 symlink escape" "rc=$rc got=$got"
 
 # S21-LC-R2 (review B2): --since compares only a citation the note already had at the ref. A branch that moves the text AND

@@ -23,6 +23,7 @@ import unicodedata
 sys.dont_write_bytecode = True   # a direct run must not leave scripts/__pycache__ in the installed plugin (plugin.test.sh Z-2)
 sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
 from okf_notes import TooLarge, meta, read_manifest, read_note, refusal, resolve, shown  # noqa: E402
+from okf_guard import OUTSIDE_WHY  # noqa: E402
 from okf_validate import load_frontmatter  # noqa: E402
 
 bundle, as_json = sys.argv[1], sys.argv[3] == "1"
@@ -34,7 +35,7 @@ schema = json.load(open(sys.argv[2], encoding="utf-8"))["keys"]["duplicates"]["k
 try:
     # read_note: a bounded read of a regular file (okf-check has refused a device or pipe named okf-base.yaml up front;
     # this is the second wall, for one that appeared after that check). NoteRefused is an OSError.
-    cfg = load_frontmatter(read_manifest(root / "okf-base.yaml", "utf-8", "strict")) or {}
+    cfg = load_frontmatter(read_manifest(root / "okf-base.yaml", "utf-8", "strict", root=root)) or {}
 except OSError:
     cfg = {}
 opt = ((cfg.get("okf_check") or {}).get("duplicates") or {}) if isinstance(cfg, dict) else {}
@@ -74,9 +75,9 @@ refused = []
 for p in sorted(root.rglob("*.md")):
     if p.name in ("index.md", "log.md") or (keep is not None and str(p.relative_to(root)) not in keep):
         continue
-    why = refusal(p)   # a device, pipe, folder or oversize file is never opened; stderr, because stdout may be --json
+    why = refusal(p, root=root)   # a device, pipe, folder or oversize file is never opened; stderr, because stdout may be --json
     if why:
-        refused.append("%s — %s: skipped" % (p.relative_to(root), why))
+        refused.append("%s — %s: %s" % (p.relative_to(root), why, "not read" if why == OUTSIDE_WHY else "skipped"))
         continue
     r = os.path.realpath(str(p))
     if r not in by_real or (by_real[r].is_symlink() and not p.is_symlink()):
@@ -91,7 +92,7 @@ for p in to_read:
     if over("read"):
         cut_in = "read"   # the limit covers reading too: a bundle of huge notes stops here, and says so
         break
-    m = meta(p, too_large=True)
+    m = meta(p, too_large=True, root=root)
     if isinstance(m, TooLarge):   # not compared, and the report says so: it is not "no duplicates" for that note
         unread.append({"rel": str(p.relative_to(root)), "why": "the note was too large to read: " + m.why})
         continue
@@ -105,7 +106,7 @@ for p in to_read:
     shingles = set()
     if with_body:
         try:
-            t = read_note(p, "utf-8-sig", "replace")   # a BOM note, as L1 reads it (0.9.8 review G-1)
+            t = read_note(p, "utf-8-sig", "replace", root=root)   # a BOM note, as L1 reads it (0.9.8 review G-1)
         except OSError:
             t = ""   # a dangling symlink, an unreadable file or a folder named x.md: no body, not a crash (advisory report)
         e = t.find("\n---", 3) if t.startswith("---") else -1

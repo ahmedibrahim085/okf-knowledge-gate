@@ -34,7 +34,7 @@ sys.dont_write_bytecode = True   # an import must not leave scripts/__pycache__ 
 sys.path[:0] = [str(VENDOR / "pyyaml"), str(VENDOR), str(Path(__file__).resolve().parent)]
 import yaml  # noqa: E402
 from okf_validate import OKF_VERSION, load_frontmatter, split_frontmatter  # noqa: E402  (the validator's own reader, so both agree)
-from okf_guard import path_exists, path_is_dir, path_is_file, read_note, refusal  # noqa: E402  (a note is opened only when regular and within the cap)
+from okf_guard import OUTSIDE_WHY, NoteRefused, opened_outside, path_exists, path_is_dir, path_is_file, read_note, refusal  # noqa: E402  (a note is opened only when regular and within the cap)
 
 # `[[target#heading|alias]]`. An embed `![[x]]` transcludes x, which a Markdown link cannot say, so it is left as written.
 WIKILINK = re.compile(r"(?<!!)\[\[([^\[\]]+)\]\]")
@@ -535,18 +535,35 @@ def body_lines(lines: list[str], nested: bool = False, level: int = 0, joins: se
         yield i, raw, in_code, None if hold and (items or pos) else heading   # an ATX heading on a line of its own, in no item, ends a paragraph in either reading
 
 
-def read_text(path: Path) -> str:
+def read_text(path: Path, root: Path) -> str:
     """The note as written: no newline translation (a CRLF note stays CRLF), a BOM kept. Raises UnicodeDecodeError.
 
-    Bounded: main() leaves a refused note out of `files`, and this refuses one that changed after that."""
-    return read_note(path, "utf-8", "strict", newline="")
+    Bounded: main() leaves a refused note out of `files`, and this refuses one that changed after that, also one whose
+    real path left `root` (the vault, or the bundle being written) since the listing (NoteRefused)."""
+    return read_note(path, "utf-8", "strict", newline="", root=root)
+
+
+def copy_from(src: Path, dest: Path, root: Path) -> None:
+    """shutil.copy2 of a file of `root`, judged on the opened descriptor: a file that is no longer regular, or whose real
+    path left `root` since the listing, is refused (NoteRefused) and nothing is written. Mode and times are copied."""
+    fd = os.open(src, os.O_RDONLY | os.O_NONBLOCK | getattr(os, "O_NOCTTY", 0))
+    with os.fdopen(fd, "rb") as fh:
+        st = os.fstat(fh.fileno())
+        if not stat.S_ISREG(st.st_mode):
+            raise NoteRefused("not a regular file (device/pipe/...)")
+        if opened_outside(src, root, st):
+            raise NoteRefused(OUTSIDE_WHY.replace("bundle", "vault"))
+        with open(dest, "wb") as out:
+            shutil.copyfileobj(fh, out)
+    os.chmod(dest, stat.S_IMODE(st.st_mode))
+    os.utime(dest, ns=(st.st_atime_ns, st.st_mtime_ns))
 
 
 @functools.lru_cache(maxsize=None)   # one read per target, however many links point at it
-def heading_slugs(path: Path) -> set[str]:
+def heading_slugs(path: Path, root: Path) -> set[str]:
     try:
-        lines = [l.rstrip("\r\n") for l in split_lines(read_text(path).lstrip("\ufeff"))]   # a BOM is not part of the first heading line
-    except UnicodeDecodeError:
+        lines = [l.rstrip("\r\n") for l in split_lines(read_text(path, root).lstrip("\ufeff"))]   # a BOM is not part of the first heading line
+    except (UnicodeDecodeError, NoteRefused):   # NoteRefused: the target changed since the listing; its anchor is not looked up
         return set()   # the target is reported on its own as not valid UTF-8; a heading in it cannot be found
     found, counts = set(), {}
     try:
@@ -750,11 +767,11 @@ def link_text(text: str) -> str:
     return "".join(out) + re.sub(r"([\\\[\]])", r"\\\1", text[pos:])
 
 
-def entry(path: Path) -> str:
+def entry(path: Path, root: Path) -> str:
     """One spec 8 index line: `* [title](file) - description`, the title falling back to the file name."""
     try:   # a BOM is not part of the frontmatter fence; a note that is not UTF-8 was copied as it is (X-11)
-        raw, _ = split_frontmatter(read_text(path).lstrip("\ufeff"))
-    except UnicodeDecodeError:
+        raw, _ = split_frontmatter(read_text(path, root).lstrip("\ufeff"))
+    except (UnicodeDecodeError, NoteRefused):   # NoteRefused: the written file changed since; the index lists its name only
         raw = None
     try:
         meta = load_frontmatter(raw) if raw is not None else {}
@@ -779,7 +796,7 @@ def write_indexes(out: Path, concepts: list[Path]) -> None:
     for d, (names, subs) in folders.items():
         sections = []
         if names:
-            sections.append("# Concepts\n\n" + "".join(entry(out / c) for c in sorted(names)))
+            sections.append("# Concepts\n\n" + "".join(entry(out / c, out) for c in sorted(names)))
         if subs:
             sections.append("# Folders\n\n" + "".join(f"* [{link_text(s)}]({quote(s)}/)\n" for s in sorted(subs)))
         head = f'---\nokf_version: "{OKF_VERSION}"\n---\n' if d == Path(".") else ""
@@ -1029,24 +1046,35 @@ def main() -> int:
 
     problems: list[str] = [f"{rel.as_posix()} — {why}: skipped" for rel, why in refused]
     problems += [f"{rel.as_posix()} — {why}: exported" for rel, why in warned]   # a warning: the file is exported
+    dropped: set[Path] = set()   # refused at the copy (changed since the listing): not written, so not indexed
     for rel in files:
         dest = out / out_rel(rel)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        if rel.suffix != ".md":
-            shutil.copy2(vault / rel, dest)
-            continue
-        try:
-            lines = split_lines(read_text(vault / rel))
-        except UnicodeDecodeError:
-            problems.append(f"{rel.as_posix()}:1: not valid UTF-8, copied unchanged")
-            shutil.copy2(vault / rel, dest)
+        try:   # each read judges the opened file: one that changed or left the vault since the listing is not written
+            if rel.suffix != ".md":
+                copy_from(vault / rel, dest, vault)
+                continue
+            try:
+                lines = split_lines(read_text(vault / rel, vault))
+            except UnicodeDecodeError:
+                problems.append(f"{rel.as_posix()}:1: not valid UTF-8, copied unchanged")
+                copy_from(vault / rel, dest, vault)
+                continue
+        except NoteRefused as err:
+            problems.append(f"{rel.as_posix()} — {str(err).replace('bundle', 'vault')}: skipped")
+            dropped.add(rel)
             continue
         try:
             joins: set[int] = set()
             rows = list(body_lines(lines, joins=joins))
         except TooDeep:
+            try:
+                copy_from(vault / rel, dest, vault)
+            except NoteRefused as err:
+                problems.append(f"{rel.as_posix()} — {str(err).replace('bundle', 'vault')}: skipped")
+                dropped.add(rel)
+                continue
             problems.append(f"{rel.as_posix()}:1: block quotes and list items nested deeper than {NEST_MAX} levels: copied unchanged, its links not rewritten")
-            shutil.copy2(vault / rel, dest)
             continue
         raw = raw_ranges(lines, rows, joins)
         for i, line, code, _ in rows:
@@ -1073,7 +1101,7 @@ def main() -> int:
                 if heading and found[0].suffix != ".md":
                     href += "#" + quote(heading, safe="=&")   # a PDF page link: the fragment is the viewer's, not a heading
                 elif heading:
-                    anchor = matching_anchor(slug(heading), heading_slugs(vault / found[0]))
+                    anchor = matching_anchor(slug(heading), heading_slugs(vault / found[0], vault))
                     if anchor is None:
                         problems.append(f"{rel.as_posix()}:{no}: missing heading {m.group(0)}")
                         return m.group(0)
@@ -1096,7 +1124,7 @@ def main() -> int:
                 dest.write_text(log, encoding="utf-8")
             continue
         dest.write_bytes("".join(lines).encode("utf-8"))   # bytes: no newline translation on the way out either
-    write_indexes(out, [out_rel(rel) for rel in files if rel.suffix == ".md" and not is_log(rel)])
+    write_indexes(out, [out_rel(rel) for rel in files if rel.suffix == ".md" and not is_log(rel) and rel not in dropped])
     for p in problems:
         print(CONTROL.sub("?", p))
     return 1 if problems else 0

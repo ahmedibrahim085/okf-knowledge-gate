@@ -75,7 +75,7 @@ def statements(bundle, files, facts):
     out, seen = [], set()
     for f in sorted(files):
         try:
-            text = read_note(f, "utf-8", "replace").lstrip("﻿")
+            text = read_note(f, "utf-8", "replace", root=bundle).lstrip("﻿")
         except OSError:
             continue   # L1 reports a note it cannot read
         rel = shown(os.path.relpath(f, bundle)).replace("\n", " ").replace("\t", " ")
@@ -94,7 +94,7 @@ def statements(bundle, files, facts):
 def main(argv):
     bundle, manifest, lst, mode = argv[1:5]
     try:
-        cfg = load_frontmatter(read_manifest(manifest, "utf-8", "replace"))
+        cfg = load_frontmatter(read_manifest(manifest, "utf-8", "replace", root=bundle))
     except Exception:
         cfg = {}
     opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}

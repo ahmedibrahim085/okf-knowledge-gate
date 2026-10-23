@@ -198,11 +198,11 @@ Read the exit code, do not just test for zero:
 `okf-verify` checks four kinds of claim and answers CONFIRMED, REFUTED or UNRESOLVED for each (and MOVED for a citation
 whose quoted text is now on another line):
 
-- **A commit SHA** is looked up in each `--repo` folder and in the repositories the bundle lists under
-  `okf_check.verify.repos` in `okf-base.yaml`. A SHA that is in no searched repository is UNRESOLVED, never REFUTED.
-  Treat `verify.repos` as trusted input: an `okf-base.yaml` from a fork pull request can point it at any repository on the
-  runner (an absolute path to an unrelated repository was searched and its commit CONFIRMED), so do not run `okf-verify`
-  on an untrusted pull request's bundle with that file in place.
+- **A commit SHA** is looked up in each `--repo` folder, and only there: `--repo` on the command line is the only way to
+  have a repository searched. A SHA that is in no searched repository is UNRESOLVED, never REFUTED. Since 0.9.50 a
+  repository named under `okf_check.verify.repos` in `okf-base.yaml` is not searched, because that file arrives with the
+  bundle (for example in a fork pull request) and is not your choice. Each such entry is reported UNRESOLVED with the
+  line `okf_check.verify.repos is not searched since 0.9.50; to search it, pass --repo <path>`; it fails the run only under `--strict`.
   With `--remote` (or `okf_check.verify.remote: true`) such a SHA is also looked up, read-only, on the GitHub or GitLab
   repository the clone's `origin` names, and is CONFIRMED there when the local clone is only behind.
 - **A code citation**, `path:line @sha` (also `path:first-last @sha` and `path:line at sha`), is one claim: the commit
@@ -218,7 +218,7 @@ whose quoted text is now on another line):
   A `--repo` or a bundle under a folder you may not enter is named in one line, not a traceback.
 
 In a shallow clone (the `actions/checkout` default), commits older than the clone are missing: use `fetch-depth: 0`.
-The full rules (declared repositories, line ranges, anchors, generated notes, paths that contain a space, what is not a
+The full rules (which repositories are searched, line ranges, anchors, generated notes, paths that contain a space, what is not a
 citation) are in
 [the okf-verify reference](plugin/skills/okf/references/verify-and-install.md#what-counts-as-a-claim-and-how-each-is-judged).
 
@@ -252,7 +252,8 @@ for these three sections and compares the export with a CommonMark reader.
 `okf-export` leaves out dot files and folders (`.obsidian`, `.git`) and names each file it skips (exit 1). A symlink that
 leaves the vault or leads into a dot name is skipped, an absolute one without its host path (`an absolute link`). A symlink to
 a folder is not followed, so its notes are not exported, and a broken link or a loop leads nowhere: all three are named,
-never skipped in silence. A hard link to a file under a dot name is the same file, so it is skipped and named too (it is found
+never skipped in silence. A file that becomes a link out of the vault after the listing is named, not written and not
+indexed (exit 1). A hard link to a file under a dot name is the same file, so it is skipped and named too (it is found
 by device and inode). A visible file whose link count is higher than the names of it found in the vault has another name
 outside it (or in the target of a symlink under a dot name, which is not walked): it looks like a file that lives in the
 vault, so it is exported, and named with a warning, as GNU tar `--check-links` does (`a.md — a file with 2 names, 1 of them in
@@ -288,14 +289,11 @@ different tool that is also called `okf` is not mistaken for it. The plugin neve
 
 ```yaml
 okf_check:
-  verify:
-    repos:
-      - path: .
   deprecated_requires: superseded_by
 ```
 
-A relative `path` under `verify.repos` is read from the bundle folder: `.` suits a bundle at the repository root, a bundle in
-`.okf/` needs `..`.
+`verify.repos` is still accepted in this block, but since 0.9.50 `okf-verify` does not search it: pass each repository
+with `--repo` (see [Verify](#verify)).
 
 `deprecated_requires: superseded_by`: every `status: deprecated` note names its replacement in `superseded_by` (a
 path, a `[[wikilink]]`, a markdown link, or a list of them, resolved from the bundle root or the note's folder). The
@@ -411,6 +409,17 @@ A device or pipe named `okf-base.yaml` is refused the same way, in every mode: `
 names it (with `--json`, in one JSON document: `exit`, `layers_not_run`, `reason`; so does every other stop of that mode), a full run exits 1. Why: a symlink to `/dev/zero` named like a note made `okflint` read for ever and grow to
 112 GB (2026-10-18).
 
+**Symlinks that point outside the bundle:** a note, a folder or a config file is read only when its real path (after
+symlinks are resolved) is inside the bundle. A note-file symlink or a config file (`okf-base.yaml`, `.okfignore`,
+`*.yaml`, `*.yml`, `*.json`) whose real path is outside is not read by any layer or by `okf-verify`, `--facts`,
+`--duplicates`, `--file`, `--conserve` or the edit hook: `okf-check` names it once (`x.md — points outside the bundle: not
+read`, in `--json` `errors[]`) and exits 1 (an `.okfignore` outside stops the run with exit 2). `--facts` and
+`--duplicates` are reports: they name it on stderr and keep exit 0. `okf-verify` reports it UNRESOLVED (`--strict` fails on
+it) and stops with exit 2 on an `okf-base.yaml` or `.okfignore` outside, naming it once. A symlinked folder is never entered (see the `symlinks` line). A
+symlink whose real path is inside the bundle is read as before, also when the bundle path is typed in another case on a
+case-insensitive disk. A bundle that links to notes outside it: copy the note into the bundle, or move the bundle root up so
+it holds the target.
+
 `okf-base.yaml` is not a note, so `max_note_bytes` does not apply to it: it is read under its own fixed limit of 1 MiB
 (1048576 bytes; `manifest_max_bytes` in `plugin/config/okf-check-block.json`), by `okf-check`, `okf-verify` and every helper. A manifest
 above that is named as a refused file (`okf-base.yaml — larger than 1048576 bytes`, exit 1; with `--duplicates`, `--facts` or
@@ -494,7 +503,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.49
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.50
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -512,7 +521,7 @@ To check the commits, paths and line citations the notes cite as well, add `veri
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.49
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.50
         with:
           bundle: path/to/bundle
           verify: 'true'                  # also run okf-verify; default 'false'
@@ -535,7 +544,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.49
+    rev: v0.9.50
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -578,10 +587,10 @@ Two upstream tools are pinned by commit. A drift from a pin is reported as UNVER
 
 - **L1 validator, from scaccogatto/okf-skills.** Vendored in `plugin/vendor/okf_validate.py` at commit
   `7ed3084267d050f198eea6cd9f67d5357e9ed047`: okf-skills 0.10.3 plus five fixes (MIT), and a patch of ours that bounds
-  the size of a YAML document (alias expansion and one very long scalar). The five fixes are an open pull request,
+  the size of a YAML document (alias expansion and one very long scalar). The five fixes and that patch are an open pull request,
   [scaccogatto/okf-skills#68](https://github.com/scaccogatto/okf-skills/pull/68). If okf-skills#68 is never merged, this vendored
   copy stays as it is and keeps working. `plugin/vendor/VENDOR.md` lists what differs from upstream. When okf-skills#68 merges, we
-  replace the copy with upstream at the merge commit and re-apply our patch (or offer it upstream).
+  replace the copy with upstream at the merge commit, and re-apply our later patches listed in `plugin/vendor/VENDOR.md`.
 - **L2 house rules, from mattdav/okflint.** Version 0.5.0 plus a commit on the maintainer's fork (ahmedibrahim085/okflint) with the BOM, non-UTF-8 and impossible-date
   fixes, `c505b8405b9ef07396a81734c2bdfaa33c57aa25`, installed only when you ask (`okf-check --install-deps --yes`). The
   fixes are an open pull request, [mattdav/okflint#11](https://github.com/mattdav/okflint/pull/11). If okflint#11 is never

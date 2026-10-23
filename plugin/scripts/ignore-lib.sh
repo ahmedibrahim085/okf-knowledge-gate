@@ -35,6 +35,7 @@ _okfignore_read() {
   _OKFIGNORE_CACHE=(); _OKFIGNORE_MSG=""; _OKFIGNORE_RC=1
   okfignore_present "$1" || return 0
   _OKFIGNORE_RC=2
+  [ -f "$f" ] && okf_outside "$1" "$f" && { _OKFIGNORE_MSG="okfignore: $f $OKF_OUTSIDE_WHY: not read"; return 0; }   #
   [ -r "$f" ] || { _OKFIGNORE_MSG="okfignore: $f exists but cannot be read"; return 0; }
   # `lines`: each line comes back trimmed of the white space around it, in one linear pass (see okf_guard.read_main).
   text=$(PYTHONDONTWRITEBYTECODE=1 "${PY:-python3}" "$_OKF_GUARD_DIR/okf_guard.py" lines "$f" "$(okf_note_cap)"); rc=$?
@@ -93,21 +94,15 @@ okfignore_match() {   # <rel> [dir]: with "dir", <rel> is itself a folder, so a 
 
 # okfignore_alias_ignored <bundle> <file>: true when <file> is a symlink whose target is a file inside <bundle> that
 # .okfignore excludes. An alias is the same note as its target, so ignoring the target ignores the alias (F-6); an alias
-# of a kept note, or of a file outside the bundle, is judged by its own path as before. The link chain is walked with
-# readlink (no readlink -f on macOS), at most 40 hops.
+# of a kept note is judged by its own path as before (a link outside the bundle is refused). The link chain is
+# walked by okf_real_path (note-guard-lib.sh), at most 40 hops.
 okfignore_alias_ignored() {
   [ -L "$2" ] && [ "${#OKFIGNORE_PATTERNS[@]}" -gt 0 ] || return 1
-  local p="$2" t n=0 d top
-  while [ -L "$p" ] && [ "$n" -lt 40 ]; do
-    t=$(readlink "$p") || return 1
-    case "$t" in /*) p=$t ;; *) p=${p%/*}/$t ;; esac
-    n=$((n+1))
-  done
-  [ -f "$p" ] || return 1
-  d=$(cd -P "${p%/*}" 2>/dev/null && pwd -P) || return 1
+  local t top
+  t=$(okf_real_path "$2") || return 1
+  [ -f "$t" ] || return 1
   top=$(cd -P "$1" 2>/dev/null && pwd -P) || return 1
-  case "$d/" in "$top"/*) ;; *) return 1 ;; esac
-  t="$d/${p##*/}"
+  case "$t" in "$top"/*) ;; *) return 1 ;; esac
   okfignore_match "${t#"$top"/}"
 }
 
@@ -121,7 +116,7 @@ okfignore_list() {
   while IFS= read -r -d '' f; do
     [ -e "$f" ] || continue          # dangling symlink: L1 skips it too
     [ -f "$f" ] || continue          # a device, pipe or folder is not a note: okf_refused_notes names it
-    [ -L "$f" ] && [ -n "$(okf_note_refusal "$f")" ] && continue
+    [ -L "$f" ] && [ -n "$(okf_note_refusal "$f" "$bundle")" ] && continue
     rel=${f#"$bundle"/}
     okfignore_match "$rel" && continue
     okfignore_alias_ignored "$bundle" "$f" && continue
@@ -130,15 +125,16 @@ okfignore_list() {
 }
 
 # okf_refused_notes <bundle>: print, NUL-separated, one "<reason><TAB><path relative to the bundle>" for every path a layer
-# must not open: a *.md that is not a regular file (device, pipe, socket, folder) or is over okf_check.max_note_bytes, and a
-# config file (*.yaml, *.yml, *.json) that is a device, pipe or socket. What .okfignore excludes is not listed: no layer
+# must not open: a *.md that is not a regular file (device, pipe, socket, folder) or is over okf_check.max_note_bytes, a
+# config file (*.yaml, *.yml, *.json) that is a device, pipe or socket, and a link of either whose real path is outside the
+# bundle. What .okfignore excludes is not listed: no layer
 # reads it. Dangling and looping links are not listed (l2_dangling reports them). Nothing is opened (note-guard-lib.sh).
 okf_refused_notes() {
   local bundle="${1%/}" f rel why cap
   cap=$(okf_note_cap)
   okfignore_load "$bundle"; [ $? -eq 2 ] && return 2
   while IFS= read -r -d '' f; do
-    why=$(okf_note_refusal "$f")
+    why=$(okf_note_refusal "$f" "$bundle")
     [ -n "$why" ] || continue
     rel=${f#"$bundle"/}
     okfignore_match "$rel" && continue
@@ -179,7 +175,7 @@ okfignore_mirror() {
     [ -e "$f" ] || continue          # dangling symlink: L1 skips it too
     # A refused note or config file (see okf_refused_notes) is neither copied nor linked: cp would read a device for ever,
     # and a layer that finds the link would open it. A folder named like a config file keeps its old path below.
-    [ -L "$f" ] && [ -n "$(okf_note_refusal "$f")" ] && continue
+    [ -L "$f" ] && [ -n "$(okf_note_refusal "$f" "$bundle")" ] && continue
     rel=${f#"$bundle"/}
     [ "$rel" = .okfignore ] && continue   # written below from the one read, not linked to the live file
     iscfg=1
@@ -241,7 +237,7 @@ STARTER
 }
 
 if [ "${0##*/}" = "ignore-lib.sh" ] && [ "${1:-}" = "--list" ]; then
-  okfignore_list "${2:?usage: ignore-lib.sh --list <bundle>}"
+  okfignore_list "${2:?usage: ignore-lib.sh --list <bundle>}"; exit $?   # 2: the .okfignore was refused; the caller must not read "no notes kept"
 fi
 # `bash ignore-lib.sh --match <pattern>...` reads NUL-separated bundle-relative paths on stdin and prints the ones the patterns
 # match, NUL-separated: okf-verify's okf_check.verify.generated globs go through this one matcher too (okf-knowledge-gate#14).

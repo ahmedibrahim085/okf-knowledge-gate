@@ -20,13 +20,13 @@ class TooLarge:
         self.why = why
 
 
-def meta(p, invalid=None, too_large=False):
+def meta(p, invalid=None, too_large=False, *, root):
     """The frontmatter of note `p` as a dict; {} when it has none, `invalid` (default {}) when it does not parse.
 
     With too_large=True a frontmatter the loader's size cap refused (AliasBombError) is a TooLarge, not `invalid`."""
     try:
         # utf-8-sig: a note that starts with a BOM is read as L1 reads it (0.9.8 review G-1)
-        t = read_note(p, "utf-8-sig", "replace")
+        t = read_note(p, "utf-8-sig", "replace", root=root)
     except OSError:
         return {}
     end = t.find("\n---", 3) if t.startswith("---") else -1
@@ -43,7 +43,7 @@ def meta(p, invalid=None, too_large=False):
     return m if isinstance(m, dict) else {}
 
 
-def body_chars(p):
+def body_chars(p, *, root):
     """The length of note `p`'s body in characters (code points), or None when the file cannot be read as UTF-8.
 
     The body is what follows the frontmatter's closing `---` line, split by the validator's own split_frontmatter, so
@@ -51,7 +51,7 @@ def body_chars(p):
     text mode, so CRLF counts as one character: the same note checked out with LF or CRLF line endings measures the same.
     """
     try:
-        t = read_note(p, "utf-8", "strict").lstrip("\ufeff")   # as the validator's _read_text: a BOM is not content
+        t = read_note(p, "utf-8", "strict", root=root).lstrip("\ufeff")   # as the validator's _read_text: a BOM is not content
     except (OSError, UnicodeDecodeError):
         return None   # L1 reports a file it cannot read; the size rule does not report it a second time
     return len(split_frontmatter(t)[1])

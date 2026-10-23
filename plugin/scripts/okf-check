@@ -43,7 +43,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.49"
+VERSION="0.9.50"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -548,12 +548,14 @@ report_refused() {
     rel=$(printf '%s' "$rel" | tr '\n\r\t' '   ')
     if [ "$why" = "$OKF_FOLDER_WHY" ]; then
       nwarn=$((nwarn+1)); printf '%s — %s: skipped\n' "$rel" "$why" >> "$TMP/refused.warn"
+    elif [ "$why" = "$OKF_OUTSIDE_WHY" ]; then   # the wording of the finding is "points outside the bundle: not read"
+      nfail=$((nfail+1)); record error "$rel — $why: not read"; printf '%s — %s: not read\n' "$rel" "$why" >> "$TMP/refused.fail"
     else
       nfail=$((nfail+1)); record error "$rel — $why: skipped"; printf '%s — %s: skipped\n' "$rel" "$why" >> "$TMP/refused.fail"
     fi
   done < "$1"
   if [ "$nfail" -gt 0 ]; then
-    say "  Refused notes    FAIL   $nfail path(s) no layer opened (not a regular file, or over $OKF_MAX_NOTE_BYTES bytes):"
+    say "  Refused notes    FAIL   $nfail path(s) no layer opened (not a regular file, over $OKF_MAX_NOTE_BYTES bytes, or outside the bundle):"
     say_capped 12 "                   " < "$TMP/refused.fail"
     worse_other $EXIT_CONFORM
   fi
@@ -1281,7 +1283,7 @@ try:
     from okf_notes import meta, resolve, read_manifest, read_note, TooLarge, shown
     # The bounded loader for the manifest too: an alias bomb in okf-base.yaml must not expand here (LT-35a), and a bounded
     # read under the manifest's own limit (a device, or a file over it, is not read; okf_check.max_note_bytes does not apply).
-    cfg = load_frontmatter(read_manifest(sys.argv[2], "utf-8", "replace"))
+    cfg = load_frontmatter(read_manifest(sys.argv[2], "utf-8", "replace", root=os.path.dirname(sys.argv[2])))
 except Exception:
     sys.exit(0)
 opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}
@@ -1297,7 +1299,7 @@ n = 0
 for p in sorted(bundle.rglob("*.md")):
     if p.name in ("index.md", "log.md") or not p.is_file():   # a dangling link is no note (okf_md_files)
         continue
-    m = meta(p, too_large=True)
+    m = meta(p, too_large=True, root=str(bundle))
     if isinstance(m, TooLarge):   # its status is unknown: not "no deprecated notes" (the loader's size cap, as in the Owner layer)
         print("T|%s: the note was too large to read, so its successor was not checked: %s" % (shown(str(p.relative_to(bundle))), m.why))
         continue
@@ -1320,7 +1322,7 @@ for p in sorted(bundle.rglob("*.md")):
         elif q == os.path.realpath(str(p)):
             print("E|%s: superseded_by %s: a note cannot supersede itself" % (rel, ref))
         else:
-            mq = meta(q, too_large=True)
+            mq = meta(q, too_large=True, root=str(bundle))
             if isinstance(mq, TooLarge):
                 print("T|%s: superseded_by %s: the successor was too large to read, so whether it is deprecated was not checked: %s" % (rel, ref, mq.why))
             elif mq.get("status") == "deprecated":
@@ -1363,7 +1365,7 @@ import os, sys
 sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
 from okf_validate import load_frontmatter   # bounded: an alias bomb in okf-base.yaml must not expand (LT-35a)
 from okf_notes import read_manifest   # and so is the read itself: bounded by the manifest limit, not the note cap
-d = load_frontmatter(read_manifest(sys.argv[1], "utf-8", "replace"))
+d = load_frontmatter(read_manifest(sys.argv[1], "utf-8", "replace", root=os.path.dirname(sys.argv[1])))
 o = (d.get("okf_check") or {}) if isinstance(d, dict) else {}
 w = o.get("owners") if isinstance(o, dict) and o.get("require_owner") is True else None
 for k, v in (w.items() if isinstance(w, dict) else []):
@@ -1391,8 +1393,8 @@ import json, os, pathlib, sys
 try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter, check_actor, Report
-    from okf_notes import meta, INVALID, TooLarge, read_manifest, read_note, shown
-    cfg = load_frontmatter(read_manifest(sys.argv[2], "utf-8", "replace"))
+    from okf_notes import meta, INVALID, TooLarge, read_manifest, read_note, refusal, shown
+    cfg = load_frontmatter(read_manifest(sys.argv[2], "utf-8", "replace", root=os.path.dirname(sys.argv[2])))
 except Exception:
     sys.exit(0)
 opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}
@@ -1407,9 +1409,11 @@ n, rows = 0, []
 for p in sorted(bundle.rglob("*.md")):
     if p.name in ("index.md", "log.md") or not p.is_file():   # a dangling link is no note (okf_md_files)
         continue
+    if refusal(p, root=bundle):   # --duplicates runs this on the bundle itself: a link out of it is not read
+        continue
     n += 1
     rel = str(p.relative_to(bundle))
-    m = meta(p, invalid=INVALID, too_large=True)
+    m = meta(p, invalid=INVALID, too_large=True, root=str(bundle))
     if isinstance(m, TooLarge):   # the loader's size cap, not invalid YAML and not a missing owner (L1 reports the cap too)
         print("T|%s: the note was too large to read, so its owner was not checked: %s" % (shown(rel), m.why))
         continue
@@ -1475,7 +1479,7 @@ import os, sys
 sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
 from okf_validate import load_frontmatter
 from okf_notes import read_manifest
-d = load_frontmatter(read_manifest(sys.argv[1], "utf-8", "replace"))
+d = load_frontmatter(read_manifest(sys.argv[1], "utf-8", "replace", root=os.path.dirname(sys.argv[1])))
 o = (d.get("okf_check") or {}) if isinstance(d, dict) else {}
 z = o.get("size") if isinstance(o, dict) else None
 for p in ((z.get("exclude") or []) if isinstance(z, dict) else []):
@@ -1503,7 +1507,7 @@ try:
     sys.path[:0] = [os.environ["OKF_SCRIPTS_DIR"], os.environ["OKF_VENDOR_DIR"]]
     from okf_validate import load_frontmatter
     from okf_notes import body_chars, read_manifest, read_note, shown
-    cfg = load_frontmatter(read_manifest(sys.argv[2], "utf-8", "replace"))
+    cfg = load_frontmatter(read_manifest(sys.argv[2], "utf-8", "replace", root=os.path.dirname(sys.argv[2])))
 except Exception:
     sys.exit(0)
 opt = (cfg.get("okf_check") or {}) if isinstance(cfg, dict) else {}
@@ -1517,7 +1521,7 @@ bundle = sys.argv[1]
 files = [f for f in open(sys.argv[3], "rb").read().decode("utf-8", "surrogateescape").split("\0") if f]
 n = 0
 for f in sorted(files):
-    c = body_chars(f)
+    c = body_chars(f, root=bundle)
     if c is None:
         continue
     n += 1
@@ -1665,6 +1669,11 @@ run_facts_list() {
   run_config "$bundle" >/dev/null; CONFIG_RC=$?
   [ "$CONFIG_RC" -eq 0 ] || { run_config "$bundle"; return $EXIT_DEP; }
   okf_md_files "$bundle" > "$TMP/facts-files.lst" 2>/dev/null
+  # A note whose real path is outside the bundle is not listed (okf_md_files) and is named here, on stderr.
+  local rec
+  while IFS= read -r -d '' rec; do
+    if [ "${rec%%$'\t'*}" = "$OKF_OUTSIDE_WHY" ]; then esc_line "okf-check: --facts: ${rec#*$'\t'} — $OKF_OUTSIDE_WHY: not read" >&2; fi
+  done < <(okf_refused_notes "$bundle" 2>/dev/null)
   if okfignore_present "$bundle"; then
     okfignore_load "$bundle"; [ $? -eq 2 ] && { echo "okf-check: .okfignore could not be applied, so --facts cannot run" >&2; return $EXIT_DEP; }
     okfignore_list "$bundle" | while IFS= read -r -d '' f; do printf '%s\0' "$bundle/$f"; done > "$TMP/facts-files.lst"
@@ -2844,12 +2853,12 @@ if [ "$MODE" = conserve ]; then
 fi
 if [ "$MODE" = facts ]; then
   JSON=0   # --facts has no JSON document; under --json say was quiet and a stop left both streams empty
-  _mwhy=$(okf_note_refusal "$BUNDLE/okf-base.yaml")
+  _mwhy=$(okf_note_refusal "$BUNDLE/okf-base.yaml" "$BUNDLE")
   [ -z "$_mwhy" ] || { echo "okf-check: $BUNDLE/okf-base.yaml — $_mwhy: not read, so --facts cannot run" >&2; exit $EXIT_DEP; }
   run_facts_list "$BUNDLE"; exit $?
 fi
 if [ "$MODE" = duplicates ]; then
-  _mwhy=$(okf_note_refusal "$BUNDLE/okf-base.yaml")
+  _mwhy=$(okf_note_refusal "$BUNDLE/okf-base.yaml" "$BUNDLE")
   [ -z "$_mwhy" ] || { echo "okf-check: $BUNDLE/okf-base.yaml — $_mwhy: not read, so --duplicates cannot run" >&2; stop_json Config "okf-base.yaml is not a note this tool may open ($_mwhy), so --duplicates cannot run"; exit $EXIT_DEP; }
   run_duplicates "$BUNDLE"; exit $?
 fi

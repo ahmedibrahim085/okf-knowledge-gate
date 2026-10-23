@@ -33,11 +33,48 @@ okf_file_size() {
   if [ "$_okf_size_flavor" = bsd ]; then stat -L -f '%z' "$1" 2>/dev/null; else stat -L -c '%s' "$1" 2>/dev/null; fi
 }
 
-# okf_note_refusal <path>: print why <path> must not be opened, nothing when it may be. A missing path or a dangling
+# The one reason text for a path whose real path is outside the bundle; the python twin is okf_guard.OUTSIDE_WHY.
+OKF_OUTSIDE_WHY='points outside the bundle'
+
+# okf_real_path <path>: the real path of <path>, its link chain walked with readlink (no readlink -f on macOS), at most
+# 40 hops; the folder is resolved with cd -P. Prints nothing, and fails, when the chain is longer or a folder is gone.
+okf_real_path() {
+  local p="$1" t n=0 d
+  while [ -L "$p" ]; do
+    [ "$n" -lt 40 ] || return 1
+    t=$(readlink "$p") || return 1
+    case "$t" in /*) p=$t ;; *) case "$p" in */*) p=${p%/*}/$t ;; *) p=$t ;; esac ;; esac
+    n=$((n+1))
+  done
+  case "$p" in */*) d=${p%/*} ;; *) d=. ;; esac
+  d=$(cd -P "${d:-/}" 2>/dev/null && pwd -P) || return 1
+  printf '%s/%s' "${d%/}" "${p##*/}"
+}
+
+# okf_outside <root> <path>: true when <path> is a symlink whose real path is not <root> or below it. Only a link is
+# judged: every walker lists paths with find -H, which enters no symlinked folder, so a path that is not a link lies
+# in a real folder of the bundle. Each folder of the real path, from the file up, is compared with <root> by `-ef`
+# (same device and inode), not by spelling: on a case-insensitive disk /x/Kb and /x/kb are one folder. A chain that
+# cannot be resolved counts as outside (fail closed).
+okf_outside() {
+  local d
+  [ -L "$2" ] || return 1
+  d=$(okf_real_path "$2") || return 0
+  while [ -n "$d" ]; do
+    [ "$d" -ef "$1" ] && return 1
+    d=${d%/*}
+  done
+  [ / -ef "$1" ] && return 1
+  return 0
+}
+
+# okf_note_refusal <path> [<root>]: print why <path> must not be opened, nothing when it may be. A missing path or a dangling
 # or looping link prints nothing: those keep their own rules. Notes (*.md) must be regular and within the cap; a folder
 # named like a note cannot hang a reader, so it is named as "a folder, not a note" (okf-check warns and keeps its exit
 # code). The config files okf-check copies (*.yaml, *.yml, *.json) must not be a device, pipe or socket (a folder named
 # like one is a folder, not a file, and is left alone). Any other name is never opened by a layer, so it is not judged.
+# With <root>, a note or config link that passes those tests but whose real path is outside <root> is refused;
+# the type and size reasons come first, so a link to a device keeps its own reason.
 okf_note_refusal() {
   local f="$1" sz cap
   [ -e "$f" ] || return 0
@@ -46,10 +83,11 @@ okf_note_refusal() {
       [ -d "$f" ] && { printf '%s' "$OKF_FOLDER_WHY"; return 0; }
       [ -f "$f" ] || { printf 'not a regular file (device/pipe/...)'; return 0; }
       cap=$(okf_note_cap); sz=$(okf_file_size "$f")
-      case "$sz" in ''|*[!0-9]*) return 0 ;; esac
-      [ "$sz" -le "$cap" ] || printf 'larger than %s bytes (okf_check.max_note_bytes)' "$cap" ;;
+      case "$sz" in ''|*[!0-9]*) ;; *) [ "$sz" -le "$cap" ] || { printf 'larger than %s bytes (okf_check.max_note_bytes)' "$cap"; return 0; } ;; esac ;;
     *.yaml|*.yml|*.json)
-      [ -f "$f" ] || [ -d "$f" ] || printf 'not a regular file (device/pipe/...)' ;;
+      [ -f "$f" ] || [ -d "$f" ] || { printf 'not a regular file (device/pipe/...)'; return 0; } ;;
+    *) return 0 ;;
   esac
+  [ -n "${2:-}" ] && okf_outside "$2" "$f" && printf '%s' "$OKF_OUTSIDE_WHY"
   return 0
 }

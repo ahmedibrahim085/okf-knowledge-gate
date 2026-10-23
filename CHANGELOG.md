@@ -9,6 +9,14 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.50] - 2026-10-23
+
+OKF Knowledge Gate 0.9.50 narrows what the tools read: `okf-check` reads only notes inside the bundle, and `okf-verify` searches only the repositories you pass with `--repo`. The `okf-verify` change is breaking for bundles that list repositories in `okf-base.yaml`.
+
+### Changed
+- **Breaking: `okf-verify` searches only the repositories given with `--repo`.** A repository named under `okf_check.verify.repos` in `okf-base.yaml` is no longer searched, because that file arrives with the bundle and is not the user's choice. Each entry is reported UNRESOLVED, on its own line, with `okf_check.verify.repos is not searched since 0.9.50; to search it, pass --repo <path>`; it fails the run only under `--strict`. To keep searching a repository, pass it with `--repo` (the GitHub Action's `repo` input already does). The key is still accepted, so an existing `okf-base.yaml` stays valid.
+- **okf-check reads only notes whose real path is inside the bundle.** A note, a folder or a config file (`okf-base.yaml`, `.okfignore`, other `*.yaml`, `*.yml`, `*.json`) that is a symlink whose real path is outside the bundle is not read by any layer, by `--facts`, `--duplicates`, `--file`, `--conserve`, the edit hook or `okf-verify`. Before, a symlinked note file counted wherever it pointed. `okf-check` names each once (`x.md — points outside the bundle: not read`) and exits 1 (`.okfignore`: 2); `okf-verify` reports a note UNRESOLVED and stops with exit 2 on such an `okf-base.yaml` or `.okfignore`; `--facts` and `--duplicates` name it on stderr and keep exit 0. `okf-export` no longer writes a file that changed since it listed the vault. A symlink inside the bundle works as before. A bundle that links to notes outside it: copy the note into the bundle, or move the bundle root up so it holds the target.
+
 ## [0.9.49] - 2026-10-23
 
 OKF Knowledge Gate 0.9.49 makes `okf-export` read code spans, autolinks and inline HTML the way CommonMark does, so it no longer changes code or URLs.
@@ -910,7 +918,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.49...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.50...HEAD
+[0.9.50]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.49...v0.9.50
 [0.9.49]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.48...v0.9.49
 [0.9.48]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.47...v0.9.48
 [0.9.47]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.46...v0.9.47

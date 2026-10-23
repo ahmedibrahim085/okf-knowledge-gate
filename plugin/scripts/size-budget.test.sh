@@ -259,17 +259,20 @@ rc=$(run "$B" --fail-stale)
 [ "$rc" = 1 ] && ok "S16-SB-E10 a size error and an expired note under --fail-stale exit 1, not 4" \
   || bad "S16-SB-E10 stale precedence" "rc=$rc $(grep -n 'Size\|FAILED' "$TMP/out.txt" | head -3 | tr '\n' '|')"
 
-# S16-SB-E11: a symlinked folder is not entered (its notes count once, under their real path); a symlinked note file counts.
+# S16-SB-E11: a symlinked folder is not entered (its notes count once, under their real path); a symlinked note file counts
+# when its real path is inside the bundle, and is not read when it is outside (S58).
 B="$TMP/e11"; mkb "$B" "$(size_cfg 100)"; mknote "$B/real/big.md" 101; ln -s real "$B/alias"
 rc=$(run "$B")
 { [ "$rc" = 1 ] && [ "$(grep -c 'body is 101' "$TMP/out.txt")" = 1 ] && grep -Fq 'real/big.md: body is 101' "$TMP/out.txt"; } \
   && ok "S16-SB-E11 a symlinked folder is not entered: the oversize note is reported once, under real/" \
   || bad "S16-SB-E11 folder link" "rc=$rc $(grep -n 'Size\|body is' "$TMP/out.txt" | head -3 | tr '\n' '|')"
-B="$TMP/e11b"; mkb "$B" "$(size_cfg 100)"; mknote "$TMP/e11b-outside/note.md" 101; ln -s "$TMP/e11b-outside/note.md" "$B/linked.md"
+B="$TMP/e11b"; mkb "$B" "$(size_cfg 100)"; mknote "$B/sub/note.md" 101; ln -s sub/note.md "$B/linked.md"
+mknote "$TMP/e11b-outside/note.md" 101; ln -s "$TMP/e11b-outside/note.md" "$B/out.md"
 rc=$(run "$B")
-grep -Fq 'linked.md: body is 101' "$TMP/out.txt" \
-  && ok "S16-SB-E11 a symlinked note file is measured, like the other layers read it" \
-  || bad "S16-SB-E11 file link" "rc=$rc $(grep -n 'Size\|linked' "$TMP/out.txt" | head -3 | tr '\n' '|')"
+{ grep -Fq 'linked.md: body is 101' "$TMP/out.txt" && ! grep -Fq 'out.md: body' "$TMP/out.txt" \
+  && grep -Fq 'out.md — points outside the bundle: not read' "$TMP/out.txt"; } \
+  && ok "S16-SB-E11 a symlinked note file inside the bundle is measured; one outside it is named and not read" \
+  || bad "S16-SB-E11 file link" "rc=$rc $(grep -n 'Size\|linked\|out.md' "$TMP/out.txt" | head -4 | tr '\n' '|')"
 
 # S16-SB-E12: --selftest plants a note over a limit set for the probe only, and a gate that stops firing fails it.
 "$CHECK" --selftest >"$TMP/st.txt" 2>&1; rc=$?

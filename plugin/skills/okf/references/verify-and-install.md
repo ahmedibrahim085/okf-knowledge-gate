@@ -43,19 +43,13 @@ Concepts carrying no checkable claim are listed as **unverifiable, not verified*
 `okf-verify` checks four kinds of claim: a cited commit SHA, a code citation pinned to a commit (`path:line @sha`), a line
 citation into a living document (`name.md:N`, no commit) and an absolute file path.
 
-**Which repositories are searched.** A cited commit SHA is looked up in each `--repo` folder and in each repository the
-bundle declares once in its `okf-base.yaml`:
+**Which repositories are searched.** A cited commit SHA is looked up in each `--repo` folder, and only there. A
+repository named twice is searched once.
 
-```yaml
-okf_check:
-  verify:
-    repos:
-      - path: .          # relative to the bundle, absolute, or starting with ~
-```
-
-- `--repo` adds to the declared repositories, and a repository named twice is searched once.
-- A declared path that is missing or is not a git repository is reported as UNRESOLVED with that reason; it does not
-  change the exit code unless you pass `--strict`.
+- Since 0.9.50 a repository named under `okf_check.verify.repos` in `okf-base.yaml` is not searched: that file arrives
+  with the bundle, so it is not your choice. Each entry is reported UNRESOLVED with
+  `okf_check.verify.repos is not searched since 0.9.50; to search it, pass --repo <path>` (a relative path is shown from the bundle folder); it does not change the exit code unless you pass
+  `--strict`. An entry that is also given with `--repo` is searched and not reported.
 - An `okf-base.yaml` that cannot be read, is not valid YAML, or whose `okf_check.verify.repos` is not a list of
   `{path: <string>}` stops the run with one error line and exit 2.
 - In a shallow clone (the `actions/checkout` default), commits older than the clone are missing: use `fetch-depth: 0`.

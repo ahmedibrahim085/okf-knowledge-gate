@@ -68,7 +68,7 @@ hygiene:
 #     body_threshold: 0.6       # body similarity for --duplicates-body
 #     time_limit: 60            # seconds before the report stops and says CUT SHORT
 #   verify:                     # read by okf-verify
-#     repos:                    # repositories that the cited commit ids are looked up in
-#       - path: ..              # relative to the bundle, absolute, or ~/...
+#     repos:                    # NOT searched since 0.9.50: pass each repository with --repo; okf-verify names every entry here
+#       - path: ..              # with the --repo to use
 #     generated: ["registers/**"]   # notes a script regenerates: a line citation into one needs an anchor
 #     remote: true              # ask the GitHub or GitLab API for a commit no searched clone holds

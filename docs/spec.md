@@ -50,7 +50,8 @@ misrepresent how the code was actually verified.
 Legend: **✅** covered by a passing test in `plugin/scripts/okf-check.test.sh` ·
 **⚠** covered but conditional (states the condition) ·
 **🔒** enforced by CONSTRUCTION, no runtime test is possible — the row must say why ·
-**🔴** RED — specified, not implemented, no test yet.
+**🔴** RED — specified, not implemented, no test yet ·
+**👁** checked by hand on a real machine (the row gives the command, its output and the date); no test covers it yet.
 
 `🔒` exists because `G-6` was marked ✅ while no test could reach it: `--selftest`
 forces `JSON=0`, so the two flags cannot coexist and the defect is unreachable
@@ -440,8 +441,10 @@ audit, which is exactly what that audit is for.
 
 ### Genuinely still open
 
-- **GNU `stat`** is exercised only through a stub. Never run against real
-  coreutils on Linux. Both branches exist; only the BSD one is proven.
+- ~~**GNU `stat`** is exercised only through a stub.~~ **Closed** (2026-10-23,
+  SP-443): the Debian gate runs the GNU branch against real coreutils
+  (gap audit `stat (GNU coreutils) 9.1`; a real `okf-check` run traced
+  `xargs -0 stat -L -c '%s %y %n'` and passed).
 - ~~**The plugin's hooks have not fired.**~~ **Closed** — both were live-fired
   against the *installed* copy with real payloads. The `SessionStart` hook named
   an expired concept in valid `hookSpecificOutput` JSON; the `PreToolUse` guard
@@ -841,7 +844,7 @@ sweep that removed silent truncation added three more instances of it**, and the
 | `U-6` | `P-7` asserted the staleness hook by grepping a FILENAME, not the JSON contract | ✅ |
 | `W-1`/`W-2` | `P-9` scraped versions with `sed \| head -1`; a nested `version` shadowed real drift | ✅ |
 | `X-1` | `okf-verify.test.sh` never checked its git fixture built — an empty SHA failed 20 assertions | ✅ |
-| `T-1` | readability guard is check-then-act; a directory locked mid-scan was reported `PASS` | ⚠ see below |
+| `T-1` | readability guard is check-then-act; a directory locked mid-scan was reported `PASS` | ✅ see below |
 
 **`V-1..V-3` is the third time `present` was mistaken for `well-formed`** — `G-4`
 in L2, `G-9` in L1, and now `G-9` again because the guard tested key presence
@@ -861,19 +864,19 @@ FAILED became "0 lines" and silently suppressed the "and N more" tail. That is
 truncation. Both helpers branch on the exit code now and say "an unknown number
 more" when they genuinely do not know.
 
-#### `T-1` — fixed, but its test's teeth are UNPROVEN
+#### `T-1` — fixed, and its test's teeth are proven (2026-10-23)
 
 The guard walks the tree, then the layers read it. A directory locked in that
 gap is invisible to both, and the run reported `PASS 0 concepts`, exit 0. The
 race cannot be removed — another agent owns its own writes, the same constraint
 `E-7` documents — so it is detected and stated after the layers run.
 
-**The test does not prove the fix prevents the defect.** Reverting the re-check
-made `T-1` SKIP, not FAIL, on 4 consecutive runs: the `sleep 0.05` racer reliably
-lands *after* the layers, where the re-check still catches it but the unfixed
-code has no symptom. So `T-1` proves the re-check fires; it does not reproduce
-the original fail-open. Marked ⚠ with `E-7d` and `G-1b` rather than ✅, and
-recorded here instead of being quietly counted as coverage.
+Until 2026-08-02 the test used a `sleep 0.05` racer, and reverting the
+re-check made `T-1` SKIP, not FAIL. The test now simulates a directory that
+becomes unreadable mid-scan through a `find` shim (`okf-check.test.sh`, the T-1 block), so the timing is fixed. A
+mutation run of the 2026-10-23 gap audit (SP-844) with the re-check disabled
+(`_unreadable_after=""`) gave `FAIL T-1 a directory locked mid-scan was not
+reported`; the real code gave PASS, and the control `T-1b` passed in both.
 
 **Dead code, mentioned not deleted:** `plugin/scripts/graphify_reconcile_ids.py`
 has no reference in `hooks.json`, any `SKILL.md`, or any script. It ships and
@@ -941,11 +944,7 @@ reverse of the untraceable-✅ problem, and equally a drift.
 | P-5 | No absolute machine paths in `hooks.json` | all paths `${CLAUDE_PLUGIN_ROOT}`-relative | ✅ |
 | P-6 | Validator travels with the plugin | `plugin/vendor/okf_validate.py` present | ✅ |
 | P-7 | Bundle location is overridable | `OKF_BUNDLE_DIR` respected by the hook | ✅ |
-| P-8 | Plugin installed and enabled end-to-end on a real machine | **not yet done** | 🔴 |
-
-P-8 is the honest gap: the package validates, but it has not been *installed*.
-Validation is not installation, and the difference is exactly the class of claim
-this project keeps catching.
+| P-8 | Plugin installed and enabled end-to-end on a real machine | installed and enabled: `claude plugin list --json` shows `okf@ahmedmaged-okf` (0.9.49 on that date), `enabled: true`, user scope (2026-10-23, SP-944) | 👁 |
 
 ---
 
@@ -982,12 +981,11 @@ here"*. Conformance is a question about form; this is a question about fact.
 | V-9 | `--json` | parseable | ✅ |
 | V-10 | Path inside a **fenced code block** | not a claim — ignored | ✅ |
 | V-11 | Ephemeral path (`/tmp`, `/var/folders`) | never REFUTED | ✅ |
-| RV-1 | `okf-base.yaml` declares `okf_check.verify.repos` with one valid git repo, no `--repo` | a SHA in that repo is CONFIRMED | ✅ |
-| RV-2 | One declared repo plus `--repo other` | SHAs are searched in both | ✅ |
-| RV-3 | Declared path does not exist | UNRESOLVED, reason `declared repository not found` plus the path; exit code unchanged by the declaration alone | ✅ |
-| RV-4 | Declared folder is not a git repo | UNRESOLVED, reason `not a git repository` plus the path | ✅ |
-| RV-5 | Declared `~/src/x` and `../svc` | `~` is the home folder; the relative path is read from the bundle folder, not the working directory | ✅ |
-| RV-6 | Same repo declared and passed with `--repo` | searched once | ✅ |
+| RV-1 | `okf-base.yaml` declares `okf_check.verify.repos` with one valid git repo, no `--repo` (0.9.50) | not searched: its SHA is UNRESOLVED, `repos searched: NONE`, one UNRESOLVED `[repo]` line `okf_check.verify.repos is not searched since 0.9.50; to search it, pass --repo <path>`, exit 0 | ✅ |
+| RV-2 | One declared repo plus `--repo other` | only `other` is searched | ✅ |
+| RV-3 | Declared path does not exist, or is not a git repo (was RV-3 and RV-4) | the same one line; nothing is looked up; exit 0, exit 1 under `--strict` | ✅ |
+| RV-5 | Declared `../svc` | not searched; the hint names `--repo <bundle>/../svc` | ✅ |
+| RV-6 | Same repo declared and passed with `--repo` | searched once, no hint line | ✅ |
 | RV-7 | `okf-base.yaml` unreadable, not valid YAML, or `okf_check.verify.repos` not a list of `{path: string}` | one error line naming the file and the problem, exit 2, no verdicts; no `okf_check` key is not an error | ✅ |
 | RV-8 | `path:line @sha`, `path:a-b at sha`, suffix path (S2-H2) | one claim, CONFIRMED when the path exists in that commit; the detail shows sha and path; a backticked sha inside the citation is not also a bare-sha claim | ✅ |
 | RV-9 | Path missing at the cited commit, including a file that exists only at HEAD (S2-N1) | REFUTED, detail `path part failed`, non-zero exit | ✅ |
@@ -1003,8 +1001,8 @@ here"*. Conformance is a question about form; this is a question about fact.
 | RV-23 | Reversed range `20-10` (S2-E4) | read as up to the larger number: CONFIRMED when within the file, REFUTED when past the end | ✅ |
 | RV-16 | An unknown key under `okf_check`, `verify` or a repository entry; a null `okf_check`/`verify`; `repos` as a list of strings; an empty `path`; invalid UTF-8 | exit 2, one line naming the key (S1-N3, schema shared with `okf-check`) | ✅ |
 | RV-17 | `okf-verify <bundle> --check-config` | valid or absent block: exit 0, no output, no verdicts; invalid: one error line, exit 2 | ✅ |
-| RV-18 | A declared path that cannot be resolved (`~nosuchuser/x`; a path under an unreadable directory) | UNRESOLVED `cannot resolve: ...` in text and `--json`, exit 0, no traceback, no REFUTED; the other repositories are still searched | ✅ |
-| RV-19 | A `path:line @sha` citation, repository declared in `okf-base.yaml`, no `--repo` (S1 x S2 seam) | CONFIRMED when the path exists at that commit; REFUTED when it is missing | ✅ |
+| RV-18 | A declared path that cannot be resolved (`~nosuchuser/x`; a path under an unreadable directory) | since 0.9.50: UNRESOLVED `okf_check.verify.repos is not searched since 0.9.50; ...` in text and `--json`, exit 0, no traceback, no REFUTED; the `--repo` repositories are still searched | ✅ |
+| RV-19 | A `path:line @sha` citation, repository declared in `okf-base.yaml`, no `--repo` (S1 x S2 seam) | since 0.9.50: neither CONFIRMED nor REFUTED, whether or not the path exists at that commit (the repository is not searched) | ✅ |
 | RV-24 | An `{enum: [...]}` schema node (`okf_check.deprecated_requires`) | the listed value: exit 0; any other: exit 2, the error names the value as JSON (`true`, `null`, `"x "`, not a Python repr) and the allowed ones | ✅ |
 | RV-25 | A `{type: boolean}` node (`require_owner`), a `{map: node}` node (`owners`: free keys, each value a node) and a node that `requires` a sibling value (`owners` needs `require_owner: true`), and `key_no_prefix` (an `owners` key that starts with `!`) | valid: exit 0; a non-boolean, a list for the map, a non-string or empty value, and a missing sibling: exit 2 with the message | ✅ |
 | RV-26 | A `{type: number, min, max}` node (`okf_check.duplicates.threshold`, `time_limit`) | a number within the bounds, int or float: exit 0; out of bounds, a string, a boolean: exit 2 naming the bounds | ✅ |
@@ -1026,6 +1024,7 @@ here"*. Conformance is a question about form; this is a question about fact.
 | RV-28 | A zero-padded line number (S29-LZ-*): `a.py:0000000003 @sha`, the range `0000000018-0000000020`, `0000000021` in a 20-line file, `0000000000`, 5000 zeros before a 3 (also under Python 3.11 to 3.13), and in a document citation, with an anchor, and with `--since` | the number it spells: CONFIRMED when within the file, REFUTED as past the end or "lines start at 1", never "out of range" for a short number, no traceback; `--since` reports MOVED with the new line or range | ✅ |
 | RV-29 | `--repo` written relative or absolute (S29-RP-*): an absolute path cited through a link into the repository; a path outside it; `inside_any` on a path under `/net/<host>`; `--repo ../sib` from a link, from a plain folder, and with a stale `$PWD` | the same verdict for both forms of `--repo` (CONFIRMED inside, UNRESOLVED outside), `--strict` exit 0 for the inside one; a cited path outside every root is never touched on disk; the `$PWD` spelling of a relative `--repo` counts only when it names the same folder (a file in the folder a link's own `..` would name stays UNRESOLVED) | ✅ |
 | RV-30 | A bundle or `--repo` under a folder nobody may enter (S29-PE-*) | the bundle: one `error: <bundle> cannot be read (Permission denied)` line, exit 2; a `--repo`: `! cannot read, skipped: <path> (<reason>)` and `--json` `repos_unreadable`, not `repos_skipped_not_git`; no traceback | ✅ |
+| RV-34 | A line citation into a config-named repository's committed file, its untracked `.md`, and an absolute path into it, no `--repo` (0.9.50) | none is CONFIRMED or REFUTED; exit 0 | ✅ |
 | RV-31 | Citations of one file at one commit (S29-SP-*) | 20 citations run at most 20 git processes in all (141 before); an answer from a git that could not run (killed, timed out) is not remembered: the next citation asks again | ✅ |
 
 **V-10 and V-11 came from live-firing, not from imagination.** The first run on
@@ -1239,7 +1238,13 @@ A small note whose YAML aliases nest describes billions of items; `str()` on suc
 | LT-48 | file walkers | the staleness hook survives a directory name with a newline; with or without an active `.okfignore`, a note behind a folder link that points outside the bundle is not a bundle note (S8-N1, since) | ✅ |
 | S8-H1 | one note reached through a symlinked folder alias | L3 lists it once, under its real path | ✅ |
 | S8-N1 | a symlinked folder that points outside the bundle | its notes are not counted by any layer; the run names every symlinked folder it did not enter | ✅ |
-| S8-E1 | one tree with folder links, note-file links and a dangling link | the validator, Trust, L3, `.okfignore` walker, `okf-verify` and the staleness hook return the same file set (`symlinks.test.sh`) | ✅ |
+| S8-E1 | one tree with folder links, note-file links and a dangling link | L1, Trust, L3, `.okfignore` walker, `okf-verify` and the staleness hook return the same file set; a note-file link outside the bundle is in none of them (`symlinks.test.sh`) | ✅ |
+| S58-N1 | a note-file symlink whose real path is outside the bundle | no layer reads it; it is named once (`points outside the bundle: not read`) and the run exits 1 (`symlinks.test.sh`) | ✅ |
+| S58-R1 | a path swapped to an outside file after the path check | the reader refuses the opened descriptor; `root` is required | ✅ |
+| S58-R2 | an okf-export vault file swapped to an outside link after the listing | not written, not indexed, named; exit 1 | ✅ |
+| S58-H2 | the bundle path typed in another case (case-insensitive disk) | an inside link is read, an outside one refused | ✅ |
+| S58-N3 | `okf-base.yaml`, `.okfignore` or another config file as a symlink whose real path is outside | named, not read, the run does not pass | ✅ |
+| S58-E1 | the same note under `--facts`, `--duplicates`, `--file`, the edit hook, `--conserve`, `okf-verify` | not read in any of them | ✅ |
 | LT-49 | `--json` L2 counts, L3 lifecycle | `l2_warnings` and `l2_by_rule` carry the text's L2 advisory totals (null when L2 did not run); an unknown `status` is a separate L3 lifecycle line and `lifecycle[]`, never counted as expired, and `--fail-stale` exits 4 only for expired notes | ✅ |
 | LT-50 | `--doctor` search binary | `--doctor` says whether the optional `okf` search binary is present (the doc-reuse closest-notes hint) and what is off without it | ✅ |
 | LT-47 | GitHub Action | warns on 0 concepts and on each skipped layer; `require-house-rules: true` exits 3 when L2 was skipped; other values exit 64 | ✅ |
