@@ -325,6 +325,10 @@ def _near_miss(actor: str) -> bool:
     return any(c.isascii() for c in letters) and any(not c.isascii() for c in letters)
 
 
+# The words of the near-miss warning, in one place: okf-check's --strict-trust and okf-scoped.py count the warning by this text.
+NEAR_MISS_WORDING = "is a near-miss of `human:`/`process:`"
+
+
 def check_actor(value, where: str, rel: str, report: Report) -> None:
     """§7 — the actor convention shared by `generated.by`, `verified[].by` and
     `sources[].author`."""
@@ -332,8 +336,7 @@ def check_actor(value, where: str, rel: str, report: Report) -> None:
     if not actor:
         return
     if _near_miss(actor):
-        report.warn(rel, f"§7 `{where}` `{actor}` is a near-miss of "
-                         f"`human:`/`process:` — §5.3 keys trust tiers off that exact "
+        report.warn(rel, f"§7 `{where}` `{actor}` {NEAR_MISS_WORDING} — §5.3 keys trust tiers off that exact "
                          f"lowercase prefix, so this silently reads as an agent")
     elif not ACTOR_SHAPE.match(actor):
         report.warn(rel, f"§7 `{where}` `{actor}` matches no actor shape "

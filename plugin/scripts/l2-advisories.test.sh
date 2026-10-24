@@ -61,6 +61,18 @@ else
   [ "$got" = "$want" ] && ok "S13-LF-E1 1,200 advisories: 200 listed, an announced cut of 1000, l2_warnings 1200" \
     || bad "S13-LF-E1 capped list" "got: $got; want: $want"
 
+  # BL-624: which 200 advisories survive the cut must not depend on the order okflint reports them in (it follows the
+  # disk's listing, which differs between macOS and Linux for the same bundle). 250 links written from n249 down to n000:
+  # okflint reports them in that order; the report sorts, so the survivors are the 200 first by name, n000 to n199.
+  B="$TMP/e1s"; body=""; i=249
+  while [ "$i" -ge 0 ]; do body="$body[x](n$(printf %03d "$i").md)
+"; i=$((i-1)); done
+  mkb "$B" "$body"
+  got=$(jq_py "$B" 'd["l2_warnings"], len(d["l2_advisories"]), d["l2_advisories"][0], d["l2_advisories"][199], d["l2_advisories"][-1]')
+  want="250 201 L002 a.md — broken markdown link: n000.md L002 a.md — broken markdown link: n199.md ... and 50 more (l2_warnings has the total)"
+  [ "$got" = "$want" ] && ok "BL-624 250 advisories reported in descending order: the 200 listed are the first 200 by name" \
+    || bad "BL-624 sorted before the cut" "got: $got; want: $want"
+
   # S13-LF-E2: the temporary mirror .okfignore builds never shows in the report. log.md is missing, so okflint
   # reports R201 and puts the root it was given into the message.
   B="$TMP/e2"; mkb "$B" '![pic](img/missing.png)'; rm -f "$B/log.md"; mkdir -p "$B/archive"; printf 'old\n' > "$B/archive/o.md"; printf 'archive/\n' > "$B/.okfignore"
@@ -69,6 +81,17 @@ else
   want="['R201 log.md — reserved file missing in $B: log.md']"
   { [ "$got" = "$want" ] && ! grep -q 'okfmirror' "$TMP/e2.json"; } && ok "S13-LF-E2 with .okfignore the R201 message names the bundle, not the okfmirror copy" \
     || bad "S13-LF-E2 mirror path" "got: $got; want: $want; okfmirror in report: $(grep -c okfmirror "$TMP/e2.json")"
+
+  # OOS-2: the same in the TEXT report when the temp folder is reached through a link (on macOS /var is a link to /private/var,
+  # so the report held /private/private/tmp/...: the copy's real path was cut at its linked spelling and the bundle's path put in).
+  # TMPDIR is a link here, and the copy's real path is under another spelling of it: the report must name only the bundle.
+  B="$TMP/e2t"; mkb "$B" '![pic](img/missing.png)'; rm -f "$B/log.md"; mkdir -p "$B/archive"; printf 'old\n' > "$B/archive/o.md"; printf 'archive/\n' > "$B/.okfignore"
+  mkdir -p "$TMP/realtmp"; ln -s "$TMP/realtmp" "$TMP/linktmp"
+  TMPDIR="$TMP/linktmp" "$CHECK" "$B" > "$TMP/e2t.txt" 2>/dev/null
+  got=$(grep -a 'R201' "$TMP/e2t.txt" | sed 's/^ *//')
+  want="R201 log.md — reserved file missing in $B: log.md"
+  { [ "$got" = "$want" ] && ! grep -aq 'okfmirror\|/private/private' "$TMP/e2t.txt"; } && ok "OOS-2 text report: the R201 message names the bundle once, whatever spelling of the temp folder the copy's path has" \
+    || bad "OOS-2 mirror path in the text report" "got: $got; want: $want"
 
   # S13-LF-E3: same for the copy crash isolation builds when okflint dies on one note. A STUB dies on crashy.md on purpose.
   REALLINT=$(command -v okflint); STUB="$TMP/stub"; mkdir -p "$STUB"

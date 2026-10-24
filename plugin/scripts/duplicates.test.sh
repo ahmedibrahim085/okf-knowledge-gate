@@ -184,5 +184,95 @@ else
   done
 fi
 
+section "recall at a low body_threshold"
+# SC-dup147 (spec row DU-2): the banding misses some pairs near a low body_threshold, with no sign in the report. The report now says how often it
+# found pairs AT the active threshold, from a measured table kept as data (config/duplicates-body-recall.json), only when the
+# threshold is below the table's own "show_below". The cases use a copy of the plugin with a hand-made table, so the expected
+# numbers are literals here and not read from the shipped file.
+CPR="$TMP/plugin-recall"; cp -R "$HERE/.." "$CPR"
+cat > "$CPR/config/duplicates-body-recall.json" <<'JSON'
+{"show_below": 0.5, "measured": {"date": "2026-01-01", "generator": "test table"}, "points": [
+  {"threshold": 0.2, "jaccard": 0.2, "recall": 0.4}, {"threshold": 0.3, "jaccard": 0.3, "recall": 0.9}]}
+JSON
+rbundle() { # <dir> <body_threshold> — two notes with one body, and that body_threshold
+  mkdir -p "$1"; note "$1/a.md" "Alpha one" "$P"; note "$1/b.md" "Beta two" "$P"
+  printf 'okf_check:\n  duplicates:\n    body_threshold: %s\n' "$2" > "$1/okf-base.yaml"
+}
+rrun() { local plug="$1" b="$2"; shift 2; "$plug/scripts/okf-check" "$b" --duplicates-body "$@" >"$TMP/out.txt" 2>&1; "$plug/scripts/okf-check" --json "$b" --duplicates-body "$@" >"$TMP/out.json" 2>/dev/null; }
+R1="$TMP/r1"; rbundle "$R1" 0.25; rrun "$CPR" "$R1"
+{ grep -Eq 'Duplicates +body_threshold 0\.25: pairs whose bodies overlap by about the threshold were found 40% of the time \(nearest lower measured point 0\.2' "$TMP/out.txt" \
+  && [ "$(jget 'd["body_recall"]')" = '{"basis": "nearest lower measured point", "measured_at": 0.2, "recall": 0.4, "threshold": 0.25}' ]; } \
+  && ok "SC-dup147 a threshold between two measured points prints the nearest lower point's recall (40% at 0.2), in the text and in --json" \
+  || bad "SC-dup147 recall between points" "$(grep -n 'Duplicates' "$TMP/out.txt" | head -3 | tr '\n' '|') json=$(jget 'd.get("body_recall")')"
+R2="$TMP/r2"; rbundle "$R2" 0.3; rrun "$CPR" "$R2"
+{ grep -Eq 'body_threshold 0\.3: .* 90% .*\(measured point 0\.3' "$TMP/out.txt" \
+  && [ "$(jget '[d["body_recall"]["measured_at"], d["body_recall"]["recall"], d["body_recall"]["basis"]]')" = '[0.3, 0.9, "measured point"]' ]; } \
+  && ok "SC-dup147 a threshold on a measured point prints that point's recall (90% at 0.3)" \
+  || bad "SC-dup147 recall on a point" "$(grep -n 'Duplicates' "$TMP/out.txt" | head -3 | tr '\n' '|') json=$(jget 'd.get("body_recall")')"
+R3="$TMP/r3"; rbundle "$R3" 0.15; rrun "$CPR" "$R3"
+{ grep -Eq 'body_threshold 0\.15: below the measured range \(lowest measured point 0\.2\)' "$TMP/out.txt" \
+  && [ "$(jget '[d["body_recall"]["measured_at"], d["body_recall"]["recall"]]')" = '[null, null]' ]; } \
+  && ok "SC-dup147 a threshold under the lowest measured point says 'below the measured range', no number" \
+  || bad "SC-dup147 below the range" "$(grep -n 'Duplicates' "$TMP/out.txt" | head -3 | tr '\n' '|') json=$(jget 'd.get("body_recall")')"
+for T in 0.5 0.6; do
+  RD="$TMP/rd$T"; rbundle "$RD" "$T"; rrun "$CPR" "$RD"
+  { ! grep -q 'body_threshold' "$TMP/out.txt" && ! grep -q 'measured' "$TMP/out.txt" && [ "$(jget '"body_recall" in d')" = false ]; } \
+    && ok "SC-dup147 body_threshold $T (not below show_below 0.5) prints no recall line and no body_recall key" \
+    || bad "SC-dup147 no line at $T" "$(grep -n 'Duplicates' "$TMP/out.txt" | head -3 | tr '\n' '|')"
+done
+RN="$TMP/rn"; mkdir -p "$RN"; note "$RN/a.md" "Alpha one" "$P"; note "$RN/b.md" "Beta two" "$P"; printf 'okf_check:\n  duplicates:\n    body_threshold: 0.25\n' > "$RN/okf-base.yaml"
+"$CPR/scripts/okf-check" "$RN" --duplicates > "$TMP/out.txt" 2>&1; "$CPR/scripts/okf-check" --json "$RN" --duplicates > "$TMP/out.json" 2>/dev/null
+{ ! grep -q 'body_threshold' "$TMP/out.txt" && [ "$(jget '"body_recall" in d')" = false ]; } \
+  && ok "SC-dup147 --duplicates without the body pass prints no recall line: the threshold is not used" \
+  || bad "SC-dup147 no body pass" "$(grep -n 'Duplicates' "$TMP/out.txt" | head -3 | tr '\n' '|')"
+CPM="$TMP/plugin-norecall"; cp -R "$HERE/.." "$CPM"; rm -f "$CPM/config/duplicates-body-recall.json"
+rrun "$CPM" "$R1"
+{ grep -Eq 'body_threshold 0\.25: .*recall table .*could not be read' "$TMP/out.txt" && [ "$(jget 'sorted(d["body_recall"])')" = '["error", "threshold"]' ]; } \
+  && ok "SC-dup147 a missing table is said, not silent: the recall is not known" \
+  || bad "SC-dup147 missing table" "$(grep -n 'Duplicates' "$TMP/out.txt" | head -3 | tr '\n' '|') json=$(jget 'd.get("body_recall")')"
+
+# A table that is valid JSON but the wrong shape is reported like a missing one, never a crash (no traceback, same exit).
+for shape in 'empty points|{"show_below": 0.4, "points": []}' 'a point without recall|{"show_below": 0.4, "points": [{"threshold": 0.2}]}' \
+             'show_below as text|{"show_below": "0.4", "points": [{"threshold": 0.2, "recall": 0.4}]}' \
+             'points as an object|{"show_below": 0.4, "points": {"0.2": 0.4}}' 'a list at the top|[1, 2]'; do
+  printf '%s\n' "${shape#*|}" > "$CPR/config/duplicates-body-recall.json"
+  rrun "$CPR" "$R1"; "$CPR/scripts/okf-check" "$R1" --duplicates-body >/dev/null 2>&1; rcs=$?
+  { [ "$rcs" = 0 ] && ! grep -q 'Traceback' "$TMP/out.txt" && grep -Eq 'body_threshold 0\.25: the recall table .*could not be read' "$TMP/out.txt" \
+    && [ "$(jget '"error" in d["body_recall"]')" = true ]; } \
+    && ok "SC-dup147 a recall table with ${shape%%|*} is reported as unreadable, exit 0, no traceback" \
+    || bad "SC-dup147 table shape: ${shape%%|*}" "rc=$rcs $(grep -n 'Traceback\|Duplicates\|Error' "$TMP/out.txt" | head -3 | tr '\n' '|') json=$(jget 'd.get("body_recall")')"
+done
+
+# The shipped table: a low threshold prints the number the file holds for that point; the default prints nothing.
+SHIP="$HERE/../config/duplicates-body-recall.json"
+want=$("$REALPY" -c 'import json,sys; t=json.load(open(sys.argv[1])); print("%d%%" % round(100 * [p for p in t["points"] if p["threshold"] == 0.2][0]["recall"]), t["show_below"] > 0.2 and t["show_below"] <= 0.6)' "$SHIP" 2>&1)
+RS="$TMP/rs"; rbundle "$RS" 0.2; rrun "$CPR" "$RS"; cp "$SHIP" "$CPR/config/duplicates-body-recall.json"; rrun "$CPR" "$RS"
+pct=${want%% *}
+{ grep -Eq "body_threshold 0\\.2: .* found ${pct} of the time" "$TMP/out.txt" && [ "${want#* }" = True ]; } \
+  && ok "SC-dup147 the shipped table prints its own number for 0.2 ($pct) and its show_below is within (0.2, 0.6]" \
+  || bad "SC-dup147 shipped table" "want=$want $(grep -n 'Duplicates' "$TMP/out.txt" | head -3 | tr '\n' '|')"
+RS6="$TMP/rs6"; rbundle "$RS6" 0.6; rrun "$CPR" "$RS6"; "$CHECK" "$RS6" --duplicates-body > "$TMP/out2.txt" 2>&1
+{ ! grep -q 'body_threshold' "$TMP/out.txt" && ! grep -q 'body_threshold' "$TMP/out2.txt"; } \
+  && ok "SC-dup147 the default body_threshold 0.6 prints no recall line with the shipped table (behaviour unchanged)" \
+  || bad "SC-dup147 default unchanged" "$(grep -n 'body_threshold' "$TMP/out.txt" "$TMP/out2.txt" | head -2 | tr '\n' '|')"
+
+# The shipped table says where and how precisely it was measured (data, so a reader of the file knows its limits).
+meta=$("$REALPY" -c 'import json,sys; m=json.load(open(sys.argv[1]))["measured"]; print(m.get("platform"), m.get("precision"))' "$SHIP" 2>&1)
+[ "$meta" = "macOS steps of 0.01 (100 pairs per point)" ] \
+  && ok "SC-dup147 the shipped table records the platform (macOS) and the precision (100 pairs per point, steps of 0.01)" \
+  || bad "SC-dup147 table platform and precision" "$meta"
+
+# The table is reproducible: the generator (tools/ of the private repository), run with the table's own parameters for one point, gives that point's recall again.
+GEN="$HERE/../../tools/duplicates-body-recall.py"
+if [ -f "$GEN" ]; then
+  par=$("$REALPY" -c 'import json,sys; t=json.load(open(sys.argv[1])); m=t["measured"]["parameters"]; print(m["pairs_per_point"], m["seed"], [p["recall"] for p in t["points"] if p["threshold"] == 0.3][0])' "$SHIP")
+  set -- $par
+  again=$("$REALPY" "$GEN" --pairs "$1" --seed "$2" --points 0.3 2>/dev/null | "$REALPY" -c 'import json,sys; print(json.load(sys.stdin)["points"][0]["recall"])')
+  [ "$again" = "$3" ] && ok "SC-dup147 the generator reproduces the shipped table's recall at 0.3 ($3) from the table's own parameters" \
+    || bad "SC-dup147 table reproducible" "table $3, generator $again"
+else
+  skip "SC-dup147 table reproducibility - the table's generator is kept in the private repository and is not in this tree" "run from the private repository"
+fi
+
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

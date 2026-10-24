@@ -68,6 +68,45 @@ got=$(sort "$TMP/out.txt")
 rc=$(run "$B" --file "$B/sub.md" --strict-trust)
 [ "$rc" = 1 ] && ok "SC-4 with --strict-trust the same note exits 1" || bad "SC-4 strict-trust" "rc=$rc"
 
+# --- the near-miss wording has one home (BL-435, spec row BL-435): the validator's -----------------------------------------------------
+# --strict-trust counts the validator's near-miss warning by its text, in okf-check's full run and here. Both copies of that
+# text were typed again beside the validator's own, so a reworded warning silently stopped blocking under --strict-trust.
+# The probe rewords the validator in a copy of the plugin: both runs must still block. (SC-4 and LT-27e/i pin the text only
+# while the three copies agree.)
+N="$TMP/nm"; mkdir -p "$N"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$N/index.md"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\ntags: [t]\nstatus: stable\ngenerated:\n  by: Human:dana\n  at: "2026-01-01"\n---\nbody\n' > "$N/m.md"
+rc_full=$("$CHECK" "$N" --strict-trust >"$TMP/nm-full.txt" 2>&1; printf '%s' "$?")
+rc_file=$(run "$N" --file "$N/m.md" --strict-trust)
+CN="$TMP/plugin-reworded"; cp -R "$HERE/.." "$CN"
+n=$(grep -c 'is a near-miss of' "$CN/vendor/okf_validate.py")
+sed -i.orig 's/is a near-miss of/resembles/g' "$CN/vendor/okf_validate.py"
+cmp -s "$CN/vendor/okf_validate.py" "$CN/vendor/okf_validate.py.orig" && echo "  (reword changed nothing)"
+rm -f "$CN/vendor/okf_validate.py.orig"
+rm -rf "$CN/vendor/__pycache__"
+mrc_full=$("$CN/scripts/okf-check" "$N" --strict-trust >"$TMP/nm-mfull.txt" 2>&1; printf '%s' "$?")
+mrc_file=$("$CN/scripts/okf-check" "$N" --file "$N/m.md" --strict-trust >"$TMP/nm-mfile.txt" 2>&1; printf '%s' "$?")
+{ [ "$rc_full" = 1 ] && [ "$rc_file" = 1 ] && [ "$n" -ge 1 ] && grep -q 'resembles' "$TMP/nm-mfull.txt" && grep -q 'resembles' "$TMP/nm-mfile.txt" \
+  && [ "$mrc_full" = 1 ] && [ "$mrc_file" = 1 ]; } \
+  && ok "SC-11 a near-miss actor blocks under --strict-trust in the full run and with --file, also when the validator words its warning differently" \
+  || bad "SC-11 near-miss wording" "unmodified full=$rc_full file=$rc_file; reworded full=$mrc_full file=$mrc_file ($(grep -c resembles "$TMP/nm-mfull.txt") / $(grep -c resembles "$TMP/nm-mfile.txt") lines say resembles)"
+
+# SC-12: the near-miss wording cannot be read from the validator (a broken install: the constant is gone, the validator still
+# runs and still words the warning). --strict-trust must not read that as "no near-miss": Trust policy COULD NOT RUN, exit 2.
+CU="$TMP/plugin-unreadable"; cp -R "$HERE/.." "$CU"
+"$REALPY" - "$CU/vendor/okf_validate.py" <<'PY'
+import sys
+p = sys.argv[1]
+s = open(p, encoding="utf-8").read()
+assert s.count("NEAR_MISS_WORDING") == 2   # the definition and the one use in check_actor
+open(p, "w", encoding="utf-8").write(s.replace("NEAR_MISS_WORDING", "NEAR_MISS_PRIVATE"))
+PY
+urc=$("$CU/scripts/okf-check" "$N" --strict-trust >"$TMP/nm-unread.txt" 2>&1; printf '%s' "$?")
+urc0=$("$CU/scripts/okf-check" "$N" >"$TMP/nm-unread0.txt" 2>&1; printf '%s' "$?")
+{ [ "$urc" = 2 ] && grep -Eq "Trust policy +COULD NOT RUN +the validator's near-miss wording could not be read" "$TMP/nm-unread.txt" \
+  && grep -q 'near-miss of' "$TMP/nm-unread.txt" && [ "$urc0" = 0 ] && ! grep -q 'Trust policy' "$TMP/nm-unread0.txt"; } \
+  && ok "SC-12 --strict-trust with an unreadable near-miss wording is exit 2 'Trust policy COULD NOT RUN' (L1 still lists the near-miss); without --strict-trust the run is unchanged" \
+  || bad "SC-12 unreadable wording" "strict rc=$urc plain rc=$urc0 $(grep -n 'Trust policy\|near-miss' "$TMP/nm-unread.txt" | head -3 | tr '\n' '|')"
+
 # --- usage errors exit 64 and check nothing -------------------------------------------------------
 mkdir -p "$TMP/elsewhere"; clean "$TMP/elsewhere/x.md"; printf 'x\n' > "$B/notes.txt"
 r1=$(run "$B" --file "$TMP/elsewhere/x.md"); g1=$(grep -c 'not inside' "$TMP/out.txt")

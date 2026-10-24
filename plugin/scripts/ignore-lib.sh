@@ -9,7 +9,7 @@
 # Negation (`!pat`) is not supported and is skipped with a notice on stderr.
 # The file is only ever READ by the plugin. `okf-check --init-ignore` is the only writer.
 
-. "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/note-guard-lib.sh"   # okf_note_cap, okf_note_refusal
+. "$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)/note-guard-lib.sh"   # okf_note_cap, okf_manifest_cap, okf_note_refusal
 
 OKFIGNORE_PATTERNS=()
 _OKFIGNORE_FOR=""; _OKFIGNORE_RC=1; _OKFIGNORE_MSG=""; _OKFIGNORE_CACHE=()
@@ -38,7 +38,7 @@ _okfignore_read() {
   [ -f "$f" ] && okf_outside "$1" "$f" && { _OKFIGNORE_MSG="okfignore: $f $OKF_OUTSIDE_WHY: not read"; return 0; }   #
   [ -r "$f" ] || { _OKFIGNORE_MSG="okfignore: $f exists but cannot be read"; return 0; }
   # `lines`: each line comes back trimmed of the white space around it, in one linear pass (see okf_guard.read_main).
-  text=$(PYTHONDONTWRITEBYTECODE=1 "${PY:-python3}" "$_OKF_GUARD_DIR/okf_guard.py" lines "$f" "$(okf_note_cap)"); rc=$?
+  text=$(PYTHONDONTWRITEBYTECODE=1 "${PY:-python3}" "$_OKF_GUARD_DIR/okf_guard.py" lines "$f" "$(okf_manifest_cap)"); rc=$?
   case "$rc" in
     0) ;;
     1) _OKFIGNORE_RC=1; return 0 ;;   # gone since the check above: no .okfignore
@@ -122,6 +122,7 @@ okfignore_list() {
     okfignore_alias_ignored "$bundle" "$f" && continue
     printf '%s\0' "$rel"
   done < <(find -H "$bundle" -name .git -prune -o \( \( -type f ! -size +"${cap}"c \) -o -type l \) -name '*.md' -print0 2>/dev/null)   # -H: okf_md_files' rule (l3-lib.sh)
+  okf_reap_procsub
 }
 
 # okf_refused_notes <bundle>: print, NUL-separated, one "<reason><TAB><path relative to the bundle>" for every path a layer
@@ -140,6 +141,7 @@ okf_refused_notes() {
     okfignore_match "$rel" && continue
     printf '%s\t%s\0' "$why" "$rel"
   done < <(find -H "$bundle" -name .git -prune -o \( -name '*.md' -o -name '*.yaml' -o -name '*.yml' -o -name '*.json' \) \( \( ! -type f ! -type l \) -o -type l -o \( -type f -size +"${cap}"c \) \) -print0 2>/dev/null)
+  okf_reap_procsub
 }
 
 # okfignore_mirror <bundle> <dest>: the FROZEN COPY every layer reads. Copy the non-ignored notes and config (*.md,
@@ -149,16 +151,16 @@ okf_refused_notes() {
 # refuses is written to <dest>.refused (okf_refused_notes' record format) and is not in <dest>. Prints "<kept> <excluded-notes> <excluded-files>" (the first two count concept notes: *.md other than
 # index.md and log.md; the third counts ignored notes and config, not the linked files). Same file set L1 sees without .okfignore: symlinked directories are NOT
 # entered (find -H, as okf_md_files and the validator), so a note is neither lost nor listed by one layer only. Exit 1 (naming the file on stderr) when a copy or link fails, so a note is never dropped
-# silently. Nothing is deleted outside <dest>. A third argument 1 asks for the rule: when .okfignore excludes no note or
-# config file, the non-markdown files it names stay linked, so an ignore of only images changes nothing.
+# silently. Nothing is deleted outside <dest>. A non-markdown file that .okfignore excludes is not linked, whatever else is
+# excluded: it is not part of the bundle, so a link to it is an L002 advisory (one rule; BL-605).
 okfignore_mirror() {
   local bundle="${1%/}" dest="$2" f rel kept=0 excl=0 exall=0 isnote iscfg rc abs dir mdir="" ldir="" l kind late
   local -a pend=() src=()
-  local lst="${dest}.copy" refused="${dest}.refused" ignother="${dest}.ignother"
+  local lst="${dest}.copy" refused="${dest}.refused"
   okfignore_load "$bundle"; rc=$?; [ "$rc" -eq 2 ] && return 2
   [ -n "$dest" ] && [ "$dest" != / ] || return 2
   abs=$(cd -P "$bundle" && pwd) || return 2
-  rm -rf "$dest" "$lst" "$refused" "$ignother"; mkdir -p "$dest"; : > "$lst"; : > "$refused"; : > "$ignother"
+  rm -rf "$dest" "$lst" "$refused"; mkdir -p "$dest"; : > "$lst"; : > "$refused"
   # Links are made one `ln` per run of files in the same folder, not one per file: a bundle with thousands of images
   # would otherwise double its process spawns. A failed batch is retried file by file to name the culprit.
   _okfignore_flush() {
@@ -187,8 +189,6 @@ okfignore_mirror() {
       if [ "$iscfg" -eq 1 ]; then
         exall=$((exall+1))
         [ "$isnote" -eq 1 ] && excl=$((excl+1))
-      else
-        printf '%s\0' "$rel" >> "$ignother"
       fi
       continue
     fi
@@ -205,15 +205,10 @@ okfignore_mirror() {
          pend+=("$rel");;
     esac
   done 7>"$lst" < <(find -H "$bundle" -name .git -prune -o \( -type f -o -type l \) ! \( -type f -name '*.md' -size +"$(okf_note_cap)"c \) -print0 2>/dev/null)
+  okf_reap_procsub
   _okfignore_flush || return 1
   # The layers that load the copy's .okfignore (L2 on a bundle with a dangling link) read these patterns, not the bundle's file.
   [ "$rc" -ne 0 ] || printf '%s\n' ${OKFIGNORE_PATTERNS[@]+"${OKFIGNORE_PATTERNS[@]}"} > "$dest/.okfignore" || return 1
-  if [ "$exall" -eq 0 ] && [ "${3:-0}" = 1 ]; then
-    while IFS= read -r -d '' rel; do
-      dir=""; case "$rel" in */*) dir=${rel%/*};; esac
-      { [ -z "$dir" ] || mkdir -p "$dest/$dir"; } && ln -s "$abs/$rel" "$dest/$rel" 2>/dev/null || { echo "okfignore: cannot link $rel" >&2; return 1; }
-    done < "$ignother"
-  fi
   PYTHONDONTWRITEBYTECODE=1 "${PY:-python3}" "$_OKF_GUARD_DIR/okf_guard.py" freeze "$bundle" "$dest" "$(okf_note_cap)" < "$lst" > "$refused" || return 1
   # a note refused while it was copied (it became a device after the pre-scan) is not a kept note
   while IFS= read -r -d '' late; do

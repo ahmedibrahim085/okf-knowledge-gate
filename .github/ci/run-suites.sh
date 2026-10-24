@@ -18,7 +18,7 @@ unset CDPATH
 
 # --- copy of tools/lib/suite-verdict.sh (keep byte-identical) ---
 suite_verdict() {
-  local last counts shown
+  local last counts shown skipped
   if [ "$2" -eq 124 ] && [ -n "${3:-}" ]; then echo "timed out after $3 s"; return 1; fi
   [ "$2" -eq 0 ] || { echo "exit $2"; return 1; }
   last=$(awk 'NF { l = $0 } END { print l }' "$1" 2>/dev/null)
@@ -34,6 +34,19 @@ suite_verdict() {
   # not counted (`echo "99 passed, 0 failed"; exit 0` ends with a summary line too).
   shown=$(grep -c '^  PASS  ' "$1" 2>/dev/null)
   [ "${shown:-0}" -ge "${counts%% *}" ] || { echo "the summary says ${counts%% *} passed but the log shows ${shown:-0} PASS line(s)"; return 1; }
+  grep -q '^  FAIL  ' "$1" 2>/dev/null && { echo "the log holds a FAIL line the summary did not count: $(grep -m1 '^  FAIL  ' "$1" | cut -c1-80)"; return 1; }
+  if [ -n "${4:-}" ]; then
+    skipped=$(awk '{ if (match($0, /[0-9]+ SKIPPED/)) print substr($0, RSTART) + 0 }' <<<"$last")
+    if [ -n "$skipped" ]; then
+      if [ $((${counts%% *} + skipped)) -lt 20 ]; then
+        [ $((skipped * 2)) -le $((${counts%% *} + skipped)) ] \
+          || { echo "${skipped} skipped of $((${counts%% *} + skipped)) tests: more than half"; return 1; }
+      else
+        [ $((skipped * 100)) -le $((${4} * (${counts%% *} + skipped))) ] \
+          || { echo "${skipped} skipped of $((${counts%% *} + skipped)) tests: over the ceiling of ${4} percent"; return 1; }
+      fi
+    fi
+  fi
   return 0
 }
 # --- end of copy ---
@@ -41,20 +54,22 @@ suite_verdict() {
 # OKF_LINUX_SUITES and OKF_GATE_SUITE_TIMEOUT in the environment win over the conf, as in tools/linux-gate.sh, which
 # passes its own values in (review 0.9.35).
 SUITE_TIMEOUT=1800
+SKIP_MAX=${OKF_GATE_SKIP_MAX_PERCENT:-}
 SUITES=""
 if [ -f tools/linux-gate.conf ]; then
   SUITES=$(sed -n 's/^OKF_LINUX_SUITES=//p' tools/linux-gate.conf)
   t=$(sed -n 's/^OKF_GATE_SUITE_TIMEOUT=//p' tools/linux-gate.conf); [ -n "$t" ] && SUITE_TIMEOUT=$t
+  t=$(sed -n 's/^OKF_GATE_SKIP_MAX_PERCENT=//p' tools/linux-gate.conf); [ -n "$SKIP_MAX" ] || SKIP_MAX=$t
 else
   SUITES=$(find . -name '*.test.sh' -not -path './.git/*' | sed 's#^\./##' | LC_ALL=C sort | tr '\n' ' ')
 fi
 SUITES=${OKF_LINUX_SUITES:-$SUITES}
 SUITE_TIMEOUT=${OKF_GATE_SUITE_TIMEOUT:-$SUITE_TIMEOUT}
 # Not passed on: a suite that runs this script on a fixture tree (tools/ci-workflow.test.sh) must read that tree's list.
-unset OKF_LINUX_SUITES OKF_GATE_SUITE_TIMEOUT
+unset OKF_LINUX_SUITES OKF_GATE_SUITE_TIMEOUT OKF_GATE_SKIP_MAX_PERCENT
 [ -n "${SUITES// /}" ] || { echo "run-suites: no suite found"; exit 2; }
 
-echo "run-suites: $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-$(uname -s)}") $(uname -m); bash $BASH_VERSION; $(python3 --version 2>&1); okflint $(python3 -c 'import importlib.metadata as m; print(m.version("okflint"))' 2>/dev/null || echo absent); $(pre-commit --version 2>/dev/null || echo 'pre-commit absent'); $(awk -W version 2>&1 | head -1); user $(id -un)"
+echo "run-suites: $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-$(uname -s)}") $(uname -m); bash $BASH_VERSION; $(python3 --version 2>&1); okflint $(python3 -c 'import importlib.metadata as m; print(m.version("okflint"))' 2>/dev/null || echo absent); $(pre-commit --version 2>/dev/null || echo 'pre-commit absent'); $(awk -W version 2>&1 | head -1); user $(id -un)"  # pipefail-safe: a banner shown on one echo line; the status of a substitution inside an argument is never read.
 # OKF_SUITE_JOBS (gate speed): how many suites run at once; default the CPU count, at most 4. Each suite has its own mktemp folder
 # (plugin/tests/okf-test-lib.sh), so they do not share state; the suites in OKF_GATE_SIDE_BY_SIDE (the two heavy halves of
 # the okf-check tests) start first. The report lists the suites in suite-list order, whatever order they finish in. A pool
@@ -101,7 +116,7 @@ for s in $SUITES; do
   [ "$i" -gt 0 ] || continue
   rc=255; secs=0   # no result file (the job was killed): a failure, never the previous suite's result
   [ -f "$WORK/$i.rc" ] && read -r rc secs < "$WORK/$i.rc"
-  why=$(suite_verdict "$WORK/$i.log" "$rc" "$SUITE_TIMEOUT")
+  why=$(suite_verdict "$WORK/$i.log" "$rc" "$SUITE_TIMEOUT" "$SKIP_MAX")
   printf '%-42s rc=%-3s %5ss  %s%s\n' "$s" "$rc" "$secs" \
     "$(grep -E '[0-9]+ passed' "$WORK/$i.log" | tail -1 | sed 's/^ *//')" "${why:+  GATE-FAIL: $why}"
   if [ -n "$why" ]; then

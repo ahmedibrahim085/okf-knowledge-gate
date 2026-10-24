@@ -141,5 +141,62 @@ sed -i.bak 's/^HIDDEN_CATEGORIES = .*/HIDDEN_CATEGORIES = ()/' "$CP3/scripts/okf
   && ok "S32-IV-E1 --selftest fires the invisible-character probe; with the hidden-character drop emptied it reports NOT FIRED and exits 5" \
   || bad "S32-IV-E1 selftest probe" "rc3=$rc3 $(grep -n 'invisible\|SELFTEST' "$TMP/st.txt" "$TMP/st3.txt" | tr '\n' '|')"
 
+section "starter name"
+# SC-2765: --init-house-rules wrote the folder name unquoted, so a folder named yes, null, 123 or on became a YAML boolean, null or
+# integer for base.name (okflint read it without complaint, but the type was wrong). The starter now quotes it.
+for fname in yes null 123 on "my notes" 2026-10-24; do
+  B="$TMP/names/$fname"; mkdir -p "$B"
+  "$CHECK" --init-house-rules "$B" >"$TMP/out.txt" 2>&1; rc=$?
+  kind=$(python3 -I -c '
+import sys
+sys.path.insert(0, sys.argv[3])   # -I ignores PYTHONPATH
+import yaml
+n = yaml.safe_load(open(sys.argv[1]))["base"]["name"]
+print(type(n).__name__, n == sys.argv[2])' "$B/okf-base.yaml" "$fname" "$HERE/../vendor/pyyaml" 2>&1)
+  { [ "$rc" = 0 ] && [ "$kind" = "str True" ]; } \
+    && ok "SC-2765 a folder named '$fname' gives a starter whose base.name is the string '$fname'" \
+    || bad "SC-2765 starter name '$fname'" "rc=$rc type/equal=$kind $(grep -n 'name:' "$B/okf-base.yaml" | head -1)"
+done
+# Non-ASCII folder names: the filter that decides between keeping the name and the "bundle" fallback depends on the locale
+# (bash 3.2 keeps a letter under en_US.UTF-8; the C locale falls back; bash 5.2 is UNPROVEN until the Debian gate), so the
+# case pins only what holds in both: the starter's base.name is a string (the name or "bundle") and the run exits 0.
+for LOC in C en_US.UTF-8; do
+  for fname in "ıx" "ß" "ﬁ" "İ"; do
+    B="$TMP/names-$LOC/$fname"; mkdir -p "$B"
+    LC_ALL=$LOC "$CHECK" --init-house-rules "$B" >"$TMP/out.txt" 2>&1; rc=$?
+    kind=$(python3 -I -c '
+import sys
+sys.path.insert(0, sys.argv[3])   # -I ignores PYTHONPATH
+import yaml
+n = yaml.safe_load(open(sys.argv[1], encoding="utf-8"))["base"]["name"]
+print(type(n).__name__, n in (sys.argv[2], "bundle"))' "$B/okf-base.yaml" "$fname" "$HERE/../vendor/pyyaml" 2>&1)
+    { [ "$rc" = 0 ] && [ "$kind" = "str True" ]; } \
+      && ok "SC-2765 under LC_ALL=$LOC a folder named '$fname' gives a starter whose base.name is a string (the name or bundle)" \
+      || bad "SC-2765 non-ASCII '$fname' under $LOC" "rc=$rc type/value=$kind $(grep -n 'name:' "$B/okf-base.yaml" 2>/dev/null | head -1)"
+  done
+done
+B="$TMP/names/a&b"; mkdir -p "$B"; "$CHECK" --init-house-rules "$B" >/dev/null 2>&1
+grep -qx '  name: "bundle"' "$B/okf-base.yaml" \
+  && ok "SC-2765 a folder name with a character outside letters, digits, dot, dash, underscore and space still falls back to \"bundle\"" \
+  || bad "SC-2765 fallback name" "$(grep -n 'name:' "$B/okf-base.yaml" | head -1)"
+
+section "trust note in --json"
+# RM-20: the text report says once, under a Trust finding, that okf-check cannot prove who a person is. The --json report held
+# only the finding objects, so a CI job or an agent reading it never saw that a `human:` entry is a claim in the file.
+B="$TMP/tn1"; mkb "$B"; vnote "$B/v.md" 'human:dana'
+"$CHECK" --json "$B" >"$TMP/tn1.json" 2>"$TMP/tn1.err"; rc=$?
+note=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["trust_findings"]), d.get("trust_note", "<absent>"))' "$TMP/tn1.json" 2>&1)
+{ [ "$rc" = 0 ] && [ "$note" = "1 okf-check cannot prove who a person is. A human: entry is a claim in the file." ]; } \
+  && ok "RM-20 --json carries trust_note, the text report's sentence, beside a trust finding" \
+  || bad "RM-20 trust_note present" "rc=$rc trust_findings/trust_note: $note"
+"$CHECK" "$B" >"$TMP/tn1.txt" 2>&1
+[ "$(grep -c 'cannot prove who a person is' "$TMP/tn1.txt")" = 1 ] && grep -q '^                   okf-check cannot prove who a person is. A human: entry is a claim in the file.$' "$TMP/tn1.txt" \
+  && ok "RM-20 the text report still prints the sentence once, indented under the Trust lines" \
+  || bad "RM-20 text sentence" "$(grep -n 'prove who' "$TMP/tn1.txt" | head -2)"
+B="$TMP/tn2"; mkb "$B"
+"$CHECK" --json "$B" >"$TMP/tn2.json" 2>"$TMP/tn2.err"
+note=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["trust_findings"]), d.get("trust_note", "<absent>"))' "$TMP/tn2.json" 2>&1)
+[ "$note" = "0 <absent>" ] && ok "RM-20 --json has no trust_note when there is no human: finding" || bad "RM-20 trust_note absent" "$note"
+
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

@@ -73,13 +73,23 @@ else
   got=$(l2 "$B")
   [ "$got" = "{}" ] && ok "S12-IG-E1e a symlink to a file inside the bundle gives no L002" || bad "S12-IG-E1e symlink to file" "l2_by_rule=$got (want {})"
 
-  # S12-IG-E2: .okfignore that excludes no note or config file builds no mirror, so a non-markdown ignore changes nothing.
+  # S12-IG-E2 (spec row IG-2): a link to a non-markdown file that .okfignore excludes is an L002 advisory, whether or not a note is also ignored
+  # (it used to resolve when the ignore file excluded no note, because no copy was filtered; one rule now: an ignored file is not in the bundle).
   B="$TMP/e2"; mkb "$B"; mkdir -p "$B/img/raw"; printf 'png' > "$B/img/pic.png"; printf 'psd' > "$B/img/raw/big.psd"
   printf 'img/raw/\n' > "$B/.okfignore"; rm -rf "$B/archive"
   printf -- '---\ntype: Lesson\ntitle: U\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01T00:00:00Z"\nstale_after: "2099-01-01"\n---\n\n![pic](img/pic.png) [raw](img/raw/big.psd)\n' > "$B/a.md"
   got=$(l2 "$B")
-  [ "$got" = "{}" ] && ok "S12-IG-E2 .okfignore that excludes only a non-markdown folder builds no mirror: both links resolve, no L002" \
-    || bad "S12-IG-E2 non-markdown ignore only" "l2_by_rule=$got (want {})"
+  [ "$got" = '{"L002": 1}' ] && ok "S12-IG-E2 .okfignore that excludes only a non-markdown folder: the kept image resolves, the link into the ignored folder is one L002" \
+    || bad "S12-IG-E2 non-markdown ignore only" "l2_by_rule=$got (want {\"L002\": 1})"
+
+  # S12-IG-E7: the same ignored file gives the same advisories with and without an unrelated ignored note beside it.
+  adv() { "$CHECK" --json "$1" 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["l2_warnings"], d["l2_advisories"])'; }
+  B="$TMP/e7a"; mkb "$B"; mkdir -p "$B/img"; printf 'png' > "$B/img/pic.png"; rm -rf "$B/archive"; printf '*.png\n' > "$B/.okfignore"
+  B2="$TMP/e7b"; mkb "$B2"; mkdir -p "$B2/img"; printf 'png' > "$B2/img/pic.png"; printf '*.png\narchive/\n' > "$B2/.okfignore"
+  ga=$(adv "$B"); gb=$(adv "$B2")
+  want="1 ['L002 a.md — broken markdown link: img/pic.png']"
+  { [ "$ga" = "$want" ] && [ "$gb" = "$want" ]; } && ok "S12-IG-E7 a link to a file '*.png' ignores is one L002, with or without an ignored note too" \
+    || bad "S12-IG-E7 same rule both ways" "png only: $ga; png and note: $gb; want: $want"
 
   # S12-IG-E6: a bundle path with & and a space (bash 5.2 reads & in a ${var/pat/rep} replacement as the matched text).
   B="$TMP/R&D kb/b"; mkb "$B"; mkdir -p "$B/img"; printf 'png' > "$B/img/pic.png"
@@ -217,6 +227,37 @@ PY
       || bad "S30-CF-I1 long line ($kind)" "size=$sz rc=$rc ${t} s list: $list"
   done
 fi
+
+# BL-1072a: .okfignore is not a note, so okf_check.max_note_bytes does not apply to it (as for okf-base.yaml). A bundle that
+# lowers the note cap to 300 bytes still reads its own 640-byte .okfignore; one over the manifest limit is still refused, named.
+B="$TMP/cap-a"; mkb "$B"
+python3 - "$B/.okfignore" <<'PY'
+import sys
+open(sys.argv[1], "w").write("# " + "x" * 600 + "\narchive/\n")
+PY
+sz=$(wc -c < "$B/.okfignore" | tr -d ' ')
+list=$(OKF_MAX_NOTE_BYTES=300 timeout 30 bash "$HERE/ignore-lib.sh" --list "$B" 2>"$TMP/cap-a.err" | tr '\0' ' '); rc=$?
+{ [ "$sz" -gt 300 ] && [ "$rc" -eq 0 ] && [ "$list" != "${list/a.md/}" ] && [ "$list" = "${list/archive/}" ] && [ ! -s "$TMP/cap-a.err" ]; } \
+  && ok "BL-1072a a $sz-byte .okfignore is read under max_note_bytes 300, and its pattern applies" \
+  || bad "BL-1072a .okfignore under the note cap" "size=$sz rc=$rc list=$list err=$(head -2 "$TMP/cap-a.err" | tr '\n' ' ')"
+B="$TMP/cap-b"; mkb "$B"; printf 'okf_check:\n  max_note_bytes: 300\n' >> "$B/okf-base.yaml"
+python3 - "$B/.okfignore" <<'PY'
+import sys
+open(sys.argv[1], "w").write("# " + "x" * 600 + "\narchive/\n")
+PY
+"$CHECK" "$B" > "$TMP/cap-b.out" 2>&1; rc=$?
+{ [ "$rc" -ne 2 ] && ! grep -q 'larger than 300 bytes' "$TMP/cap-b.out" && ! grep -q 'no verdict is possible' "$TMP/cap-b.out"; } \
+  && ok "BL-1072a okf-check with max_note_bytes: 300 and a 600-byte .okfignore gives a verdict" \
+  || bad "BL-1072a okf-check end to end" "rc=$rc $(grep -n 'okfignore\|IGNORE' "$TMP/cap-b.out" | head -3 | tr '\n' ' ')"
+B="$TMP/cap-c"; mkb "$B"
+python3 - "$B/.okfignore" <<'PY'
+import sys
+open(sys.argv[1], "w").write("#" * 1048577 + "\n")
+PY
+timeout 30 bash "$HERE/ignore-lib.sh" --list "$B" > "$TMP/cap-c.out" 2> "$TMP/cap-c.err"; rc=$?
+{ [ "$rc" -eq 2 ] && grep -q 'larger than 1048576 bytes (the config file size limit, manifest_max_bytes' "$TMP/cap-c.err"; } \
+  && ok "BL-1072a a .okfignore over the 1 MB manifest limit is still refused, naming the limit" \
+  || bad "BL-1072a over-limit .okfignore" "rc=$rc $(head -2 "$TMP/cap-c.err" | tr '\n' ' ')"
 
 echo
 echo "  $PASS passed, $FAIL failed, $SKIPPED skipped"

@@ -37,13 +37,38 @@ OKF_LIB="$LIB" OKF_TEST_TIMING=1 bash "$TMP/mini.test.sh" > "$TMP/on.txt" 2>&1; 
 OKF_LIB="$LIB" bash "$TMP/mini.test.sh" > "$TMP/off.txt" 2>&1; rc_off=$?
 
 # S11-TS-H1: one line per section, in order, with seconds and the assert count.
-if grep -Eq '^TIMING +[1-9][0-9]*s +2 asserts +first$' "$TMP/on.txt" \
-   && grep -Eq '^TIMING +[0-9]+s +3 asserts +second$' "$TMP/on.txt" \
-   && grep -Eq '^TIMING +[0-9]+s +0 asserts +third$' "$TMP/on.txt" \
+if grep -Eq '^TIMING +[1-9][0-9]*\.[0-9]+s +2 asserts +first$' "$TMP/on.txt" \
+   && grep -Eq '^TIMING +[0-9]+\.[0-9]+s +3 asserts +second$' "$TMP/on.txt" \
+   && grep -Eq '^TIMING +[0-9]+\.[0-9]+s +0 asserts +third$' "$TMP/on.txt" \
    && [ "$(grep -c '^TIMING' "$TMP/on.txt")" -eq 3 ]; then
   ok "TS-1 OKF_TEST_TIMING=1 prints one seconds-and-count line per section (S11-TS-H1)"
 else
   bad "TS-1 timing lines" "$(grep -c '^TIMING' "$TMP/on.txt" 2>/dev/null) TIMING lines; output: $(head -12 "$TMP/on.txt" | tr '\n' '|')"
+fi
+
+# TS-4 (BL-587): the seconds have a fraction. Two sections of 0.3 s and 0.4 s used to print "0s" and "1s" (whole seconds from
+# $SECONDS), so a section could not be told from one twice as long. Each value must be a decimal number of seconds, within
+# a wide band around the sleep (a loaded machine runs long, never short), and the two must not both read as whole seconds.
+cat > "$TMP/fine.test.sh" <<'FINE'
+#!/usr/bin/env bash
+set -uo pipefail
+. "$OKF_LIB"
+section "short"
+sleep 0.3
+ok "a"
+section "longer"
+sleep 0.4
+ok "b"
+okf_test_summary
+[ "$FAIL" -eq 0 ] || exit 1
+FINE
+OKF_LIB="$LIB" OKF_TEST_TIMING=1 bash "$TMP/fine.test.sh" > "$TMP/fine.txt" 2>&1
+t_short=$(sed -n 's/^TIMING  *\([0-9][0-9]*\.[0-9][0-9]*\)s .* short$/\1/p' "$TMP/fine.txt")
+t_long=$(sed -n 's/^TIMING  *\([0-9][0-9]*\.[0-9][0-9]*\)s .* longer$/\1/p' "$TMP/fine.txt")
+if [ -n "$t_short" ] && [ -n "$t_long" ] && awk -v a="$t_short" -v b="$t_long" 'BEGIN { exit !(a >= 0.25 && a < 3 && b >= 0.35 && b < 3) }'; then
+  ok "TS-4 a 0.3 s and a 0.4 s section print as $t_short s and $t_long s (a decimal number of seconds)"
+else
+  bad "TS-4 sections of a fraction of a second" "short='$t_short' longer='$t_long'; output: $(grep '^TIMING' "$TMP/fine.txt" | tr '\n' '|')"
 fi
 
 # S11-TS-N1: a plain run prints no timing line.

@@ -77,6 +77,7 @@ okf_md_files() {
     [ -L "$f" ] && [ -n "$(okf_note_refusal "$f" "$1")" ] && continue   # $1: a link out of the root is not read
     printf '%s\0' "$f"
   done < <(find -H "$1" -name '*.md' \( \( -type f ! -size +"${cap}"c \) -o -type l \) -print0 2>/dev/null)
+  okf_reap_procsub
 }
 
 # okf_folder_links <root>: the symlinked folders below <root> that okf_md_files does not enter, one

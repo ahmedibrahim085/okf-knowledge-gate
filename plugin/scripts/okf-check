@@ -43,7 +43,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.53"
+VERSION="0.9.54"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -63,6 +63,8 @@ advise() {
   done
   ADV_SRC+=("$1"); ADV_N+=("$2")
 }
+# The sentence under a Trust finding, in the text report and as `trust_note` in --json (RM-20): it is one fact, said in both places.
+TRUST_NOTE='okf-check cannot prove who a person is. A human: entry is a claim in the file.'
 ADVISORIES=0; SKIPPED=0; TRUST_RAN=1; TRUST_FINDINGS=0; TRUST_POLICY_FAIL=0; L2_PROFILE=ran
 
 # ---------------------------------------------------------------- locate self
@@ -275,7 +277,15 @@ esc_line() {
 }
 # say also notes the layer of every "<layer>   COULD NOT RUN" line, for --json layers_not_run (the layer column ends at two spaces).
 say()  { case "$*" in "  "[!\ ]*"  COULD NOT RUN"*) local _l="${*#  }"; record notrun "${_l%%  *}" ;; esac
-  [ "$JSON" -eq 1 ] && return 0; local m="$*"; [ -n "$MIRROR_ROOT" ] && m=${m//"$MIRROR_ROOT"/"$BUNDLE"}; [ -n "$L2_MIRROR_ROOT" ] && m=${m//"$L2_MIRROR_ROOT"/"$BUNDLE"}; esc_line "$m"; }
+  [ "$JSON" -eq 1 ] && return 0; local m="$*" _r _rr
+  # The copy is named by its real path in okflint's messages (macOS: /var is a link to /private/var). That spelling goes first:
+  # cutting the linked spelling out of it left a leading /private in front of the bundle's path.
+  for _r in "$MIRROR_ROOT" "$L2_MIRROR_ROOT"; do
+    [ -n "$_r" ] || continue
+    _rr=${TMP_REAL:-$TMP}${_r#"$TMP"}
+    m=${m//"$_rr"/"$BUNDLE"}; m=${m//"$_r"/"$BUNDLE"}
+  done
+  esc_line "$m"; }
 # record <kind> <text> — one finding for --json (kind: error, stale, l2, skipped). Appends to a file, so it also works
 # inside `| while read` pipelines. The text lines of the human report stay untouched.
 record() { printf '%s\t%s\n' "$1" "$(printf '%s' "$2" | tr '\n\t' '  ')" >> "$TMP/findings.tsv" 2>/dev/null; return 0; }
@@ -305,6 +315,7 @@ PY
 )
   fi
   _t="[]"; [ -s "$TMP/trust.json" ] && _t=$(cat "$TMP/trust.json"); [ "${TRUST_RAN:-1}" -eq 0 ] && _t=null
+  _tn=""; [ "${TRUST_FINDINGS:-0}" -gt 0 ] && _tn=",\"trust_note\":\"$TRUST_NOTE\""   # present only beside a human: finding, as the text line is
   if [ -n "$PY" ]; then
     _b=$(printf '%s' "$BUNDLE" | "$PY" -c 'import json,sys; sys.path.insert(0, sys.argv[1]); from okf_guard import shown; sys.stdout.write(json.dumps(shown(sys.stdin.read())))' "$HERE")
     _f=$(OKF_SCRIPTS_DIR="$HERE" OKF_SIZES_JSONL="$TMP/sizes.jsonl" OKF_FACTS_JSONL="$TMP/facts.jsonl" OKF_SYMLINKED_LST="$TMP/symlinked-folders.lst" OKF_GRAPH_JSON="$TMP/graph.json" OKF_STOP_WHY="${STOP_WHY:-}" OKF_L2_CRASHED="${#L2_CRASHED[@]}" "$PY" - "$TMP/findings.tsv" "$TMP/l2parsed.txt" "${L2_PROFILE:-ran}" "$BUNDLE" "${MIRROR_ROOT:-}" "${L2_MIRROR_ROOT:-}" <<'PY'
@@ -399,8 +410,8 @@ PY
     _f='"errors":[],"stale":[],"l2_findings":[],"skipped":[],"lifecycle":[],"l2_warnings":null,"l2_by_rule":{},"l2_advisories":[],"layers_not_run":[]'
     [ -z "${STOP_WHY:-}" ] || _f="${_f%\"layers_not_run\":[]}\"layers_not_run\":[\"$STOP_LAYER\"],\"reason\":\"$STOP_WHY\""   # fixed texts without a quote or a backslash
   fi
-  printf '{"bundle":%s,"exit":%d,"l1_errors":%s,"l1_warnings":%s,"concepts":%s,"change_detection":"%s"%s,"warnings":%s,"trust_findings":%s,"l2_profile":"%s",%s}\n' \
-    "$_b" "$code" "${L1_ERR:-null}" "${L1_WARN:-null}" "${L1_CONCEPTS:-null}" "$_cd" "$_ign" "$_w" "$_t" "${L2_PROFILE:-ran}" "$_f"
+  printf '{"bundle":%s,"exit":%d,"l1_errors":%s,"l1_warnings":%s,"concepts":%s,"change_detection":"%s"%s,"warnings":%s,"trust_findings":%s%s,"l2_profile":"%s",%s}\n' \
+    "$_b" "$code" "${L1_ERR:-null}" "${L1_WARN:-null}" "${L1_CONCEPTS:-null}" "$_cd" "$_ign" "$_w" "$_t" "$_tn" "${L2_PROFILE:-ran}" "$_f"
 }
 # say_capped <limit> <indent>  — lines on stdin, capped, and HONEST about it.
 # Four dumps cut at 10-12 lines with no note of the cut: a reader sees twelve
@@ -1165,7 +1176,7 @@ for w in ws: print("W|" + w)
 json.dump([shown(w) for w in ws], open(sys.argv[2], "w"))   # a name that is not UTF-8 reads \xff in --json, not a lone surrogate
 PY
   if grep -q '^SHAPE|' "$TMP/l1.txt" 2>/dev/null; then
-    say "  L1 conformance   COULD NOT RUN — $(sed -n 's/^SHAPE|//p' "$TMP/l1.txt" | head -1)"
+    say "  L1 conformance   COULD NOT RUN — $(sed -n 's/^SHAPE|//p' "$TMP/l1.txt" | head -1)"  # pipefail-safe: a message line; the status of a substitution inside an argument is never read.
     say "                   run: okf-check --selftest"
     return $EXIT_DEP
   fi
@@ -1226,7 +1237,7 @@ run_trust() {
     say "  Trust (C4)       WARN   ${nw} warning(s), ${na} advisory(ies)"
   fi
   printf '%s\n' "$out" | sed -n 's/^[WA]|//p' | say_capped 50 "                   "
-  [ "$((nw + na))" -eq 0 ] || say "                   okf-check cannot prove who a person is. A human: entry is a claim in the file."
+  [ "$((nw + na))" -eq 0 ] || say "                   $TRUST_NOTE"
   [ "$nt" -eq 0 ] || return $EXIT_CONFORM
   return 0
 }
@@ -1792,6 +1803,7 @@ l2_isolate() {
     [ "$skip" -eq 1 ] && continue
     mkdir -p "$mirror/$(dirname "$rel")" && cp -pP "$f" "$mirror/$rel" 2>/dev/null   # -P: a link in the frozen copy (an image) stays a link, never read through
   done < <(find -H "$bundle" -name .git -prune -o \( -type f -o -type l \) -print0 2>/dev/null)   # -H, links: as okf_md_files
+  okf_reap_procsub
   run_limited "$l2limit" "$TMP/l2.out" sh -c 'cd "$1" && exec okflint validate . --manifest okf-base.yaml --json' _ "$mirror"; ec=$?
   cat "$TMP/l2.out" "$TMP/l2.out.err" > "$TMP/l2.txt" 2>/dev/null
   case "$ec" in
@@ -1893,7 +1905,7 @@ __l2_core() {
   # link (the .okfignore mirror skips dangling links) and report each link below. No dangling link: no mirror, same run.
   local dlst="$TMP/l2dangling.lst" _src="${L2_SRC:-$bundle}"
   l2_dangling "$_src" > "$dlst"
-  if [ "$(l2_dangling "$bundle" all | tr -d '\0' | head -c 1)" ]; then   # the ignore mirror holds none, so it needs no second one
+  if [ "$(l2_dangling "$bundle" all | tr -d '\0' | head -c 1)" ]; then   # the ignore mirror holds none, so it needs no second one  # pipefail-safe: only the value (the first byte) is tested; the status of the substitution is never read.
     if ! okfignore_mirror "$bundle" "$TMP/l2dangling" >/dev/null 2>"$TMP/l2dangling.err"; then
       L2_PROFILE=could_not_run
       say "  L2 profile       COULD NOT RUN — the dangling symlink(s) could not be set aside for okflint: $(head -1 "$TMP/l2dangling.err" | cut -c1-160)"
@@ -2058,8 +2070,10 @@ for code, n in sorted(Counter(str(x.get("code", "?")) for x in others).items(), 
     print("C|%s|%d" % (code.replace("|", "/"), n))
 # The advisories themselves, same text format as the E rows, for `l2_advisories` in --json (okf-knowledge-gate#2). One row per
 # finding, so the text is flattened: a newline in a file name or message must not forge a C| or E| row.
-for x in others:
-    print("W|" + shown(re.sub(r"[\r\n\t]", " ", "%s %s \u2014 %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", "")))))
+# Sorted: okflint reports in the disk's listing order, which differs between macOS and Linux, and --json keeps only the
+# first 200, so the same bundle listed different advisories on the two systems (BL-624). Code points, not a locale.
+for w in sorted(shown(re.sub(r"[\r\n\t]", " ", "%s %s \u2014 %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", "")))) for x in others):
+    print("W|" + w)
 if _above:
     anc, n = _above.most_common(1)[0]
     src = os.path.realpath(sys.argv[5])
@@ -2734,6 +2748,7 @@ selftest() {
 
 # ---------------------------------------------------------------------- main
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t okfcheck)
+TMP_REAL=$(cd -P "$TMP" 2>/dev/null && pwd) || TMP_REAL=$TMP   # say() cuts the copies out of a message under both spellings
 # Before anything writes "$TMP/...": with an empty TMP each of those paths is at the filesystem root (/refused.lst).
 [ -n "$TMP" ] && [ -d "$TMP" ] || { echo "okf-check: cannot make a temporary folder (TMPDIR=${TMPDIR:-unset}) - no verdict is possible" >&2; exit $EXIT_DEP; }
 # On every way out, including an outside TERM or Ctrl-C, the limited command's tree is stopped first.
@@ -2784,10 +2799,9 @@ print(json.dumps({"bundle": shown(sys.argv[1]),
   init-house-rules) # The ONLY writer of okf-base.yaml, and only on this explicit request. L2 reads
                 # <bundle>/okf-base.yaml, so that is where the starter goes. The placeholder name is set
                 # from the folder name so the file works as written; a name with anything but
-                # letters, digits, dot, dash, underscore or space falls back to "bundle".
-                # SHORTCUT: no YAML escaping and no quoting. The allowed characters cannot break the YAML
-                # structure; a folder named like a YAML scalar (yes, null, 123) is written as is and okflint
-                # accepts it today. Quote the value if okflint ever starts to care.
+                # letters, digits, dot, dash, underscore or space falls back to "bundle". The value is written
+                # in double quotes: a folder named yes, null or 123 would otherwise be a YAML boolean, null or
+                # integer. The allowed characters need no escaping inside the quotes.
                 [ -n "$BUNDLE" ] || { echo "usage: okf-check --init-house-rules <bundle>" >&2; exit 64; }
                 [ -d "$BUNDLE" ] || { echo "okf-check: $BUNDLE is not a directory" >&2; exit 64; }
                 [ -f "$TEMPLATE" ] || { echo "okf-check: starter template missing: $TEMPLATE" >&2; exit $EXIT_DEP; }
@@ -2796,7 +2810,7 @@ print(json.dumps({"bundle": shown(sys.argv[1]),
                 fi
                 _bn=$(basename "$(cd "$BUNDLE" && pwd -P)")
                 case "$_bn" in *[!A-Za-z0-9._\ -]*|"") _bn=bundle ;; esac
-                sed "s/^  name: CHANGE ME/  name: $_bn/" "$TEMPLATE" > "$BUNDLE/okf-base.yaml" 2>/dev/null \
+                sed "s/^  name: CHANGE ME/  name: \"$_bn\"/" "$TEMPLATE" > "$BUNDLE/okf-base.yaml" 2>/dev/null \
                   || { echo "okf-check: cannot write $BUNDLE/okf-base.yaml" >&2; rm -f "$BUNDLE/okf-base.yaml"; exit $EXIT_DEP; }
                 echo "wrote $BUNDLE/okf-base.yaml (starter; edit it, then re-run okf-check)"; exit 0;;
   init-ignore)  # The ONLY writer of .okfignore, and only on this explicit request.
@@ -2890,7 +2904,7 @@ FP_BEFORE=$(bundle_fingerprint "$BUNDLE")
 # produce it. State it; a lane that quietly stopped working is the defect this
 # whole tool exists to catch. (Z-3)
 FP_DEGRADED=0
-if [ -z "$FP_BEFORE" ] && [ -n "$(okf_md_files "$BUNDLE" | tr -d '\0' | head -c 1)" ]; then
+if [ -z "$FP_BEFORE" ] && [ -n "$(okf_md_files "$BUNDLE" | tr -d '\0' | head -c 1)" ]; then  # pipefail-safe: only the value (the first byte) is tested; the status of the substitution is never read.
   FP_DEGRADED=1
 fi
 # Paths no layer may open: found by stat alone, before any layer reads the bundle.
@@ -2901,8 +2915,7 @@ okf_refused_notes "$BUNDLE" > "$TMP/refused.lst" 2>/dev/null
 # .okfignore excludes and every refused path, so L1 and okflint (which walk the folder themselves) never meet them. The
 # bundle itself is never touched. It costs one python start and one copy of the notes (measured in the commit message).
 LAYER_BUNDLE="$BUNDLE"; IGNORED=""; REAL_BUNDLE="$BUNDLE"
-_keep_other=0; [ -s "$TMP/refused.lst" ] || _keep_other=1   # no refused path and no note excluded: an ignored image stays linked
-_ml=$(okfignore_mirror "$BUNDLE" "$TMP/okfmirror" "$_keep_other"); _mrc=$?
+_ml=$(okfignore_mirror "$BUNDLE" "$TMP/okfmirror"); _mrc=$?
 if [ "$_mrc" -ne 0 ]; then
   if okfignore_present "$BUNDLE"; then say "  IGNORE           could not apply .okfignore (see the message above) - no verdict is possible"
   else say "  FREEZE           could not copy the bundle for the layers (see the message above) - no verdict is possible"; fi
@@ -2948,10 +2961,16 @@ run_config "$BUNDLE" "$LAYER_BUNDLE"; CONFIG_RC=$?; worse_other $CONFIG_RC
 run_conformance "$LAYER_BUNDLE"; worse_other $?
 run_trust       "$LAYER_BUNDLE"; worse_other $?
 # --strict-trust: severity only. A C4 finding or an L1 near-miss actor warning becomes blocking (exit 1).
-# The near-miss count reads the validator's own warning text (anchored on its full wording, so a warning
-# that merely quotes those words in an actor does not count); LT-27e and LT-27i fail if that text changes.
+# The near-miss count reads the validator's own warning text (NEAR_MISS_WORDING in okf_validate.py, the one copy;
+# anchored on a warning line, so a warning that merely quotes those words in an actor does not count: LT-27i).
 if [ "$STRICT_TRUST" -eq 1 ]; then
-  _nm=$(grep -c '^W|.*is a near-miss of `human:`/`process:`' "$TMP/l1.txt" 2>/dev/null); _nm=${_nm:-0}
+  _nmtext=$(py_with_vendor -c 'import sys; sys.path.insert(0, sys.argv[1]); import okf_validate; print(okf_validate.NEAR_MISS_WORDING)' "$ROOT/vendor" 2>/dev/null)
+  if [ -n "$_nmtext" ]; then
+    _nm=$(NM_TEXT="$_nmtext" awk 'substr($0, 1, 2) == "W|" && index($0, ENVIRON["NM_TEXT"]) { n++ } END { print n + 0 }' "$TMP/l1.txt" 2>/dev/null); _nm=${_nm:-0}
+  else   # fail closed: a near-miss that cannot be counted is not "none"
+    say "  Trust policy     COULD NOT RUN   the validator's near-miss wording could not be read (reinstall the plugin)"
+    _nm=0; worse $EXIT_DEP
+  fi
   _strict_n=$((TRUST_FINDINGS + _nm))
   if [ "$_strict_n" -gt 0 ]; then
     say "  Trust policy     FAIL   ${_strict_n} finding(s) under --strict-trust (human verification the tool cannot authenticate, or a near-miss actor)"

@@ -1377,6 +1377,16 @@ def misplaced_keys(data: dict, schema: dict) -> list[str]:
     return [k for k in data if k in schema.get("keys", {})]
 
 
+def misplaced_hints(bundle: Path) -> list[str]:
+    """One line per okf_check option written at the top level of okf-base.yaml: okf-check prints the same advice (Config WARN),
+    but a user who runs okf-verify alone (the Action's verify, the pre-commit hook) only saw `repos searched: NONE`."""
+    data, schema = load_manifest(bundle)
+    inside = data.get("okf_check") if isinstance(data.get("okf_check"), dict) else {}
+    return [f"`{k}` is at the top level of okf-base.yaml" + (" and also inside okf_check:" if k in inside else ", outside okf_check:")
+            + f"; okf-verify reads `{k}` only inside okf_check: "
+            + ("delete the top-level copy" if k in inside else f"move it to okf_check.{k}") for k in misplaced_keys(data, schema)]
+
+
 def declared_repos(bundle: Path, given: list[Path]) -> list[dict]:
     """One UNRESOLVED finding per repository okf-base.yaml names (okf_check.verify.repos) that `given` (--repo) does not.
 
@@ -1795,6 +1805,7 @@ def main() -> int:
     looked = [(r, *git_dir(r)) for r in a.repo]
     try:
         declared_problems = declared_repos(a.bundle, [r for r, found, _ in looked if found])
+        hints = misplaced_hints(a.bundle)
     except BaseConfigError as e:
         print(f"error: {a.bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
         return 2
@@ -1862,6 +1873,8 @@ def main() -> int:
                   "repos_searched": [str(r) for r in repos],
                   "repos_skipped_not_git": skipped,
                   "passed": not failed, "results": results}
+        if hints:   # present only when okf-base.yaml has an okf_check option outside okf_check:
+            report["config_warnings"] = hints
         if unreadable:   # present only when a --repo could not be looked at: it is not "not a git repo"
             report["repos_unreadable"] = unreadable
         if unrecognized:   # present only when a no-claim note holds citation-shaped text (okf-knowledge-gate#14, part 3)
@@ -1880,6 +1893,8 @@ def main() -> int:
 
     print(f"okf-verify — {shown(str(a.bundle))}")
     print(f"  repos searched: {', '.join(shown(r.name) for r in repos) if repos else 'NONE (SHAs cannot be checked)'}")
+    for h in hints:
+        print(f"  ! {shown(h)}")
     for s in skipped:
         print(f"  ! not a git repo, skipped: {shown(s)}")
     for u in unreadable:

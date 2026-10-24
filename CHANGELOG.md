@@ -9,6 +9,24 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.54] - 2026-10-24
+
+OKF Knowledge Gate 0.9.54 closes the gaps found by the 2026-10-23 audit in `okf-check`, `okf-verify`, the release gates and the export scan: config and message wording, the order of advisories, a recall note for `--duplicates-body`, links to ignored non-markdown files, and no defunct `find` left behind in a plain run.
+
+### Fixed
+- **`--duplicates-body` says what it can miss at a low threshold.** The body pass can miss a pair whose overlap is near a low `body_threshold`, and the report did not say so. Below `0.4` the text report and `--json` (`body_recall`) now give how often pairs at about that threshold were found, from a measured table (`plugin/config/duplicates-body-recall.json`, written by a generator kept in the maintainers' private repository). The default `0.6` is unchanged.
+- **Behaviour change: a link to an ignored non-markdown file is an L002 advisory.** With `.okfignore` `*.png` alone, a note's image link to `img/pic.png` used to resolve, while the same link was an L002 advisory as soon as a note was ignored too. There is one rule now: a file `.okfignore` excludes is not in the bundle, so the link is an L002 advisory in both cases (a warning; the verdict and exit code are unchanged). A bundle that ignores images and links them will see these advisories.
+- **`okf-verify` run alone names an option written outside `okf_check:`.** A `verify:` block at the top level of `okf-base.yaml` is ignored; `okf-check` said so, but `okf-verify` printed only `repos searched: NONE`. It now prints the same advice (and `config_warnings` in `--json`).
+- **The text report names the bundle once in an R201 message.** On macOS it printed `/private/private/tmp/...`: okflint names the temporary copy by its real path (`/private/var/...`), and only the linked spelling was replaced by the bundle's path.
+- **`okf-check --json` lists the same L2 advisories on every system.** `l2_advisories` keeps 200 of them; which 200 followed the order okflint reports in, which differs between macOS and Linux. The list is now sorted before the cut.
+- **`okf-check --json` carries the Trust disclaimer.** The text report says under a `human:` finding that `okf-check` cannot prove who a person is; `--json` held only the findings. It now has `trust_note` with the same sentence, present only beside such a finding.
+- **`okf-check --strict-trust` does not read an unreadable wording as "no near-miss".** The count of near-miss actors reads the validator's own warning text; if that text cannot be read (a broken install) the run now stops with `Trust policy COULD NOT RUN`, exit 2, instead of counting 0.
+- **A `.okfignore` over 1 MiB is refused with a new wording.** The message ends `(the config file size limit, manifest_max_bytes in config/okf-check-block.json)`; it used to name `okf_check.max_note_bytes`.
+- **`--init-house-rules` writes the folder name in quotes.** A folder named `yes`, `null` or `123` gave `name: yes`, which YAML reads as a boolean, null or integer; the starter now holds `name: "yes"`.
+- **`.okfignore` is read under the config limit, not the note cap.** With `max_note_bytes: 300` a 640-byte `.okfignore` was refused and the run had no verdict; it is now read under the 1 MiB limit `okf-base.yaml` has (a larger one is refused, naming it).
+- **`tools/check-tests.sh` sees more of the `grep -q` race and of fixed wall-clock bounds.** It reads a writer on an earlier `\` line, a pipe inside a double-quoted `$(...)`, a pipe that ends its line, the `run:` blocks of `action.yml`, a script with a space in its path, and a bound held in a variable, a function or a file.
+- **`okf-check` leaves no defunct `find` behind in a plain run either.** The 0.9.53 fix covered `--selftest`; a plain run still left a `find` when it ran on a busy machine under a process 1 that never reaps (a container with no init). Every `find` loop now collects its `find` before it moves on.
+
 ## [0.9.53] - 2026-10-24
 
 OKF Knowledge Gate 0.9.53 makes `okf-check` hold up on five odd inputs: a note whose read fails, a link that is swapped to point at itself, a process with nothing to reap its children, a folder the bundled validator cannot enter, and one oversized YAML value.
@@ -947,7 +965,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.53...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.54...HEAD
+[0.9.54]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.53...v0.9.54
 [0.9.53]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.52...v0.9.53
 [0.9.52]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.51...v0.9.52
 [0.9.51]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.50...v0.9.51

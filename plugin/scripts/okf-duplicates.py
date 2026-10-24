@@ -49,6 +49,34 @@ CUT_AT = os.environ.get("OKF_DUP_CUT_AT", "")
 MIN_BODY_WORDS = 5   # one shingle: a shorter body ("TODO") is the same single shingle in every stub, so every stub scored 1.00
 
 
+def body_recall():
+    """What the body pass is known to miss at body_threshold: None when it need not be said (the threshold is not below the
+    table's show_below), else the dict `--json` carries as body_recall and the text line is made from. The numbers are the
+    measured table config/duplicates-body-recall.json (written by a generator kept in the private repository): nothing is typed here."""
+    path = os.path.join(os.path.dirname(os.path.abspath(sys.argv[2])), "duplicates-body-recall.json")
+    try:
+        with open(path, encoding="utf-8") as f:
+            table = json.load(f)
+        num = lambda x: isinstance(x, (int, float)) and not isinstance(x, bool)
+        if not (isinstance(table["points"], list) and table["points"]
+                and all(isinstance(p, dict) and num(p.get("threshold")) and num(p.get("recall")) for p in table["points"])
+                and (table["show_below"] is None or num(table["show_below"]))):
+            raise ValueError("unexpected shape: points must be a non-empty list of {threshold, recall} numbers and show_below a number or null")
+        points = sorted(table["points"], key=lambda p: p["threshold"])
+        show_below = table["show_below"]
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        return {"threshold": body_threshold, "error": "%s: %s" % (type(exc).__name__, getattr(exc, "strerror", None) or exc)}
+    if show_below is not None and body_threshold >= show_below:
+        return None
+    lower = [p for p in points if p["threshold"] <= body_threshold]
+    if not lower:
+        return {"threshold": body_threshold, "measured_at": None, "recall": None, "basis": "below the measured range",
+                "lowest_measured": points[0]["threshold"]}
+    p = lower[-1]
+    return {"threshold": body_threshold, "measured_at": p["threshold"], "recall": p["recall"],
+            "basis": "measured point" if p["threshold"] == body_threshold else "nearest lower measured point"}
+
+
 def over(phase):
     return CUT_AT == phase or time.monotonic() > deadline
 
@@ -146,7 +174,8 @@ for a, b in itertools.combinations(notes, 2):
 # body_threshold is 0.6), 0.08 at 0.05. 8 bands of 4 rows gave only 0.06 at J=0.3. The candidates are then checked exactly, so a false
 # candidate costs time, never a wrong pair.
 # SHORTCUT: a pair with body overlap close to body_threshold can be missed by the banding; exact all-pairs Jaccard
-# would not miss it but is quadratic in the shingle sets. Raise the bands if that recall matters.
+# would not miss it but is quadratic in the shingle sets. The report says how often it misses at a low body_threshold
+# (body_recall, from the measured table config/duplicates-body-recall.json); raise the bands if that recall matters.
 if with_body and not cut:
     P61, rnd = (1 << 61) - 1, random.Random(70)
     perms = [(rnd.randrange(1, P61), rnd.randrange(0, P61)) for _ in range(64)]
@@ -184,10 +213,12 @@ if with_body and not cut:
         if not cut and time.monotonic() > deadline:
             cut, cut_in = True, "body"
 
+recall = body_recall() if with_body else None
 if as_json:
     side = lambda n: {"rel": shown(n["rel"]), **{k: n[k] for k in ("status", "at", "owner")}}
     print(json.dumps({"bundle": bundle, "exit": 0, "complete": not cut and not unread, "cut_in": cut_in, "notes_read": len(notes),
                       "notes_total": len(to_read), "body_short": short_bodies, "compared": compared, "pairs_total": total,
+                      **({"body_recall": recall} if recall else {}),
                       "duplicates": [{"signal": x["signal"], "score": x["score"], "a": side(x["a"]), "b": side(x["b"])}
                                      for x in pairs],
                       **({"unread": [{"rel": shown(u["rel"]), "why": u["why"]} for u in unread]} if unread else {})}))
@@ -203,6 +234,16 @@ elif cut_in == "body":
 elif cut:
     print("  Duplicates       CUT SHORT after %g s (okf_check.duplicates.time_limit): %d of %d pairs compared;"
           " the list below is partial" % (limit, compared, total))
+if recall and "error" in recall:
+    print("  Duplicates       body_threshold %g: the recall table (config/duplicates-body-recall.json) could not be read (%s):"
+          " the recall of the body pass is not known" % (body_threshold, recall["error"]))
+elif recall and recall["recall"] is None:
+    print("  Duplicates       body_threshold %g: below the measured range (lowest measured point %g): the recall of the body"
+          " pass is not known" % (body_threshold, recall["lowest_measured"]))
+elif recall:
+    print("  Duplicates       body_threshold %g: pairs whose bodies overlap by about the threshold were found %d%% of the time"
+          " (%s %g, config/duplicates-body-recall.json); pairs that overlap more are found more often"
+          % (body_threshold, round(100 * recall["recall"]), recall["basis"], recall["measured_at"]))
 if short_bodies:
     print("  Duplicates       %d note(s) with a body under %d words not compared on body (title, description and"
           " sources still compared)" % (short_bodies, MIN_BODY_WORDS))

@@ -1518,6 +1518,24 @@ rc=$(run "$TMP/rv36")
   && ok "RV-36 a verify.repos entry with no path is a config error: exit 2 naming the missing path, no traceback" \
   || bad "RV-36 repos entry without path" "rc=$rc $(tail -2 "$TMP/out.txt" | tr '\n' ' ')"
 
+# RV-37: an okf_check option written at the top level of okf-base.yaml is ignored; okf-check says so (Config WARN) and okf-verify,
+# which a user may run alone (the Action's verify, the pre-commit hook), printed "repos searched: NONE" with no hint about the key.
+mkb "$TMP/rv37"; printf 'verify:\n  repos:\n    - path: .\n' > "$TMP/rv37/okf-base.yaml"
+rc=$(run "$TMP/rv37")
+{ [ "$rc" = 0 ] && grep -qF 'verify` is at the top level of okf-base.yaml' "$TMP/out.txt" && grep -qF 'okf_check.verify' "$TMP/out.txt"; } \
+  && ok "RV-37 a top-level verify: key gets a hint naming okf_check.verify, exit 0 (the verdict does not change)" \
+  || bad "RV-37 top-level verify hint" "rc=$rc $(head -4 "$TMP/out.txt" | tr '\n' ' ')"
+rc=$(run "$TMP/rv37" --json)
+{ [ "$rc" = 0 ] && grep -qF '"config_warnings"' "$TMP/out.txt" && grep -qF 'okf_check.verify' "$TMP/out.txt"; } \
+  && ok "RV-37 --json carries the same hint under config_warnings" \
+  || bad "RV-37 --json hint" "rc=$rc $(grep -c config_warnings "$TMP/out.txt")"
+mkb "$TMP/rv37b"; printf 'okf_check:\n  verify:\n    repos: []\n' > "$TMP/rv37b/okf-base.yaml"
+rc=$(run "$TMP/rv37b")
+{ [ "$rc" = 0 ] && ! grep -q 'top level' "$TMP/out.txt"; } \
+  && ok "RV-37 a verify: key inside okf_check gets no hint" || bad "RV-37 no hint inside okf_check" "rc=$rc"
+rc=$(run "$TMP/rv37b" --json); ! grep -qF '"config_warnings"' "$TMP/out.txt" \
+  && ok "RV-37 --json has no config_warnings key when nothing is misplaced" || bad "RV-37 --json key absent" "rc=$rc"
+
 echo
 # Before the summary: the gate runners take only a suite's LAST line as its summary, and a wrapped `rm` can print.
 if [ "$FAIL" -gt 0 ]; then

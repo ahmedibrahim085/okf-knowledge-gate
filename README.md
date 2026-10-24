@@ -264,7 +264,8 @@ exported), and a file with a second name is skipped and named while a folder (do
 ### Ignore
 
 Put globs in `<bundle>/.okfignore` (`archive/`, `.trash/`; a leading `**/` matches at any depth,
-the root included). Every layer skips them and the run says how many files it excluded. A symlinked note whose target is
+the root included). Every layer skips them and the run says how many files it excluded. A file `.okfignore` excludes is not part of the bundle,
+whatever its type: a note that links to an ignored image, SVG or PDF gets an L002 advisory for that link (the verdict does not change). A symlinked note whose target is
 ignored is ignored too, and a symlinked folder that `.okfignore` excludes is not named on the `symlinks` line (`--json`
 `symlinked_folders` lists the ones it names). The plugin never creates the file by itself. White space around a pattern
 is trimmed: space, tab, CR, VT and FF only, so a trailing no-break or ideographic space is part of the pattern.
@@ -306,7 +307,7 @@ not a PASS.
 `tool/1.0`). A note's own `owner` key wins; otherwise `owners` gives folder defaults as globs (the `.okfignore`
 syntax, without negation: a pattern that starts with `!` exits 2), and the last matching pattern wins. The `Owner` line reports a note with no owner and an owner that is not an
 actor (house-rule errors, exit 1), and a note whose frontmatter the loader refused for its size (`too large to read`: the
-owner was not checked, which is not a missing owner). Each L3 staleness and lifecycle finding ends with `owner <actor>`, in the text and
+owner was not checked, which is not a missing owner). The key is always named `owner`: it is not configurable (owner decision, 2026-10-24). Each L3 staleness and lifecycle finding ends with `owner <actor>`, in the text and
 in `--json` `stale[]` and `lifecycle[]`.
 
 ```yaml
@@ -424,7 +425,8 @@ it holds the target.
 (1048576 bytes; `manifest_max_bytes` in `plugin/config/okf-check-block.json`), by `okf-check`, `okf-verify` and every helper. A manifest
 above that is named as a refused file (`okf-base.yaml — larger than 1048576 bytes`, exit 1; with `--duplicates`, `--facts` or
 `okf-verify`, exit 2): a manifest that large is not a real configuration. Lowering `max_note_bytes` below the size of your manifest
-does not stop it from being read.
+does not stop it from being read. `.okfignore` is not a note either and is read under the same 1 MiB limit (a larger one is refused,
+exit 2, naming the limit).
 
 **What every layer reads:** `okf-check` judges the paths by `stat` first, then copies the notes and config it will read
 into a private frozen copy with a bounded read that checks the type and size of the file it actually opened (at most the
@@ -460,6 +462,10 @@ compared), the report says `among the notes read`, and `--json` has `unread[]` a
 (default `0.6`; on our labelled live sample, 0.3 flagged as many unrelated notes as duplicates), found with MinHash
 and then checked exactly, within the same time limit. A body under 5 words (a stub such as `TODO`) is not compared on its
 body, since every such stub is the same single shingle; the report counts those notes (`--json` `body_short`).
+The banding can miss a pair whose overlap is near a low threshold, so below the table's `show_below` (`0.4` when it was measured) the report adds how often pairs at about
+the threshold were found (`--json` `body_recall`), read from `plugin/config/duplicates-body-recall.json`: a table measured by
+a generator kept in the maintainers' private repository, on generated notes (the nearest lower measured point is named; under the lowest point it
+says "below the measured range"). At the default `0.6` nothing is added.
 
 ### Environment variables
 
@@ -503,7 +509,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.53
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.54
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -521,7 +527,7 @@ To check the commits, paths and line citations the notes cite as well, add `veri
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.53
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.54
         with:
           bundle: path/to/bundle
           verify: 'true'                  # also run okf-verify; default 'false'
@@ -544,7 +550,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.53
+    rev: v0.9.54
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -552,7 +558,7 @@ repos:
         args: [path/to/bundle, --repo, .]
 ```
 
-Your `args` replace a hook's default (`.` for `okf-check`, `. --repo .` for `okf-verify`, which only work when the repository root is the bundle: a root `README.md` without frontmatter is a concept that fails L1). pre-commit 4.7.0 accepts the hook's `language: script`. Its source maps
+Your `args` replace a hook's default (`.` for `okf-check`, `. --repo .` for `okf-verify`). With the default, the hook checks the repository root as a bundle, so a root `README.md` without frontmatter is a concept that fails L1 (`README.md: §11.1 no parseable YAML frontmatter block`): name your bundle folder in `args`, as in the example above. pre-commit 4.7.0 accepts the hook's `language: script`. Its source maps
 that name to `unsupported_script`; it prints no removal notice today. The hook has been run end to end by pre-commit 4.7.0
 on macOS: a clean bundle commits, a draft note with a human verifier is blocked, and a commit that stages no Markdown
 file skips the hook. The `okf-verify` hook has been run the same way (macOS, pre-commit 4.7.0): a note that cites a commit of the

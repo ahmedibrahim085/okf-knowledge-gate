@@ -29,8 +29,8 @@ _spec = importlib.util.spec_from_file_location("okf_trust", HERE / "okf-trust.py
 trust = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(trust)
 
-# The validator's near-miss wording, as okf-check's --strict-trust counts it (LT-27e and LT-27i pin that text).
-NEAR_MISS = "is a near-miss of `human:`/`process:`"
+# The validator's near-miss wording, as okf-check's --strict-trust counts it: read from the validator, not typed again.
+NEAR_MISS = v.NEAR_MISS_WORDING
 
 
 def main(argv: list) -> int:

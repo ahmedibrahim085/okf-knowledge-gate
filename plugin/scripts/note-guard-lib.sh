@@ -21,6 +21,19 @@ okf_note_cap() {
   printf '%s' "$c"
 }
 
+# okf_manifest_cap: the byte limit of a config file that is not a note (okf-base.yaml, .okfignore): fixed, in
+# config/okf-check-block.json (`manifest_max_bytes`), so lowering okf_check.max_note_bytes cannot lock a person out of them.
+okf_manifest_cap() {
+  sed -n 's/.*"manifest_max_bytes": *\([0-9][0-9]*\).*/\1/p' "$_OKF_GUARD_DIR/../config/okf-check-block.json" 2>/dev/null   # the key is in the file once; no pipe (check-tests.sh)
+}
+
+# okf_reap_procsub: call it right after a `done < <(find ...)` loop. bash 4.4+ ends the loop when find closes the pipe and
+# can exit before it has collected find's exit; the orphan then stays defunct under a PID 1 that never reaps (a container with no
+# init). `$!` is the process substitution's pid, so one `wait` collects it. About 1 plain run in 200 leaks on a quiet machine and
+# 3 in 10 on a busy one (measured 2026-10-24: 43-63 defunct find in 120 runs, 8 at a time). bash 3.2 collects it on its own and
+# `wait` then returns 127 at once; stderr is dropped for that. `|| :` keeps the helper at status 0 (a caller under `set -e` would otherwise stop on that 127).
+okf_reap_procsub() { wait "$!" 2>/dev/null || :; }
+
 # The one reason text for a folder named like a note; okf-check tells it from a refusal by this exact string.
 OKF_FOLDER_WHY='a folder, not a note'
 

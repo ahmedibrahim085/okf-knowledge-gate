@@ -68,18 +68,28 @@ mkbundle() { # <dir> — a minimal conformant bundle
   printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$1/c.md"
 }
 
+# okf_now_ms — the clock in milliseconds, for the timing mode only (a plain run never calls it). bash 3.2 (macOS) has no
+# EPOCHREALTIME, so perl or python3 is asked, once per section edge; with neither, whole seconds from $SECONDS.
+okf_now_ms() {
+  local t
+  if [ -n "${EPOCHREALTIME:-}" ]; then t=${EPOCHREALTIME/[.,]/}; echo $((t / 1000)); return; fi
+  t=$(perl -MTime::HiRes=time -e 'printf "%d", time * 1000' 2>/dev/null); [ -z "$t" ] || { echo "$t"; return; }
+  t=$(python3 -c 'import time; print(int(time.time() * 1000))' 2>/dev/null); [ -z "$t" ] || { echo "$t"; return; }
+  echo $((SECONDS * 1000))
+}
 # section <name> — marks where a section of a suite starts. With OKF_TEST_TIMING=1 it closes the section before it
-# with one line: whole seconds ($SECONDS) and the asserts that ran in it (pass + fail + skip). A plain run prints nothing.
+# with one line: seconds to a hundredth and the asserts that ran in it (pass + fail + skip). A plain run prints nothing.
 TIMING_NAME=""; TIMING_T0=0; TIMING_N0=0
 section_flush() {
   [ -n "$TIMING_NAME" ] || return 0
-  printf 'TIMING %4ss %4s asserts  %s\n' "$((SECONDS-TIMING_T0))" "$((PASS+FAIL+SKIPPED-TIMING_N0))" "$TIMING_NAME"
+  local ms; ms=$(( $(okf_now_ms) - TIMING_T0 ))
+  printf 'TIMING %4s.%02ds %4s asserts  %s\n' "$((ms / 1000))" "$((ms % 1000 / 10))" "$((PASS+FAIL+SKIPPED-TIMING_N0))" "$TIMING_NAME"
   TIMING_NAME=""
 }
 section() {
   [ "${OKF_TEST_TIMING:-}" = 1 ] || return 0
   section_flush
-  TIMING_NAME=$1; TIMING_T0=$SECONDS; TIMING_N0=$((PASS+FAIL+SKIPPED))
+  TIMING_NAME=$1; TIMING_T0=$(okf_now_ms); TIMING_N0=$((PASS+FAIL+SKIPPED))
 }
 
 # okf_test_summary — the closing lines every suite prints; the suite's own last line is `[ "$FAIL" -eq 0 ] || exit 1`.

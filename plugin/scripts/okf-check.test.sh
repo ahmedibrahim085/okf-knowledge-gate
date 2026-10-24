@@ -2226,7 +2226,7 @@ section "0.9.0 T4"
 # writes the file the L2 layer actually reads (<bundle>/okf-base.yaml) and nothing else ever writes it.
 H1="$TMP/ih1"; mkbundle "$H1"
 "$CHECK" --init-house-rules "$H1" >"$TMP/ih1.txt" 2>&1; rc=$?
-{ [ "$rc" -eq 0 ] && [ -f "$H1/okf-base.yaml" ] && grep -q 'okf-base.yaml' "$TMP/ih1.txt" && ! grep -q 'CHANGE ME' "$H1/okf-base.yaml" && grep -q '^  name: ih1$' "$H1/okf-base.yaml"; } \
+{ [ "$rc" -eq 0 ] && [ -f "$H1/okf-base.yaml" ] && grep -q 'okf-base.yaml' "$TMP/ih1.txt" && ! grep -q 'CHANGE ME' "$H1/okf-base.yaml" && grep -q '^  name: "ih1"$' "$H1/okf-base.yaml"; } \
   && ok "LT-28a S14-H1 --init-house-rules <bundle> writes <bundle>/okf-base.yaml (name set from the folder), exit 0" \
   || bad "LT-28a S14-H1" "rc=$rc $(head -2 "$TMP/ih1.txt" | tr '\n' ' ')"
 "$CHECK" --init-house-rules >"$TMP/ih2.txt" 2>&1; rc=$?
@@ -2256,7 +2256,7 @@ else
 fi
 H4="$TMP/ih:odd\"name"; mkbundle "$H4"
 "$CHECK" --init-house-rules "$H4" >/dev/null 2>&1
-grep -q '^  name: bundle$' "$H4/okf-base.yaml" && ok "LT-28h S16-E1 a folder name with YAML-special characters falls back to 'bundle'" || bad "LT-28h S16-E1" "$(grep -n 'name:' "$H4/okf-base.yaml" | head -1)"
+grep -q '^  name: "bundle"$' "$H4/okf-base.yaml" && ok "LT-28h S16-E1 a folder name with YAML-special characters falls back to 'bundle'" || bad "LT-28h S16-E1" "$(grep -n 'name:' "$H4/okf-base.yaml" | head -1)"
 # S17: only this command writes the file
 H5="$TMP/ih_never"; mkbundle "$H5"
 for flag in "" "--json" "--strict-trust" "--fail-stale"; do "$CHECK" $flag "$H5" >/dev/null 2>&1; done

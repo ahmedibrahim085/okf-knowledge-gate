@@ -217,6 +217,7 @@ def note_cap(bundle=None, env=True):
 
 NOTE_WHAT = "okf_check.max_note_bytes"   # what the refusal text names as the source of a note's limit
 MANIFEST_WHAT = "the okf-base.yaml size limit"
+OKFIGNORE_WHAT = "the config file size limit, manifest_max_bytes in config/okf-check-block.json"   # a .okfignore is read under the manifest's limit, not the note cap
 OUTSIDE_WHY = "points outside the bundle"   # the refusal of a path whose real path is outside the bundle; bash twin OKF_OUTSIDE_WHY
 
 
@@ -416,7 +417,7 @@ def read_main(p, cap, trim=False):
     in the C locale. ignore-lib.sh trimmed in bash, where each strip tried every prefix or suffix of the line: a line of
     80 KB of spaces took over a minute. One pass here is linear in the file."""
     try:
-        t = read_note(p, "utf-8-sig", "replace", cap=cap, root=os.path.dirname(os.path.abspath(p)))   # .okfignore: its bundle is its folder
+        t = read_note(p, "utf-8-sig", "replace", cap=cap, what=OKFIGNORE_WHAT, root=os.path.dirname(os.path.abspath(p)))   # .okfignore: its bundle is its folder
     except NoteRefused as exc:
         sys.stdout.write(str(exc))
         return 3
