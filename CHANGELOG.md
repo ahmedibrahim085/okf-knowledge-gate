@@ -9,6 +9,17 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.53] - 2026-10-24
+
+OKF Knowledge Gate 0.9.53 makes `okf-check` hold up on five odd inputs: a note whose read fails, a link that is swapped to point at itself, a process with nothing to reap its children, a folder the bundled validator cannot enter, and one oversized YAML value.
+
+### Fixed
+- **A note that cannot be read stops only itself.** A note that opens and then fails to read with an I/O error (`/proc/self/mem` behind a note name) used to end the whole run with exit 2; it is now named as `cannot be read (Input/output error)` and the run exits 1.
+- **`okf-check` and its wrappers give up on a link loop.** The walk that finds the script's own folder follows at most 40 links; a link swapped to point at itself after the start used to spin for ever.
+- **`okf-check` leaves no defunct `find` behind.** Under a process 1 that never reaps (a container with no init) each `--selftest` left 8-12 defunct `find` processes (one loop in the dangling-link check); that loop now waits for its `find` before it ends.
+- **The vendored validator no longer passes a folder it cannot read.** Run by itself, `okf_validate.py` said conformant over a `chmod 000` folder; it now reports the folder as an error and exits 1.
+- **One oversized YAML value is not called an alias bomb.** The L2 skip line names the two causes separately.
+
 ## [0.9.52] - 2026-10-24
 
 OKF Knowledge Gate 0.9.52 makes `okf-export` read block quotes as CommonMark does: raw HTML, setext headings and lines without `>` inside a quote, and it stops leaving a probe folder behind after a `kill -9`.
@@ -936,7 +947,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.52...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.53...HEAD
+[0.9.53]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.52...v0.9.53
 [0.9.52]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.51...v0.9.52
 [0.9.51]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.50...v0.9.51
 [0.9.50]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.49...v0.9.50

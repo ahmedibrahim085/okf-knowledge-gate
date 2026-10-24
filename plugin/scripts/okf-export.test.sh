@@ -1390,7 +1390,9 @@ rc=$(run "$V" "$TMP/po26f/out")
   && ok "S10-PO-26f Para after indented code in a quote is a heading; z after code in a quoted list is not (no phantom)" \
   || bad "S10-PO-26f code in quote" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
 # 26g: the new paths stay linear: 160 KB of lone # lines, of quoted list items with indented lines, and of lazy indented
-# lines. The bound is a RATIO, not a wall-clock number (a hosted CI runner is several times slower than a laptop): the same
+# lines, plus a GENERATED family: every ordered pair of block starts inside a quote, then a lazy line, repeated (review
+# round 1 of the block-quote rows found a quadratic reader that a hand-picked list had missed: 6000 lines took 20 s). The
+# bound is a RATIO, not a wall-clock number (a hosted CI runner is several times slower than a laptop): the same
 # shape at 8 times the size must cost at most 24 times as much plus 0.25 s (best of 3 each; linear is about 8, quadratic
 # about 64). A quadratic control proves the check can fail. Timed in memory through the module, as 13j.
 "$REALPY" - "$EXPORT" >"$TMP/out.txt" 2>&1 <<'PY'
@@ -1399,11 +1401,17 @@ loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
 mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
 loader.exec_module(mod)
 shapes = {"lone #": lambda n: ["#"] * (n // 2), "quoted items + code": lambda n: ["> - a", ">     code"] * (n // 14),
-          "lazy indented": lambda n: ["> - a"] + ["    # H"] * (n // 8),
-          # a quote that its reader ends at a lazy line it rejects, again and again: each new quote must not read ahead to
-          # the end of the note (review round 1 of the block-quote rows: 6000 lines took 20 s, 12000 took 80 s)
-          "quote ended at a lazy line": lambda n: ["> <div>", "> [x]: /u", "z"] * (n // 22)}
-sizes = {"quote ended at a lazy line": 4 * 1024}   # bytes; every other shape starts at 40 KB
+          "lazy indented": lambda n: ["> - a"] + ["    # H"] * (n // 8)}
+# The family: a quote opens with block start A, then B, then a line without `>`; the cell repeats. Whether the reader ends
+# the quote at that lazy line or takes it in depends on A and B, and a reader that scans ahead to the end of the note on
+# each quote end costs quadratic time for some pairs only.
+STARTS = ["# H", "- a", "    code", "<div>", "[x]: /u", "```", "---", "1. a"]   # heading, bullet, indented code, HTML, link definition, fence, rule, numbered item
+LAZY = ["z", "    # H"]
+def cell_family(cell):
+    return lambda n: cell * max(1, n // len("\n".join(cell)))
+family = {"quote %r %r then %r" % (a, b, lz): cell_family(["> " + a, "> " + b, lz]) for a in STARTS for b in STARTS for lz in LAZY}
+sizes = {name: 4 * 1024 for name in family}   # bytes; the family starts at 4 KB, every other shape at 40 KB
+shapes.update(family)
 def best(fn, lines):
     runs = []
     for _ in range(3):
@@ -1420,13 +1428,15 @@ slow = [] if bad_control else ["the quadratic control was not caught"]
 for name, make in shapes.items():
     small = sizes.get(name, 40 * 1024)
     flag, t1, t8 = too_slow(lambda ls: list(mod.body_lines(ls + ["after"])), make, small, 8 * small)
-    print("%-22s %.3f s -> %.3f s" % (name, t1, t8))
+    if flag or name not in family:
+        print("%-22s %.3f s -> %.3f s" % (name, t1, t8))
     if flag:
         slow.append("%s %.2f s -> %.2f s" % (name, t1, t8))
+print("%d shapes timed (%d generated: %d starts x %d starts x %d lazy lines)" % (len(shapes), len(family), len(STARTS), len(STARTS), len(LAZY)))
 sys.exit(1 if slow else 0)
 PY
 rc=$?
-[ "$rc" = 0 ] && ok "S10-PO-26g lone #, quoted items with code, lazy indented lines and quotes ended at a lazy line again and again cost linear time: 8 times the size costs at most 24 times as much plus 0.25 s (a quadratic control is caught; guard: passes on the base script too)" \
+[ "$rc" = 0 ] && ok "S10-PO-26g lone #, quoted items with code, lazy indented lines and every pair of block starts in a quote then a lazy line, repeated, cost linear time: 8 times the size costs at most 24 times as much plus 0.25 s (a quadratic control is caught; guard: passes on the base script too)" \
   || bad "S10-PO-26g linear cost" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt")"
 # 26h: a list item in a quote that holds no paragraph (empty, or its content starts a block) leaves none open, so the next
 # line without a `>` is no lazy line: the quote ends there. An HTML block or indented code then starts at that line, and

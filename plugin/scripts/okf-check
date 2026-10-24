@@ -43,7 +43,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.52"
+VERSION="0.9.53"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -66,9 +66,12 @@ advise() {
 ADVISORIES=0; SKIPPED=0; TRUST_RAN=1; TRUST_FINDINGS=0; TRUST_POLICY_FAIL=0; L2_PROFILE=ran
 
 # ---------------------------------------------------------------- locate self
-# Symlink-safe without readlink -f (absent on macOS): walk the link chain.
-_self="$0"
+# Symlink-safe without readlink -f (absent on macOS): walk the link chain. At most 40 links, as okf_real_path and
+# ignore-lib.sh: bash refuses a cyclic link at exec, but $0 is read again here, so a link swapped after the start would spin.
+_self="$0"; _hops=0
 while [ -L "$_self" ]; do
+  _hops=$((_hops + 1))
+  [ "$_hops" -le 40 ] || { echo "okf-check: $0 leads through more than 40 symbolic links (a loop?) - cannot find the plugin folder" >&2; exit $EXIT_DEP; }
   _dir=$(cd -P "$(dirname "$_self")" && pwd)
   _self=$(readlink "$_self")
   case "$_self" in /*) ;; *) _self="$_dir/$_self" ;; esac
@@ -1721,11 +1724,16 @@ run_duplicates() {
 l2_dangling() {
   local root="${1%/}" f
   okfignore_load "$root" >/dev/null 2>&1
-  while IFS= read -r -d '' f; do
+  # The loop runs in the left subshell of the pipe. Its find ends at the moment the loop sees end of input, and bash 4.4+
+  # leaves a subshell without reaping it: the orphan stays defunct under a PID 1 that never reaps (a container with no
+  # init), 10-12 per --selftest, and the run's exit trap never sees it (measured 2026-10-24: every defunct find of a
+  # --selftest came from this loop). So the subshell waits for its own find; `wait` of a pid that is not its child ends at once.
+  { while IFS= read -r -d '' f; do
     [ -e "$f" ] && continue
     [ -z "${2:-}" ] && okfignore_match "${f#"$root"/}" && continue
     printf '%s\0' "${f#"$root"/}"
-  done < <(find -H "$root" -name .git -prune -o -type l -name '*.md' -print0 2>/dev/null) | sort -z
+  done < <(find -H "$root" -name .git -prune -o -type l -name '*.md' -print0 2>/dev/null)
+  wait "$!" 2>/dev/null; } | sort -z
 }
 # l2_say_dangling <list>: one advisory line per dangling link, capped and honest about the cap by say_capped.
 l2_say_dangling() {
@@ -1858,12 +1866,18 @@ __l2_core() {
   # okflint is an external tool and expands a YAML alias bomb exactly as the validator used to (935 MB in 5 s,
   # unbounded until OKF_L2_TIMEOUT). L1 has already refused such notes, so do not hand them to okflint: say so,
   # now, instead of letting it eat memory. A reached L1 verdict (exit 1) still outranks this.
-  local _nbomb
+  local _nbomb _nbig _what
   # The validator's own message (an error for a note, a warning for the root index.md), not a note's PATH.
-  _nbomb=$(grep -Ec '^[EW]\|.*frontmatter is not valid YAML: the YAML document (expands to more than|holds a single scalar|is nested too deeply)' "$TMP/l1.txt" 2>/dev/null); _nbomb=${_nbomb:-0}
-  if [ "$_nbomb" -gt 0 ]; then
+  _nbomb=$(grep -Ec '^[EW]\|.*frontmatter is not valid YAML: the YAML document (expands to more than|is nested too deeply)' "$TMP/l1.txt" 2>/dev/null); _nbomb=${_nbomb:-0}
+  # One huge plain value is no alias bomb (nothing expands), but okflint would read it into memory all the same: say which it is.
+  _nbig=$(grep -Ec '^[EW]\|.*frontmatter is not valid YAML: the YAML document holds a single scalar' "$TMP/l1.txt" 2>/dev/null); _nbig=${_nbig:-0}
+  if [ $((_nbomb + _nbig)) -gt 0 ]; then
     L2_PROFILE=could_not_run
-    say "  L2 profile       COULD NOT RUN — okflint was not run: L1 rejected ${_nbomb} note(s) as YAML alias bombs, which okflint would expand in memory"
+    _what=""
+    [ "$_nbomb" -gt 0 ] && _what="${_nbomb} note(s) as YAML alias bombs"
+    [ "$_nbig" -gt 0 ] && _what="${_what:+$_what and }${_nbig} note(s) for one YAML value over the size limit"
+    _why="expand in memory"; [ "$_nbomb" -eq 0 ] && _why="read whole into memory"
+    say "  L2 profile       COULD NOT RUN — okflint was not run: L1 rejected ${_what}, which okflint would ${_why}"
     return $EXIT_DEP
   fi
   # --json, not the human output. Counting '❌' meant that an okflint whose

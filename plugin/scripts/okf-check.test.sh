@@ -920,6 +920,21 @@ chmod 755 "$G8/sub"
   || bad "G-8 nested unreadable directory failed OPEN" \
          "exit 0 — reported '$(grep -o "L3 staleness.*" "$TMP/g8.txt" | head -1)' over a subtree it could not read"
 
+# bare-validator-unreadable-folder (BL-1046): the vendored validator run by itself skipped a folder nobody may enter (Python's
+# rglob swallows the PermissionError) and said "conformant" over a note it never read. okf-check stops at such a folder before
+# it runs the validator (G-8, above); the validator itself now reports the folder as an error, so no entry point says conformant.
+if [ "$(id -u)" != 0 ]; then
+  BV="$TMP/bare-validator-folder"; mkbundle "$BV"; mkdir -p "$BV/sub"; printf -- '---\ntitle: no type here\n---\n\nbody\n' > "$BV/sub/bad.md"
+  chmod 000 "$BV/sub"
+  PYTHONPATH="$HERE/../vendor/pyyaml" timeout 60 "$REALPY" "$HERE/../vendor/okf_validate.py" "$BV" > "$TMP/bare-validator-folder.txt" 2>&1; got=$?
+  chmod 755 "$BV/sub"
+  { [ "$got" -eq 1 ] && grep -q 'sub/.*cannot be read' "$TMP/bare-validator-folder.txt" && grep -q 'non-conformant' "$TMP/bare-validator-folder.txt"; } \
+    && ok "bare-validator-unreadable-folder: the vendored validator run by itself names the folder it cannot read and exits 1 (non-conformant)" \
+    || bad "bare-validator-unreadable-folder" "exit $got, want 1: $(grep -v concepts "$TMP/bare-validator-folder.txt" | tail -2 | tr '\n' '|' | cut -c1-200)"
+else
+  skip "bare-validator-unreadable-folder — running as root, chmod 000 does not stop the read (skip, not a pass)"
+fi
+
 # G-9 HIGH: the same trusted-shape defect as G-4, in L1 instead of L2. The
 # reader does `d.get("errors",[])`, so a report that is valid JSON but the
 # WRONG SHAPE — `{}`, or a validator that changed its schema — reads as zero
@@ -2463,6 +2478,18 @@ res=$(runbounded "$BS"); rc=${res%% *}
 { [ "$rc" = 1 ] && grep -qi 'single scalar' "$BS.out"; } \
   && ok "LT-34i a single 150,000-character scalar is refused up front: exit 1" \
   || bad "LT-34i huge scalar" "result='$res' $(grep -n 'n.md' "$BS.out" 2>/dev/null | head -1 | cut -c1-120)"
+
+# One huge plain value is not an alias bomb: L2 must say what L1 found. A stub okflint (never run on the note) stands in, so
+# the case does not depend on okflint being installed.
+BSL="$TMP/bomb34_scalar_l2"; mkbundle "$BSL"; rm -f "$BSL/c.md"; cp "$BS/n.md" "$BSL/n.md"
+sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$BSL/okf-base.yaml"
+BSLSTUB="$TMP/bomb34_scalar_stub"; mkdir -p "$BSLSTUB"
+printf '#!/bin/sh\ncase "$*" in *--version*|*--help*|*validate-manifest*) echo "okflint 0.5.0"; exit 0;; esac\necho "[]"\n' > "$BSLSTUB/okflint"; chmod +x "$BSLSTUB/okflint"
+env PATH="$BSLSTUB:$PATH" timeout 60 "$CHECK" "$BSL" > "$BSL.out" 2>&1; rc=$?
+grep 'L2 profile' "$BSL.out" > "$BSL.l2"
+{ [ "$rc" = 1 ] && grep -Eq 'L2 profile +COULD NOT RUN' "$BSL.l2" && ! grep -q 'alias bomb' "$BSL.l2" && grep -q 'one YAML value' "$BSL.l2"; } \
+  && ok "one-huge-value-is-not-an-alias-bomb: L2 says COULD NOT RUN because of the one oversized YAML value, not 'alias bombs' (exit 1 from L1)" \
+  || bad "one-huge-value-is-not-an-alias-bomb" "rc=$rc $(grep -n 'L2 profile' "$BSL.out" | head -1 | cut -c1-200)"
 
 # --- LT-43 (0.9.2 F2): the Trust layer reads look-alike actors and string-valued verified -------------------------
 section "LT-43 (0.9.2 F2)"

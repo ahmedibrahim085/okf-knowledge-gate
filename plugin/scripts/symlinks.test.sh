@@ -264,6 +264,32 @@ else
   printf '  SKIP  S58-H2 the disk is case-sensitive: a path in another case is another path\n'
 fi
 
+# --- self-link-loop-has-a-cap (BL-188): the walk that finds a script's own folder gives up after 40 links --------------
+# Bash refuses a cyclic link at exec, but $0 is read again by the walk after exec, so a link swapped to point at itself
+# after the start spun for ever (58 of 200 runs hung in the container: tools/capped-container-tests.sh). Here the loop is
+# made certain and bounded without a hang: `bash -c '. script' <cyclic link>` gives the script that link as $0, and a
+# readlink shim counts each call and fails the 201st, so a walk with no cap ends after 200 calls instead of never.
+SL="$TMP/selfloop"; mkdir -p "$SL/shim"; ln -s loop "$SL/loop"
+REALRL=$(command -v readlink)
+printf '#!/bin/sh\necho x >> "%s/calls"\n[ "$(wc -l < "%s/calls")" -le 200 ] || exit 1\nexec "%s" "$@"\n' "$SL" "$SL" "$REALRL" > "$SL/shim/readlink"; chmod +x "$SL/shim/readlink"
+for want in "scripts/okf-check|2|symbolic link" "scripts/lessons-staleness-check.sh|0|symbolic link" "bin/okf-check|2|symbolic link" "bin/okf-verify|2|symbolic link" "bin/okf-export|2|symbolic link"; do
+  f=${want%%|*}; rest=${want#*|}; wrc=${rest%%|*}; wmsg=${rest#*|}
+  : > "$SL/calls"
+  ( cd "$SL" && env PATH="$SL/shim:$PATH" OKF_BUNDLE_DIR="$SL" timeout 30 bash -c '. "$1" --version' "$SL/loop" "$HERE/../$f" > "$SL/out.txt" 2>&1 ); rc=$?
+  n=$(wc -l < "$SL/calls" | tr -d ' ')
+  { [ "$rc" -eq "$wrc" ] && [ "$n" -le 41 ] && grep -q "$wmsg" "$SL/out.txt"; } \
+    && ok "self-link-loop-has-a-cap: $f follows a cyclic \$0 link at most 40 times ($n readlink calls), says so and exits $wrc" \
+    || bad "self-link-loop-has-a-cap: $f" "rc=$rc (want $wrc), $n readlink calls (want <= 41), output: $(head -c 160 "$SL/out.txt" | tr '\n' ' ')"
+done
+# the cap is on the chain, not a ban on links: 40 links to the real script still resolve, 41 do not
+prev="$HERE/okf-check"; i=1
+while [ "$i" -le 41 ]; do ln -s "$prev" "$SL/chain$i"; prev="$SL/chain$i"; i=$((i+1)); done
+( cd "$SL" && timeout 30 bash -c '. "$1" --version' "$SL/chain40" "$HERE/okf-check" > "$SL/c40.txt" 2>&1 ); rc40=$?
+( cd "$SL" && timeout 30 bash -c '. "$1" --version' "$SL/chain41" "$HERE/okf-check" > "$SL/c41.txt" 2>&1 ); rc41=$?
+{ [ "$rc40" -eq 0 ] && [ "$rc41" -eq 2 ] && grep -q 'symbolic link' "$SL/c41.txt"; } \
+  && ok "self-link-loop-has-a-cap: a chain of 40 links to okf-check still runs (exit 0), a chain of 41 is refused (exit 2)" \
+  || bad "self-link-loop-has-a-cap: chain boundary" "40 links rc=$rc40 $(head -c 100 "$SL/c40.txt" | tr '\n' ' '); 41 links rc=$rc41 $(head -c 100 "$SL/c41.txt" | tr '\n' ' ')"
+
 echo
 echo "  $PASS passed, $FAIL failed"
 [ "$FAIL" -eq 0 ] || exit 1

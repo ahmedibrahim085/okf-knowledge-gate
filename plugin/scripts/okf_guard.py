@@ -330,6 +330,11 @@ def opened_outside(src, root, st):
     return (real.st_dev, real.st_ino) != (st.st_dev, st.st_ino)
 
 
+def _unreadable(exc):
+    """The refusal for a note the OS would not let this process read (freeze_main prints it as that note's finding)."""
+    return "cannot be read (%s)" % (exc.strerror or exc)
+
+
 def freeze_one(src, dst, cap, must_fit, what=NOTE_WHAT, root=None):
     """Copy `src` to `dst` with a read that cannot run away. Returns None when copied, "link" when a config file is over
     the cap (the caller links it: nothing here reads it), "gone" when it vanished, else the reason it was refused.
@@ -347,7 +352,7 @@ def freeze_one(src, dst, cap, must_fit, what=NOTE_WHAT, root=None):
             return "gone"   # removed or looping since the pre-scan: the fingerprint reports the change
         if exc.errno == errno.ENXIO:   # a socket cannot be opened for reading
             return "not a regular file (device/pipe/...)"
-        raise
+        return _unreadable(exc)   # EIO, EMFILE...: this note's refusal, not a reason to stop the run
     try:
         st = os.fstat(fd)
         if not stat.S_ISREG(st.st_mode):
@@ -358,7 +363,10 @@ def freeze_one(src, dst, cap, must_fit, what=NOTE_WHAT, root=None):
             return "link" if not must_fit else _refuse_text(st.st_mode, st.st_size, cap, what)
         with os.fdopen(fd, "rb") as fh:
             fd = -1   # fdopen owns the descriptor now
-            data = fh.read(cap + 1)
+            try:
+                data = fh.read(cap + 1)
+            except OSError as exc:   # /proc/self/mem opens as a regular file of size 0, then every read fails with EIO
+                return _unreadable(exc)
     finally:
         if fd != -1:
             os.close(fd)

@@ -3,8 +3,10 @@
 # (code.claude.com plugins-reference), so an agent runs `okf-export` without the long ${CLAUDE_PLUGIN_ROOT}/scripts path.
 # No logic lives here: arguments, output and exit code are the real tool's own. A PATH entry can be a symlink
 # to this file, so follow the link before locating ../scripts.
-self=$0
+self=$0; hops=0
 while [ -L "$self" ]; do
+  hops=$((hops + 1))
+  [ "$hops" -le 40 ] || { echo "okf-export: $0 leads through more than 40 symbolic links (a loop?)" >&2; exit 2; }
   link=$(readlink "$self")
   case "$link" in /*) self=$link ;; *) self=$(dirname -- "$self")/$link ;; esac
 done

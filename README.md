@@ -503,7 +503,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.52
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.53
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -521,7 +521,7 @@ To check the commits, paths and line citations the notes cite as well, add `veri
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.52
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.53
         with:
           bundle: path/to/bundle
           verify: 'true'                  # also run okf-verify; default 'false'
@@ -544,7 +544,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.52
+    rev: v0.9.53
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -677,7 +677,8 @@ another repository does nothing.
    (tests LT-37f and LT-41a).
 2. Add a `## [x.y.z] - YYYY-MM-DD` section to [`CHANGELOG.md`](CHANGELOG.md).
 3. Run the suites and `--selftest`, on macOS and on Linux: `tools/linux-gate.sh` streams the committed tree
-   into a Debian container (settings in `tools/linux-gate.conf`; Docker context from `OKF_DOCKER_CONTEXT`; the suites run
+   into a Debian container (it refuses to start unless `IN_SLOT=1`, which the caller sets inside the Docker host's run
+   slot: `slot okf -- env IN_SLOT=1 tools/linux-gate.sh <rev>`; settings in `tools/linux-gate.conf`; Docker context from `OKF_DOCKER_CONTEXT`; the suites run
    four at a time, in the locale `OKF_LINUX_LANG` of that conf (`C.UTF-8`, the locale of GitHub's runners, so a failure that
    shows only under a UTF-8 locale shows here first), the provisioned image is reused across runs with `OKF_LINUX_CACHE=1`, and
    `OKF_LINUX_CA_FILE` names a CA bundle to trust behind a proxy that re-signs TLS: it is bind-mounted, so with a remote Docker

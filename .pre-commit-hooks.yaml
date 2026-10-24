@@ -2,7 +2,7 @@
 #
 #   repos:
 #     - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-#       rev: v0.9.52
+#       rev: v0.9.53
 #       hooks:
 #         - id: okf-check
 #           args: [path/to/bundle, --strict-trust]

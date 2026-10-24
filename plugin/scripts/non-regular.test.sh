@@ -220,6 +220,42 @@ printf 'N\tok.md\0N\tdev.md\0' | "$REALPY" "$HERE/okf_guard.py" freeze "$FZ/src"
   && ok "S17-NR-R2 the copy helper refuses a device it meets while copying and copies the regular note" \
   || bad "S17-NR-R2 freeze helper" "rc=$RC $(tr '\0' '|' < "$FZ/refused.lst") $(head -1 "$FZ/err.txt") dst: $(ls "$FZ/dst" | tr '\n' ' ')"
 
+# read-error-is-a-note-refusal: a read error on one note (EIO: /proc/self/mem opens, then every read fails; container case C4) is that note's
+# refusal, named, and the other notes are still copied. It used to stop the whole run with exit 2 ("cannot copy ...").
+# The host never opens /proc/*: a shim on PYTHONPATH makes the copy helper's read of one regular note fail with EIO.
+EIODIR="$TMP/eio-shim"; mkdir -p "$EIODIR"
+cat > "$EIODIR/sitecustomize.py" <<'PYEIO'
+import errno, os, sys
+if len(sys.argv) > 1 and os.path.basename(sys.argv[0]) == "okf_guard.py" and sys.argv[1] == "freeze":
+    _open, _fdopen, _bad = os.open, os.fdopen, set()
+    class _o:   # a class, not a function: pathlib stores os.open as a class attribute (see the spy above)
+        def __call__(self, path, flags, mode=0o777, *, dir_fd=None):
+            fd = _open(path, flags, mode, dir_fd=dir_fd)
+            _bad.discard(fd)   # descriptor numbers are reused
+            if os.fsdecode(path).endswith("eio.md"):
+                _bad.add(fd)
+            return fd
+    class _Unreadable:
+        def __init__(self, fh): self.fh = fh
+        def __enter__(self): return self
+        def __exit__(self, *a): self.fh.close()
+        def read(self, n=-1): raise OSError(errno.EIO, "Input/output error")
+    def _f(fd, *a, **k):
+        fh = _fdopen(fd, *a, **k)
+        return _Unreadable(fh) if fd in _bad else fh
+    os.open, os.fdopen = _o(), _f
+PYEIO
+FZ3="$TMP/fz3"; mkdir -p "$FZ3/src" "$FZ3/dst"; printf 'a\n' > "$FZ3/src/ok.md"; printf 'b\n' > "$FZ3/src/eio.md"
+printf 'N\teio.md\0N\tok.md\0' | PYTHONPATH="$EIODIR" "$REALPY" "$HERE/okf_guard.py" freeze "$FZ3/src" "$FZ3/dst" 5242880 > "$FZ3/refused.lst" 2> "$FZ3/err.txt"; RC=$?
+{ [ "$RC" -eq 0 ] && [ -f "$FZ3/dst/ok.md" ] && [ ! -e "$FZ3/dst/eio.md" ] && grep -q 'cannot be read (Input/output error).*eio.md' <<<"$(tr '\0' '\n' < "$FZ3/refused.lst")"; } \
+  && ok "read-error-is-a-note-refusal (a) the copy helper reports a note whose read fails (EIO) as that note's refusal and copies the others" \
+  || bad "read-error-is-a-note-refusal (a) copy helper" "rc=$RC $(tr '\0' '|' < "$FZ3/refused.lst") $(head -1 "$FZ3/err.txt") dst: $(ls "$FZ3/dst" | tr '\n' ' ')"
+B="$TMP/r3"; mkb "$B"; printf -- '---\ntype: Lesson\ntitle: E\ndescription: D\nstatus: stable\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$B/eio.md"
+env PATH="$STUBBIN:$PATH" STUB_LOG="$TMP/stub.log" PYTHONPATH="$EIODIR" timeout 60 "$CHECK" "$B" > "$TMP/o.txt" 2>&1; RC=$?
+{ [ "$RC" -eq 1 ] && [ "$(grep -c 'eio.md — cannot be read (Input/output error): skipped' "$TMP/o.txt")" -eq 1 ] && ! grep -q 'no verdict is possible' "$TMP/o.txt"; } \
+  && ok "read-error-is-a-note-refusal (b) a note whose read fails is named and fails the run (exit 1), not a whole-run stop (exit 2)" \
+  || bad "read-error-is-a-note-refusal (b) full run" "rc=$RC $(grep -n 'eio.md\|cannot copy\|no verdict' "$TMP/o.txt" | head -3 | tr '\n' ' ')"
+
 section "okf-base.yaml is read like a note"
 # S17-NR-M1: a manifest that is a device is refused up front in --duplicates (it used to be opened by a plain open().read()).
 B="$TMP/m1"; mkb "$B"; rm "$B/okf-base.yaml"; ln -s /dev/null "$B/okf-base.yaml"

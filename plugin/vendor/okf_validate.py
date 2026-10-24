@@ -29,6 +29,7 @@ from __future__ import annotations
 import argparse
 import datetime
 import json
+import os
 import re
 import unicodedata
 import sys
@@ -649,8 +650,26 @@ def migrate(bundle: Path) -> list[str]:
     return changed
 
 
+def unreadable_dirs(bundle: Path) -> list[str]:
+    """LOCAL PATCH (okf-knowledge-gate 0.9.53). Folders below `bundle` this process may not list or enter. `rglob` swallows the
+    PermissionError, so a `chmod 000` folder was skipped and the bundle read as conformant over notes never read. Same rule as
+    rglob for links: a symlinked folder is not entered."""
+    bad: list[str] = []
+    def note(exc: OSError) -> None:
+        if exc.filename:
+            bad.append(str(exc.filename))
+    for root, dirs, _ in os.walk(bundle, onerror=note):
+        for d in dirs:
+            full = os.path.join(root, d)
+            if not os.path.islink(full) and not os.access(full, os.R_OK | os.X_OK):
+                bad.append(full)
+    return sorted(set(Path(b).relative_to(bundle).as_posix() for b in bad))
+
+
 def validate(bundle: Path) -> Report:
     report = Report()
+    for rel in unreadable_dirs(bundle):
+        report.err(rel + "/", "folder cannot be read, so the notes below it were not checked (a partial scan is not a pass)")
     md_files = sorted(p for p in bundle.rglob("*.md") if p.is_file())
     for path in md_files:
         rel = path.relative_to(bundle).as_posix()

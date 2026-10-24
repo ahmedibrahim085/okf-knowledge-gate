@@ -24,8 +24,11 @@ L="${OKF_BUNDLE_DIR:-$HOME/.claude/lessons}"
 TODAY=${OKF_TODAY:-$(date -u +%Y-%m-%d)}   # OKF_TODAY: test seam, pins "now"
 unset CDPATH   # an exported CDPATH redirects `cd -P` (ticket 08)
 # Resolve a symlink to this file, as okf-check does: the lib lives beside the REAL script.
-_self="$0"
+# At most 40 links: a cyclic link ($0 swapped after the start) must end, not spin.
+_self="$0"; _hops=0
 while [ -L "$_self" ]; do
+  _hops=$((_hops + 1))
+  [ "$_hops" -le 40 ] || { echo "lessons staleness check — $0 leads through more than 40 symbolic links (a loop?); expiries NOT checked"; exit 0; }
   _dir=$(cd -P "$(dirname "$_self")" && pwd)
   _self=$(readlink "$_self")
   case "$_self" in /*) ;; *) _self="$_dir/$_self" ;; esac
