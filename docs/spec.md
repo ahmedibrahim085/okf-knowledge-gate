@@ -1194,9 +1194,9 @@ The README states only what was measured or what the pinned files say. `LT-30a`.
 
 | ID | Scenario | Expected | State |
 |---|---|---|---|
-| LT-30a | README Platforms section | names macOS, Linux and Windows via WSL | ✅ |
+| LT-30a | README Platforms section | rows for macOS and Linux, and a Windows row that says not supported | ✅ |
 | LT-30b | Every README line that mentions Windows | says WSL, no native support, or unsupported (a bare "not" does not count) | ✅ |
-| LT-30c | The Windows row | labels WSL, the Action and the pre-commit hook on Windows UNVERIFIED | ✅ |
+| LT-30c | The Windows row | says WSL, the Action and the pre-commit hook on Windows are not supported, names macOS and Linux as the supported platforms, and has no UNVERIFIED (owner decision 2026-10-24, RM-600 dropped) | ✅ |
 | LT-30d | Both pinned commits | full ids in the README equal the pin file and VENDOR.md | ✅ |
 | LT-30e | Dependencies section | names okf-skills#68 and okflint#11 and says what happens if each is never merged | ✅ |
 | LT-30f | CI and usage | Action, pre-commit hook, `--strict-trust`, `--init-house-rules`, python3 prerequisite shown | ✅ |

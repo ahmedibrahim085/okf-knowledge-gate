@@ -1,0 +1,5 @@
+# sha256 of the uv release tarballs .github/ci/install-uv.sh accepts: <version> <target> <sha256>.
+# Each value is the release's own <tarball>.sha256 (github.com/astral-sh/uv/releases), checked against a hash of the
+# downloaded tarball. A new OKF_LINUX_UV needs its two lines here (tools/ci-workflow.test.sh fails without them).
+0.11.28 x86_64-unknown-linux-gnu e490a6464492183c5d4534a5527fb4440f7f2bb2f228162ad7e4afe076dc0224
+0.11.28 aarch64-unknown-linux-gnu 03e9fe0a81b0718d0bc84625de3885df6cc3f89a8b6af6121d6b9f6113fb6533

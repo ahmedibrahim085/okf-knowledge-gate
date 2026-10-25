@@ -1,0 +1,38 @@
+# nasty-inputs.tsv: the nasty input forms every reader of this repository loops over (plugin/scripts/nasty-inputs.test.sh). Data, not code: a new form is a new row.
+# A copy of the maintainers' machine-wide list, kept here because the public export and its CI cannot read another repository.
+# A form is never removed because nothing failed on it.
+# Columns, separated by one tab: id, slot, spec, build, why.
+#   slot name        spec is Python escape text (\uXXXX, \xNN, \t, \n) for a file name and a folder name; LONG:<n> is n letters
+#   slot name-bytes  spec is the bytes of a name written as \xNN; a disk that refuses them SKIPs the form, it never fails it
+#   slot input-file  spec names a damaged copy of a valid input file of the reader (the reader's own idea of a valid one)
+#   slot shape       spec names a file system shape built around a valid input
+#   build: what to create, in plain words, so any project can build it without reading another project's tests.
+#   why: what goes wrong without the form; the code of the ticket or review that found it comes last, in brackets.
+dotless-i	name	\u0131x	a file and a folder whose name starts with the Turkish dotless i (U+0131)	its upper-case swap is a name the disk does not fold to it, so a case-folding probe said case-sensitive and a note was overwritten (case probe, BL-722)
+capital-dotted-i	name	\u0130x	a file and a folder whose name starts with the Turkish capital dotted I (U+0130)	the disk folds it to a name that swapping case does not give (case probe, BL-722)
+sharp-s	name	stra\u00dfe	a file and a folder named with the German sharp s (U+00DF)	its upper-case form is longer (STRASSE), so a length-preserving name rule is wrong (case probe, BL-722)
+ligature	name	\ufb01le	a file and a folder named with the fi ligature (U+FB01)	its upper-case form has a different length (FILE) (case probe, BL-722)
+nfd-accent	name	cafe\u0301	a file and a folder named with a letter plus a combining accent (the decomposed spelling)	the composed and decomposed spellings are one name on some disks and two on others (export name clash test)
+nfc-accent	name	caf\u00e9	a file and a folder named with the single accented letter (the composed spelling)	the partner of the decomposed form: the pair shows a reader that treats them as different or the same
+tab-in-name	name	a\tb	a file and a folder whose name holds a tab	odd names must print intact in reports (review of 0.5.11 to 0.5.17)
+newline-in-name	name	a\nb	a file and a folder whose name holds a newline	a name with a newline breaks every line-based reader (review of 0.5.11 to 0.5.17)
+pipe-and-space	name	we|ird name	a file and a folder whose name holds a pipe and a space	a name with a pipe and a space must print intact (crash isolation fix, 0.5.18)
+leading-dash	name	-x	a file and a folder whose name starts with a dash	a name that looks like a command-line flag
+long-name	name	LONG:200	a file and a folder whose name is 200 letters (the limit is 255 bytes)	a name near the file name limit
+invalid-utf8-name	name-bytes	bad\xffname	a file whose name holds the byte 0xFF, which is not UTF-8 (a disk that refuses it makes the form SKIPPED)	Linux allows any byte in a name; macOS refuses it, so only a Linux run shows the crash (export index writer, found by this list)
+byte-order-mark	input-file	bom	a valid input file that starts with the byte order mark U+FEFF	a reader that looks for the first line at byte 0 misses its header
+crlf	input-file	crlf	a valid input file with Windows line endings (CR LF) on every line	a reader that splits on LF alone keeps a CR in every value (retro of 2026-10-20)
+latin1-byte	input-file	latin1	a valid input file whose body holds the bytes 0xE9 and 0xFF, which are not UTF-8	a strict UTF-8 reader raises instead of naming the file
+nul-byte	input-file	nul	a valid input file whose body holds a zero byte	C-style string handling stops at the zero byte
+empty-file	input-file	empty	an input file of zero bytes	a reader that indexes the first line fails on nothing
+one-megabyte-line	input-file	longline	a valid input file whose body is a single line of 1 MB	a regex or a line buffer that is quadratic or capped on line length
+tab-indent	input-file	tab	a valid header whose nested key is indented with a tab	YAML forbids tabs, so the reader must name the error, not crash
+unclosed-frontmatter	input-file	unclosed	a header that opens and never closes	a reader that scans to the end of the file for the closing line
+frontmatter-only	input-file	fm-only	a valid header and no body at all	a reader that expects at least one body line
+symlink-folder-out	shape	symlink-folder-out	a link to a folder outside the input, holding an input file that crashes the reader and a second file that must survive	a clean-up step that follows the link deleted files outside the input (crash isolation, ticket 11, fixed in 0.5.18)
+symlink-file-out	shape	symlink-file-out	a link to a single file outside the input	a reader must refuse or name a file whose real path is outside the input
+dangling-link	shape	dangling-link	a link to a path that does not exist	a reader that stats the target raises
+link-loop	shape	link-loop	two links that point at each other	a reader that resolves links forever or crashes on the loop
+self-folder-link	shape	self-folder-link	a link inside the input to the input folder itself	a recursive walk that follows it never ends
+unreadable-input-file	shape	chmod000	an input file with permissions 000 (skipped when running as root, which can read it)	a reader that opens every file raised PermissionError and ended in a traceback (export, found by this list)
+hard-link	shape	hard-link	two names for one input file (a hard link)	a reader that counts or de-duplicates by name sees two files

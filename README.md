@@ -509,7 +509,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.54
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.55
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -527,7 +527,7 @@ To check the commits, paths and line citations the notes cite as well, add `veri
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.54
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.55
         with:
           bundle: path/to/bundle
           verify: 'true'                  # also run okf-verify; default 'false'
@@ -550,7 +550,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.54
+    rev: v0.9.55
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -611,8 +611,8 @@ The full behaviour contract, one row per scenario with its test, is
 | Platform | Status |
 |---|---|
 | macOS | The test suites pass here, on bash 3.2 and the BSD tools (0.9.42: `tools/macos-gate.sh`, 35 suites and `--selftest`, 0 failed). The gate was built and measured on this platform. The log of the gate names the Python it ran under (`python 3.9.6`); Python 3.14 changed what `pathlib` does with a permission error, so `okf-verify.test.sh` and `okf-export.test.sh` pass under 3.9.6 and 3.15.0 since 0.9.43. |
-| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.44 suites passed on Debian 12 (aarch64, bash 5.2.15, Python 3.12.13, gawk 5.2.1, non-root user) with `okflint` 0.5.0 and pre-commit 4.7.0 installed in a Python 3.12 environment: `tools/linux-gate.sh`, 35 suites and `--selftest`, 0 failed. Debian 12 ships Python 3.11, which cannot install `okflint`; the gate image installs Python 3.12. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). In the public repository, every pull request and every push to `main` also runs the suites and `--selftest` on GitHub's Ubuntu 24.04 runner, once with gawk and once with mawk, and runs the GitHub Action on a valid and an invalid bundle (`.github/workflows/ci.yml`). |
-| Windows | There is no native Windows support: the gate is a set of bash scripts. WSL (Windows Subsystem for Linux) is the only path, and nothing has been run under it: UNVERIFIED, as are the Action and the pre-commit hook on Windows. |
+| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.44 suites passed on Debian 12 (aarch64, bash 5.2.15, Python 3.12.13, gawk 5.2.1, non-root user) with `okflint` 0.5.0 and pre-commit 4.7.0 installed in a Python 3.12 environment: `tools/linux-gate.sh`, 35 suites and `--selftest`, 0 failed. Debian 12 ships Python 3.11, which cannot install `okflint`; the gate image installs Python 3.12. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). In the public repository, every pull request and every push to `main` also runs the suites and `--selftest` on GitHub's Ubuntu 24.04 runner, once with gawk and once with mawk, and runs the GitHub Action on a valid and an invalid bundle and with its `verify`, `repo`, `verify-args` and `report-args` inputs (`.github/workflows/ci.yml`). |
+| Windows | Not supported, now or later (owner decision 2026-10-24): the supported platforms are macOS and Linux. The gate is a set of bash scripts with no native Windows support, and nothing is run or tested under WSL (Windows Subsystem for Linux); the Action and the pre-commit hook on Windows are not supported either. |
 | Claude Code | The plugin form (hooks and the skill) needs Claude Code. The command line, the GitHub Action and the pre-commit hook do not. |
 
 ## Support and contributing
@@ -684,7 +684,7 @@ another repository does nothing.
 2. Add a `## [x.y.z] - YYYY-MM-DD` section to [`CHANGELOG.md`](CHANGELOG.md).
 3. Run the suites and `--selftest`, on macOS and on Linux: `tools/linux-gate.sh` streams the committed tree
    into a Debian container (it refuses to start unless `IN_SLOT=1`, which the caller sets inside the Docker host's run
-   slot: `slot okf -- env IN_SLOT=1 tools/linux-gate.sh <rev>`; settings in `tools/linux-gate.conf`; Docker context from `OKF_DOCKER_CONTEXT`; the suites run
+   slot: `slot --docker okf -- env IN_SLOT=1 tools/linux-gate.sh <rev>` (`--docker` marks a container run, which the slot checks against the daily VM-write bar); settings in `tools/linux-gate.conf`; Docker context from `OKF_DOCKER_CONTEXT`; the suites run
    four at a time, in the locale `OKF_LINUX_LANG` of that conf (`C.UTF-8`, the locale of GitHub's runners, so a failure that
    shows only under a UTF-8 locale shows here first), the provisioned image is reused across runs with `OKF_LINUX_CACHE=1`, and
    `OKF_LINUX_CA_FILE` names a CA bundle to trust behind a proxy that re-signs TLS: it is bind-mounted, so with a remote Docker

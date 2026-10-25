@@ -9,6 +9,20 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.55] - 2026-10-25
+
+OKF Knowledge Gate 0.9.55 stops `okf-export` ending in a traceback on a note nobody may read and on a file name that is not UTF-8, says plainly that Windows is not supported (macOS and Linux only), makes CI install `uv` only against a pinned checksum, adds CI steps that run the Action's `verify`, `repo`, `verify-args` and `report-args` inputs on a runner (their first runner run is in the public CI after this release), and tests the export's case and Unicode refusals on real disks.
+
+### Fixed
+- **`okf-export` does not end in a traceback on a file name that is not UTF-8.** On Linux a name can hold any byte; the index writer percent-encoded the link with a strict encoder and raised `UnicodeEncodeError`. The link now carries the raw byte (`%FF`) and a report line shows the name with backslash escapes. Found by the Debian run of `nasty-inputs.test.sh`; macOS refuses such a name, so only Linux could show it.
+- **CI checks the uv it installs (BL-881).** Behaviour change: both CI jobs ran `curl .../install.sh | sh`, a downloaded script that nothing checked. They now run `.github/ci/install-uv.sh`, which downloads the uv release tarball and installs it only when its sha256 is the one pinned in `.github/ci/uv-sha256.txt`; another tarball, or a uv version with no pinned sha256, stops the job before anything is installed.
+- **CI runs the Action's `verify`, `repo`, `verify-args` and `report-args` inputs (BL-1068a).** They shipped in 0.9.48 and had never run on a GitHub runner. The Action job (it runs only in the public repository, so its first runner run is in the public CI after this release) now checks a note that cites the checked-out commit: with `verify-args: --strict` it passes against this repository and fails against an empty `repo`, and a `report-args` value that is not a report fails the step.
+- **`okf-export` names a note it cannot read instead of crashing.** A note or file with mode 000 made the run end in a Python traceback after part of the output was written. It is now listed in the report as `locked.md — Permission denied: skipped` (exit 1, the rest of the bundle is written). Found by the new `nasty-inputs.test.sh`, which runs `okf-check`, `okf-verify` and `okf-export` over one list of input forms (`plugin/tests/nasty-inputs.tsv`: names that fold or are not UTF-8, notes with a BOM, CRLF or a 1 MB line, links that leave, dangle or loop).
+
+### Changed
+- **Windows is not supported (RM-600 dropped).** The README's Platforms table said Windows under WSL, the Action and the pre-commit hook on Windows were UNVERIFIED, which read as a check still to come. It now says Windows is not supported, now or later (owner decision 2026-10-24): the supported platforms are macOS and Linux.
+- **`okf-export`'s case and Unicode refusals are tested on real disks (BL-929).** The tests only faked the output-disk probe's answer. On macOS they now export a vault from a case-sensitive APFS image onto the case-insensitive system disk (exit 2, both notes named, nothing written) and onto the image (both notes written); on Linux a real vault holding `café.md` in NFC and in NFD stops the export (exit 2). No behaviour changed.
+
 ## [0.9.54] - 2026-10-24
 
 OKF Knowledge Gate 0.9.54 closes the gaps found by the 2026-10-23 audit in `okf-check`, `okf-verify`, the release gates and the export scan: config and message wording, the order of advisories, a recall note for `--duplicates-body`, links to ignored non-markdown files, and no defunct `find` left behind in a plain run.
@@ -965,7 +979,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.54...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.55...HEAD
+[0.9.55]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.54...v0.9.55
 [0.9.54]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.53...v0.9.54
 [0.9.53]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.52...v0.9.53
 [0.9.52]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.51...v0.9.52

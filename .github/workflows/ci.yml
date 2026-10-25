@@ -56,7 +56,7 @@ jobs:
           sudo apt-get update -qq && sudo apt-get install -y -qq gawk mawk jq procps > /dev/null
           mkdir -p "$HOME/awk-bin" && ln -sf "/usr/bin/$AWK_IMPL" "$HOME/awk-bin/awk"
           echo "$HOME/awk-bin" >> "$GITHUB_PATH"
-          curl -LsSf "https://astral.sh/uv/$OKF_LINUX_UV/install.sh" | sh > /dev/null
+          .github/ci/install-uv.sh "$OKF_LINUX_UV"
           export PATH="$HOME/.local/bin:$PATH"
           uv venv -q --python "$OKF_LINUX_PYTHON" "$HOME/venv"
           . "$HOME/venv/bin/activate"
@@ -110,7 +110,7 @@ jobs:
 
       - name: The pinned uv, okflint, pre-commit and markdown-it-py in a venv, as the runner's own user
         run: |
-          curl -LsSf "https://astral.sh/uv/$OKF_LINUX_UV/install.sh" | sh > /dev/null
+          .github/ci/install-uv.sh "$OKF_LINUX_UV"
           export PATH="$HOME/.local/bin:$PATH"
           uv venv -q --clear --python "$OKF_LINUX_PYTHON" "$OKF_VENV"
           . "$OKF_VENV/bin/activate"
@@ -173,11 +173,51 @@ jobs:
           bundle: ${{ runner.temp }}/good
           require-house-rules: 'true'
 
-      - name: The two failing steps failed
+      # verify, repo, verify-args and report-args (BL-1068a). The note cites the commit this job checked out. With
+      # verify-args --strict an UNRESOLVED commit fails okf-verify: the commit is in this checkout (repo '.') and in no
+      # commit of an empty repository, so the two steps below differ only by the repository okf-verify searched.
+      - name: A bundle whose note cites the checked-out commit, and an empty repository
+        run: |
+          mkdir -p "$RUNNER_TEMP/cites"
+          cp "$RUNNER_TEMP/good/index.md" "$RUNNER_TEMP/good/log.md" "$RUNNER_TEMP/cites/"
+          printf -- '---\ntype: Lesson\ntitle: Payment limits\ndescription: Limits for payouts.\nstatus: stable\nstale_after: "2099-01-01"\n---\n\nFixed in commit %s.\n' "$(git rev-parse HEAD)" > "$RUNNER_TEMP/cites/limits.md"
+          git init -q "$RUNNER_TEMP/empty-repo"
+
+      - name: verify with --strict finds the cited commit in this repository
+        uses: ./
+        with:
+          bundle: ${{ runner.temp }}/cites
+          verify: 'true'
+          verify-args: '--strict'
+          report-args: '--duplicates'
+
+      - name: verify with --strict and a repository without the commit fails the step
+        id: wrongrepo
+        continue-on-error: true
+        uses: ./
+        with:
+          bundle: ${{ runner.temp }}/cites
+          verify: 'true'
+          repo: ${{ runner.temp }}/empty-repo
+          verify-args: '--strict'
+
+      - name: report-args with a flag that is not a report fails the step
+        id: report
+        continue-on-error: true
+        uses: ./
+        with:
+          bundle: ${{ runner.temp }}/good
+          report-args: '--doctor'
+
+      - name: The failing steps failed
         env:
           BAD: ${{ steps.bad.outcome }}
           HOUSE: ${{ steps.house.outcome }}
+          WRONGREPO: ${{ steps.wrongrepo.outcome }}
+          REPORT: ${{ steps.report.outcome }}
         run: |
           [ "$BAD" = failure ] || { echo "::error::the Action passed a bundle with an L1 error (outcome: $BAD)"; exit 1; }
           [ "$HOUSE" = failure ] || { echo "::error::require-house-rules passed although L2 was skipped (outcome: $HOUSE)"; exit 1; }
-          echo "the Action failed both bundles it had to fail"
+          [ "$WRONGREPO" = failure ] || { echo "::error::verify --strict passed a commit the given repo does not hold (outcome: $WRONGREPO)"; exit 1; }
+          [ "$REPORT" = failure ] || { echo "::error::report-args accepted a flag that is not a report (outcome: $REPORT)"; exit 1; }
+          echo "the Action failed every step it had to fail"

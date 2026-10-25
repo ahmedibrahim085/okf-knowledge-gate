@@ -674,14 +674,17 @@ section() { # <heading-regex> — the README text from that '## ' heading to the
   awk -v h="$1" '/^## /{f = ($0 ~ h)} f' "$README"
 }
 section '^## Platforms' > "$TMP_W/readme_platforms.txt"
-{ grep -q 'macOS' "$TMP_W/readme_platforms.txt" && grep -q 'Linux' "$TMP_W/readme_platforms.txt" && grep -q 'WSL' "$TMP_W/readme_platforms.txt"; } \
-  && ok "LT-30a S23-H1 the README has a Platforms section naming macOS, Linux and Windows via WSL" \
+{ grep -q '^| macOS' "$TMP_W/readme_platforms.txt" && grep -q '^| Linux' "$TMP_W/readme_platforms.txt" && grep -q '^| Windows | Not supported' "$TMP_W/readme_platforms.txt"; } \
+  && ok "LT-30a S23-H1 the README has a Platforms section with rows for macOS and Linux, and a Windows row that says not supported" \
   || bad "LT-30a S23-H1" "Platforms section missing or incomplete: $(head -c 120 "$TMP_W/readme_platforms.txt" | tr '\n' ' ')"
 win_bad=$(grep -n -i 'windows' "$README" | grep -v -i 'wsl\|no native\|unsupported' || true)
 [ -z "$win_bad" ] && ok "LT-30b S23-N1 every README line that mentions Windows says WSL, no native support, or unsupported (a bare 'not' does not count)" || bad "LT-30b S23-N1" "$win_bad"
 grep -i '^| Windows' "$TMP_W/readme_platforms.txt" > "$TMP_W/readme_winrow.txt"
-{ [ -s "$TMP_W/readme_winrow.txt" ] && grep -q 'UNVERIFIED' "$TMP_W/readme_winrow.txt" && grep -q 'pre-commit' "$TMP_W/readme_winrow.txt" && grep -q 'Action' "$TMP_W/readme_winrow.txt"; } \
-  && ok "LT-30c S23-E1 the Windows row labels WSL, the Action and the pre-commit hook on Windows as UNVERIFIED" \
+# Windows is not supported, now or later (owner decision 2026-10-24, RM-600 dropped): the row says so for WSL, the Action
+# and the pre-commit hook, names the two supported platforms, and no longer calls Windows UNVERIFIED (a pending check).
+{ [ -s "$TMP_W/readme_winrow.txt" ] && ! grep -q 'UNVERIFIED' "$TMP_W/readme_winrow.txt" && grep -q 'macOS and Linux' "$TMP_W/readme_winrow.txt" \
+  && grep -q 'WSL' "$TMP_W/readme_winrow.txt" && grep -q 'pre-commit' "$TMP_W/readme_winrow.txt" && grep -q 'Action' "$TMP_W/readme_winrow.txt"; } \
+  && ok "LT-30c S23-E1 the Windows row says WSL, the Action and the pre-commit hook are not supported, only macOS and Linux are" \
   || bad "LT-30c S23-E1" "Windows row: $(cat "$TMP_W/readme_winrow.txt" | head -c 200)"
 # README wording must follow the tool's own words, not a stronger paraphrase of them.
 latest_msg=$(PYTHONPATH="$PLUGIN/vendor/pyyaml" OKF_PINNED_VERSIONS="$PLUGIN/config/pinned-versions.txt" "$PLUGIN/scripts/okf-check" --install-deps --latest 2>&1 | grep -o 'may lack' | head -1)

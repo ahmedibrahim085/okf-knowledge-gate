@@ -700,7 +700,8 @@ want=$(printf '# Log\n\n## 2026-05-23\n* a\n\n## 2026-05-22\n    - 2026-05-21: r
 # A case-sensitive vault may hold Notes.md and notes.md; macOS and Windows disks write both to one file. okf-export
 # probes the output disk and, where it folds case, refuses names that differ only in case. The unit cases (CO-U*)
 # hand the rule an in-memory file list; CO-M* run main() with a fake probe result (a seam), because a case-folding
-# disk cannot be made in the Debian container and a case-sensitive one cannot be made on this Mac.
+# disk cannot be made in the Debian container. On macOS a case-sensitive APFS image (hdiutil, no sudo) gives the real
+# disks: BL-929a..b in the hdiutil block below run the same pair end to end without the seam.
 # folds <root-name> <vault-relative file>...: the (first, second) pairs okf-export refuses on a case-folding output.
 folds() {
   "$REALPY" - "$EXPORT" "$@" <<'PY' 2>&1
@@ -788,7 +789,26 @@ if command -v hdiutil >/dev/null 2>&1 && hdiutil create -size 20m -fs "Case-sens
   # named ıx on this disk ('ıx'.swapcase() is 'IX', which APFS does not take for ıx). Exit 2 on a folding disk, never a lost note.
   V="$TMP/csmnt/kb"; O="$P/ıx/out"; mkdir -p "$P/ıx"; note "$V" Notes.md "UPPER"; note "$V" notes.md "lower"
   rc5=$(run "$V" "$O"); [ "$want" = True ] && want5=2 || want5=0
+  # BL-929: S10-CO-M1..M2 below fake the probe's answer (a seam); here the same pair runs end to end on two real disks. A
+  # vault on the case-sensitive volume holds sub/Notes.md and sub/notes.md. Exported onto this Mac's own disk it stops with
+  # exit 2 and writes nothing when that disk folds case ($want); exported onto the case-sensitive volume both notes are written.
+  V="$TMP/csmnt/kb2"; note "$V" sub/Notes.md "UPPER"; note "$V" sub/notes.md "lower"
+  O7="$P/real-out"; rc7=$(run "$V" "$O7"); cp "$TMP/out.txt" "$TMP/out7.txt"; left7=$(find "$O7" -type f 2>/dev/null)
+  O8="$TMP/csmnt/real-out"; rc8=$(run "$V" "$O8"); cp "$TMP/out.txt" "$TMP/out8.txt"
+  up8=$(sed -n '$p' "$O8/sub/Notes.md" 2>/dev/null); lo8=$(sed -n '$p' "$O8/sub/notes.md" 2>/dev/null)
   hdiutil detach "$TMP/csmnt" -quiet 2>/dev/null || hdiutil detach "$TMP/csmnt" -force -quiet
+  if [ "$want" = True ]; then
+    { [ "$rc7" = 2 ] && grep -qxF "okf-export: sub/Notes.md and sub/notes.md would be written over each other: $O7 is on a disk that does not tell upper from lower case; rename one of them in the vault" "$TMP/out7.txt" \
+      && [ -z "$left7" ]; } \
+      && ok "BL-929a a vault on a real case-sensitive volume exported onto this Mac's case-insensitive disk: Notes.md + notes.md stop the export (exit 2), named, nothing written" \
+      || bad "BL-929a real case-folding output" "rc=$rc7 report: $(head -2 "$TMP/out7.txt" | tr '\n' '|') out: $left7"
+  else
+    printf '  SKIP  BL-929a this disk does not fold case, so it cannot be the case-folding output\n'
+  fi
+  { [ "$rc8" = 0 ] && [ "$up8" = UPPER ] && [ "$lo8" = lower ]; } \
+    && ok "BL-929b the same vault exported onto the real case-sensitive volume: both notes written, each with its own text (exit 0)" \
+    || bad "BL-929b real case-sensitive output" "rc=$rc8 report: $(head -2 "$TMP/out8.txt" | tr '\n' '|') Notes.md='$up8' notes.md='$lo8'"
+  rm -rf "$O7"
   [ "$got4" = False ] && ok "BL-722b an <out> in the root of a case-sensitive volume probes as case-sensitive (False)" \
     || bad "BL-722b mount root" "got '$got4' for a case-sensitive APFS volume"
   [ "$rc5" = "$want5" ] && ok "BL-722c Notes.md + notes.md exported into a folder named ıx: exit $want5 on this disk (case-insensitive: $want), no note lost" \
@@ -830,6 +850,25 @@ else
   { [ "$rc" = 0 ] && grep -qx 'UPPER' "$O/sub/Notes.md" && grep -qx 'lower' "$O/sub/notes.md"; } 2>/dev/null \
     && ok "S10-CO-M2 on a case-sensitive output (the real probe) the same two notes both export (exit 0)" \
     || bad "S10-CO-M2 sensitive output" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+fi
+
+# BL-929c: S10-PO-17 gives two notes NFC and NFD output names through a seam. On a disk that keeps café.md in NFC and in NFD
+# as two files (the Debian gate; APFS, case-sensitive or not, stores one) a real vault holds both, and the export stops
+# with exit 2 before any write, naming both (escaped, as they look alike).
+U="$TMP/co/nfd"; O="$TMP/co/nfd-out"; mkdir -p "$U"
+NFC_N=$(printf 'caf\303\251'); NFD_N=$(printf 'cafe\314\201')
+printf x > "$U/$NFC_N.md"; printf x > "$U/$NFD_N.md"; nfiles=("$U"/*.md)
+if [ "${#nfiles[@]}" -ne 2 ]; then
+  printf '  SKIP  BL-929c this disk stores café.md in NFC and NFD as one file (APFS): no vault can hold both (run on the Debian gate)\n'
+else
+  note "$U" "$NFC_N.md" "composed"; note "$U" "$NFD_N.md" "decomposed"; rc=$(run "$U" "$O")
+  # The names are printed escaped (café.md, caf\xe9.md). GNU grep -F under C.UTF-8 does not match a pattern holding
+  # those backslashes (debian:12 gate container: grep exit 1 on the exact line), so the pattern stops short of them.
+  { [ "$rc" = 2 ] && grep -qF 'u0301.md and caf' "$TMP/out.txt" \
+    && grep -qF 'xe9.md would be written over each other: their output names differ only in Unicode normalisation' "$TMP/out.txt" \
+    && [ ! -e "$O" ]; } \
+    && ok "BL-929c a real vault holding café.md in NFC and in NFD stops the export (exit 2) before any write, naming both" \
+    || bad "BL-929c real NFC/NFD vault" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
 fi
 
 # --- F-5 (0.9.14 and 0.9.15 registers, spec row PO-1): okf-export polish ------------------------------------------------------------

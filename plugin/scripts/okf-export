@@ -26,7 +26,7 @@ import sys
 import tempfile
 import unicodedata
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote as _quote
 
 VENDOR = Path(__file__).resolve().parent.parent / "vendor"
 # The pinned copies go FIRST: a yaml module inherited from the environment must not outrank the pin
@@ -36,6 +36,10 @@ sys.path[:0] = [str(VENDOR / "pyyaml"), str(VENDOR), str(Path(__file__).resolve(
 import yaml  # noqa: E402
 from okf_validate import OKF_VERSION, load_frontmatter, split_frontmatter  # noqa: E402  (the validator's own reader, so both agree)
 from okf_guard import OUTSIDE_WHY, NoteRefused, opened_outside, path_exists, path_is_dir, path_is_file, read_note, refusal  # noqa: E402  (a note is opened only when regular and within the cap)
+
+# A file name that is not UTF-8 (ext4 allows it) reaches Python as a name with lone surrogates: quote() percent-encodes its raw bytes
+# (%FF) instead of raising; a report line shows it with backslash escapes (nasty-inputs.test.sh, invalid-utf8-name).
+quote = functools.partial(_quote, errors="surrogateescape")
 
 # `[[target#heading|alias]]`. An embed `![[x]]` transcludes x, which a Markdown link cannot say, so it is left as written.
 WIKILINK = re.compile(r"(?<!!)\[\[([^\[\]]+)\]\]")
@@ -800,7 +804,7 @@ def build_log(rel: Path, lines: list[str], problems: list[str]) -> str | None:
 def link_text(text: str) -> str:
     """Text for the inside of [...] in an index line: one line, no control characters, brackets and backslashes escaped
     (a title is a YAML block scalar or a free string from the vault; 0.9.15 review)."""
-    text = CONTROL.sub("?", " ".join(text.split()))
+    text = CONTROL.sub("?", " ".join(text.split())).encode("utf-8", "surrogateescape").decode("utf-8", "replace")
     out, pos = [], 0
     for span in CODE_SPAN.finditer(text):   # inside a code span a backslash is literal (CommonMark 6.1): no escapes there
         out += [re.sub(r"([\\\[\]])", r"\\\1", text[pos:span.start()]), span.group(0)]
@@ -979,6 +983,9 @@ def main() -> int:
     ap.add_argument("vault", type=Path, help="the Obsidian-style folder of notes to read; it is only read, never changed")
     ap.add_argument("out", type=Path, help="where the bundle is written: a new folder, or an empty one; never inside the vault")
     args = ap.parse_args()
+    for stream in (sys.stdout, sys.stderr):   # a vault name that is not UTF-8 must print, not end the run
+        if hasattr(stream, "reconfigure"):   # a caller that swapped in a StringIO keeps it
+            stream.reconfigure(errors="backslashreplace")
     vault, out = args.vault.resolve(), args.out.resolve()
     # Exit 2 before anything is written: the vault is only read, and <out> is never merged into.
     try:
@@ -1105,6 +1112,10 @@ def main() -> int:
             problems.append(f"{rel.as_posix()} — {str(err).replace('bundle', 'vault')}: skipped")
             dropped.add(rel)
             continue
+        except OSError as err:   # a note nobody may read (mode 000): named and skipped, never a traceback (nasty-inputs.test.sh)
+            problems.append(f"{rel.as_posix()} — {err.strerror or err}: skipped")
+            dropped.add(rel)
+            continue
         try:
             joins: set[int] = set()
             rows = list(body_lines(lines, joins=joins))
@@ -1113,6 +1124,10 @@ def main() -> int:
                 copy_from(vault / rel, dest, vault)
             except NoteRefused as err:
                 problems.append(f"{rel.as_posix()} — {str(err).replace('bundle', 'vault')}: skipped")
+                dropped.add(rel)
+                continue
+            except OSError as err:
+                problems.append(f"{rel.as_posix()} — {err.strerror or err}: skipped")
                 dropped.add(rel)
                 continue
             problems.append(f"{rel.as_posix()}:1: block quotes and list items nested deeper than {NEST_MAX} levels: copied unchanged, its links not rewritten")
