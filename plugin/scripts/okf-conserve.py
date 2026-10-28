@@ -11,6 +11,12 @@ removed from the bundle since <ref> (`git diff -w <ref>`, the working tree inclu
               lines compressed into two are two CHANGED and eight LOST)
     LOST      none of the above
 
+A note .okfignore excludes is not part of the bundle, so a line that moved into one counts as removed: it is LOST unless
+the same line also sits in a note the bundle counts. The list of counted notes is okf-check's (okfignore_list, the matcher
+every layer reads), passed in OKF_KEEP_LIST. The same matcher is asked about the notes the ref still had, by path
+(okf-check --ignore-filter), so an ignored note is not read on either side: a line moved inside an ignored folder is no
+loss, while deleting a note the bundle counts is still a LOST line.
+
 Not counted, because they are not knowledge: blank lines, whitespace-only changes, lines with no letter or digit (a table
 rule, a fence) and the frontmatter (a new date is churn). Lines are compared with runs of whitespace collapsed.
 
@@ -18,6 +24,11 @@ The report is advisory (exit 0); with --fail-lost a LOST line is exit 1. Exit 2:
 a --deleted file that cannot be read.
 
 Usage (from okf-check): okf-conserve.py <bundle> <ref> <version> <json 0|1> <fail-lost 0|1> [<deleted file>]
+       environment:
+         OKF_KEEP_LIST  the PATH of a file holding a NUL-separated list of the notes .okfignore leaves in, as paths
+                        relative to the bundle; unset or empty means every note counts
+         OKF_CHECK_BIN  the okf-check to ask which notes .okfignore excludes (its internal --ignore-filter mode), so a
+                        note that was deleted is judged by the same matcher as one that is still on disk
 """
 import json
 import os
@@ -45,6 +56,16 @@ def git(top, *args, errors="replace"):
     except (OSError, subprocess.SubprocessError) as e:
         return 1, f"git could not run ({type(e).__name__})"
     return p.returncode, p.stdout.decode("utf-8", errors)
+
+
+# index.md and log.md are bundle files, not notes: okf-check's "every note excluded" refusal skips them at any depth
+# (ignore-lib.sh counts "kept" without them), so the refusal here counts a note the same way.
+NOT_NOTES = ("index.md", "log.md")
+
+
+def is_note(name):
+    base = name.rsplit("/", 1)[-1]
+    return base.endswith(".md") and base not in NOT_NOTES
 
 
 def norm(line):
@@ -152,21 +173,95 @@ def main(argv):
         except OSError as e:
             return fail(f"cannot read {deleted_file} ({e.strerror or type(e).__name__})", 2)
 
-    # The bundle as it is now: every line of every note on disk, tracked or not.
+    # The bundle as it is now: every line of every note on disk, tracked or not, minus the notes .okfignore leaves out.
+    # That list comes from okf-check (okfignore_list, the matcher every layer reads), so a line that now lives only in an
+    # ignored note is not in the bundle: it reads LOST like a deletion, which is what an archive move is.
+    counted = None
+    keep_list = os.environ.get("OKF_KEEP_LIST", "")
+    if keep_list:
+        try:
+            with open(keep_list, "rb") as fh:
+                raw = fh.read().decode("utf-8", "surrogateescape")
+        except OSError as e:
+            return fail(f"cannot read the list of counted notes ({e.strerror or type(e).__name__})", 2)
+        counted = {os.path.join(real_bundle, rel) for rel in raw.split("\0") if rel}
     corpus = set()
+    md_on_disk = 0
     for root, dirs, files in os.walk(real_bundle):
         dirs[:] = [d for d in dirs if d != ".git" and not os.path.islink(os.path.join(root, d))]
         for f in files:
             if f.endswith(".md"):
+                md_on_disk += is_note(f)
+                path = os.path.join(root, f)
+                if counted is not None and path not in counted:
+                    continue
                 try:
-                    corpus.update(norm(x) for x in read_note(os.path.join(root, f), "utf-8", "replace", root=real_bundle).split("\n"))
+                    corpus.update(norm(x) for x in read_note(path, "utf-8", "replace", root=real_bundle).split("\n"))
                 except OSError:
                     pass
+
+    def list_ref_notes():
+        """The notes the ref holds under the bundle, as paths from the repository root. A plain path, not a pathspec with magic: `git ls-tree` refuses
+        `:(glob)`, and its non-zero exit was read here as "the ref had no notes" — a check that can never fire. Names come
+        NUL-separated (-z): without it git quotes a name that is not plain ASCII or holds a newline (`"B/caf\303\251.md"`),
+        and a quoted name does not end in `.md`, so the note was counted as absent. Filtered in Python; a failure is loud
+        (the caller stops with exit 2), never an answer."""
+        rc, out = git(real_top, "ls-tree", "-r", "--name-only", "-z", ref, "--", rel_bundle or ".", errors="surrogateescape")
+        if rc != 0:
+            detail = out.strip().splitlines()
+            return None, "git ls-tree %s failed (exit %d%s)" % (ref, rc, ": " + detail[-1] if detail else "")
+        return [x for x in out.split("\0") if is_note(x)], None
+
+    def ignored_notes(notes):
+        """Which of these note paths (relative to the bundle) .okfignore excludes, asked of okf-check's internal
+        --ignore-filter: the answer comes from the one matcher every layer reads, so this report cannot drift from them.
+        Returns (set, None) on an answer, or (None, why) when the question could not be put."""
+        if not notes:
+            return set(), None
+        binary = os.environ.get("OKF_CHECK_BIN", "")
+        if not binary:
+            return None, "--conserve needs okf-check to apply .okfignore, and this run did not name it (OKF_CHECK_BIN)"
+        payload = ("\0".join(notes) + "\0").encode("utf-8", "surrogateescape")
+        try:
+            p = subprocess.run([binary, bundle, "--ignore-filter"], input=payload, capture_output=True, timeout=120)
+        except (OSError, subprocess.SubprocessError) as e:
+            return None, f"okf-check could not say which notes .okfignore excludes ({type(e).__name__})"
+        if p.returncode != 0:
+            detail = p.stderr.decode("utf-8", "replace").strip().splitlines()
+            return None, "okf-check could not say which notes .okfignore excludes (exit %d%s)" % (
+                p.returncode, ": " + detail[-1] if detail else "")
+        return {x for x in p.stdout.decode("utf-8", "surrogateescape").split("\0") if x}, None
 
     try:
         removed, added = removed_lines(real_top, ref, rel_bundle)
     except RuntimeError as e:
         return fail(str(e), 2)
+
+    # The ref side is filtered by the same matcher, asked about a PATH: the list of counted notes comes from the files on
+    # disk, so it cannot judge a note that was deleted (it would stop a deleted counted note from being LOST). A line that
+    # lived only in an ignored note was never in the bundle; reorganising that note, or deleting it, loses nothing.
+    ref_notes = sorted({os.path.relpath(os.path.join(real_top, p), real_bundle) for p, _n, _t, _h in removed})
+    ignored, err = ignored_notes(ref_notes)
+    if err:
+        return fail(err, 2)
+
+    # .okfignore that leaves no note in: the report would print PASS 0 line(s) removed for a bundle nobody looked at — a
+    # pass for lines that really were removed, on the commit that added the pattern. The question is this report's own,
+    # wider than the gate's: did content that existed get lost? So a note on the disk OR a note the ref still holds (the
+    # bundle was emptied on the commit under test) is a comparison nobody made. A bundle that never held a note answers
+    # exit 0, as the gate does for it (its own output: "ignore: 0 file(s) excluded", "L1 PASS 0 concepts").
+    # "Leaves no note in" means every note, so a note at the ref that .okfignore does not exclude is a note the report can
+    # judge: deleting it is a plain LOST, not a refusal (base answered LOST/exit 1 there, and it still does).
+    if counted is not None and not any(is_note(c) for c in counted):
+        at_ref, err = list_ref_notes()
+        if err:
+            return fail(err, 2)
+        at_ref = [os.path.relpath(os.path.join(real_top, p), real_bundle) for p in at_ref]
+        ignored_at_ref, err = ignored_notes(at_ref)
+        if err:
+            return fail(err, 2)
+        if (md_on_disk or at_ref) and all(n in ignored_at_ref for n in at_ref):
+            return fail(os.environ.get("OKF_IGNORE_ALL_WHY", ".okfignore excludes every note - nothing was checked (not a pass)"), 2)
 
     fm_cache = {}
     def in_frontmatter(path, n):
@@ -178,6 +273,8 @@ def main(argv):
     kinds = {"moved": [], "declared": [], "changed": [], "lost": []}
     pending = {}   # hunk id -> entries that may pair with an added line
     for path, n, text, hunk in removed:
+        if os.path.relpath(os.path.join(real_top, path), real_bundle) in ignored:
+            continue   # not in the bundle at the ref either: nobody lost this line
         if not counts(text) or in_frontmatter(path, n):
             continue
         note = os.path.relpath(path, rel_bundle) if rel_bundle else path

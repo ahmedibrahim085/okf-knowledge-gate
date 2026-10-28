@@ -994,8 +994,10 @@ for t in verify export; do
   printf -- '--help\n' >> "$S51/$t.flags"; sort -u -o "$S51/$t.flags" "$S51/$t.flags"
 done
 # INTERNAL, kept out of the user help: okf-check --fingerprint is the test seam of the change detection (its only caller is
-# okf-check.test.sh); okf-verify --check-config/--manifest-dir are how okf-check asks okf-verify to read the okf_check block.
-inner_check="--fingerprint"; inner_verify="--check-config --manifest-dir"; inner_export=""
+# okf-check.test.sh); okf-check --ignore-filter is how the conservation report asks which notes .okfignore excludes (its
+# only caller is okf-conserve.py); okf-verify --check-config/--manifest-dir are how okf-check asks okf-verify to read the
+# okf_check block.
+inner_check="--fingerprint --ignore-filter"; inner_verify="--check-config --manifest-dir"; inner_export=""
 for t in check verify export; do
   eval "inner=\$inner_$t"; miss=""; n=$(wc -l < "$S51/$t.flags" | tr -d ' ')
   while IFS= read -r f; do
@@ -1008,7 +1010,7 @@ done
 inn=""
 for f in $inner_check; do grep -q -- "$f" "$S51/check.txt" && inn="$inn $f"; done
 for f in $inner_verify; do grep -q -- "$f" "$S51/verify.txt" && inn="$inn $f"; done
-[ -z "$inn" ] && ok "S51-HP-N1 the internal flags (--fingerprint, --check-config, --manifest-dir) are not in the user help" \
+[ -z "$inn" ] && ok "S51-HP-N1 the internal flags (--fingerprint, --ignore-filter, --check-config, --manifest-dir) are not in the user help" \
   || bad "S51-HP-N1 internal flags in the help" "shown:$inn"
 { [ "$rc_hc" -eq 0 ] && [ "$rc_hv" -eq 0 ] && [ "$rc_he" -eq 0 ]; } && ok "S51-HP-H2 --help exits 0 on all three tools" \
   || bad "S51-HP-H2 --help exit" "okf-check=$rc_hc okf-verify=$rc_hv okf-export=$rc_he"
@@ -1029,8 +1031,9 @@ done
 for t in verify export; do for c in 0 1 2; do grep -qE "^ +$c +[^ ]" "$S51/$t.txt" || miss="$miss okf-$t:$c"; done; done
 [ -z "$miss" ] && ok "S51-HP-H4 each help lists its exit codes (okf-check: every code of the README table and the script)" || bad "S51-HP-H4 exit codes in the help" "missing:$miss"
 # variables: every OKF_* name the code reads, minus the plumbing and test-only names, is in that tool's help and in the README table
-INTERNAL_ENV=" OKF_SCRIPTS_DIR OKF_VENDOR_DIR OKF_MAX_NOTE_BYTES OKF_KEEP_LIST OKF_FOLDER_WHY OKF_OUTSIDE_WHY OKF_STOP_WHY OKF_OWNERS_TSV OKF_SYMLINKED_LST OKF_SIZES_JSONL OKF_PLAIN_RE OKF_L3_ROOT OKF_L2_CRASHED OKF_GRAPH_JSON OKF_FACTS_JSONL OKF_TODAY OKF_PINNED_VERSIONS OKF_FORGE_API_BASE OKF_VERSION "
-# plumbing: set by one script for another, or the okf_check.max_note_bytes setting in its env form; OKF_TODAY, OKF_PINNED_VERSIONS and
+INTERNAL_ENV=" OKF_SCRIPTS_DIR OKF_VENDOR_DIR OKF_MAX_NOTE_BYTES OKF_KEEP_LIST OKF_CHECK_BIN OKF_IGNORE_ALL_WHY OKF_FOLDER_WHY OKF_OUTSIDE_WHY OKF_STOP_WHY OKF_OWNERS_TSV OKF_SYMLINKED_LST OKF_SIZES_JSONL OKF_PLAIN_RE OKF_L3_ROOT OKF_L2_CRASHED OKF_GRAPH_JSON OKF_FACTS_JSONL OKF_TODAY OKF_PINNED_VERSIONS OKF_FORGE_API_BASE OKF_VERSION "
+# plumbing: set by one script for another (OKF_IGNORE_ALL_WHY carries the gate's "excludes every note" sentence to
+# okf-conserve.py, so there is one wording), or the okf_check.max_note_bytes setting in its env form; OKF_TODAY, OKF_PINNED_VERSIONS and
 # OKF_FORGE_API_BASE exist for tests and replays (README); OKF_VERSION in okf-export is a Python name imported from the validator.
 miss_h=""; miss_r=""; nvars=0
 for t in check verify export; do

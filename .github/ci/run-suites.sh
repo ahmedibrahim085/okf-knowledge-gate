@@ -3,7 +3,7 @@
 # also runs in a private tree (tools/ci-workflow.test.sh does that on fixtures).
 #
 #   .github/ci/run-suites.sh        (from the repository root; okflint, pre-commit and the awk under test already on PATH)
-#   exit 0 every suite and --selftest passed · 1 a suite or --selftest failed · 2 no suite found
+#   exit 0 every suite and --selftest passed · 1 a suite or --selftest failed, or the list ran no suite · 2 no suite found
 #
 # The suite list is OKF_LINUX_SUITES of tools/linux-gate.conf when the tree has it (the private repository), else every
 # *.test.sh in the tree (the public export ships no tools/ but tools/demo). A suite passes by the rule both release gates
@@ -54,6 +54,11 @@ suite_verdict() {
 # OKF_LINUX_SUITES and OKF_GATE_SUITE_TIMEOUT in the environment win over the conf, as in tools/linux-gate.sh, which
 # passes its own values in (review 0.9.35).
 SUITE_TIMEOUT=1800
+# The share of a suite's tests that may skip when nothing sets a ceiling: the public export ships no tools/, so
+# OKF_GATE_SKIP_MAX_PERCENT is unset there and the verdict's skip check never ran, and a suite that skipped 399 of its 400
+# tests passed the public CI (the public CI skip row, []). 10 is the ceiling tools/linux-gate.conf sets, measured there
+# on 2026-10-24 (the suites that do skip stay far below it: 0.9 percent, 1 of 15, 1 of 4).
+SKIP_MAX_DEFAULT=10
 SKIP_MAX=${OKF_GATE_SKIP_MAX_PERCENT:-}
 SUITES=""
 if [ -f tools/linux-gate.conf ]; then
@@ -65,9 +70,24 @@ else
 fi
 SUITES=${OKF_LINUX_SUITES:-$SUITES}
 SUITE_TIMEOUT=${OKF_GATE_SUITE_TIMEOUT:-$SUITE_TIMEOUT}
+SKIP_MAX=${SKIP_MAX:-$SKIP_MAX_DEFAULT}
+# The list is words, whatever separates them: the loops below match a name against the list with one space on each side, and
+# a name next to a tab or a newline (a conf or an environment value written across lines) matched nothing and started
+# nothing. Normalise the separators once, here.
+SUITES=$(printf '%s\n' "$SUITES" | tr '\t\n' '  ' | tr -s ' ')
+SUITES=${SUITES# }; SUITES=${SUITES% }
 # Not passed on: a suite that runs this script on a fixture tree (tools/ci-workflow.test.sh) must read that tree's list.
 unset OKF_LINUX_SUITES OKF_GATE_SUITE_TIMEOUT OKF_GATE_SKIP_MAX_PERCENT
 [ -n "${SUITES// /}" ] || { echo "run-suites: no suite found"; exit 2; }
+# The list is a list of files, not a pattern: globbing it let a word that matched nothing at the tree root drop out of the
+# start order, and the run then printed no suite and ended green on --selftest alone (the public CI passing a suite that
+# skipped 399 of its 400 cases, []). A misspelled name, a directory and a file the user cannot read started nothing the
+# same way. Fail fast, naming every word of the list that is not a readable file; a glob is one such word, whether it
+# matches files or nothing.
+set -f
+unreadable=""
+for s in $SUITES; do { [ -f "$s" ] && [ -r "$s" ]; } || unreadable="$unreadable $s"; done
+[ -z "$unreadable" ] || { echo "run-suites: listed suite is not a readable suite file:$unreadable" >&2; exit 1; }
 
 echo "run-suites: $(. /etc/os-release 2>/dev/null; echo "${PRETTY_NAME:-$(uname -s)}") $(uname -m); bash $BASH_VERSION; $(python3 --version 2>&1); okflint $(python3 -c 'import importlib.metadata as m; print(m.version("okflint"))' 2>/dev/null || echo absent); $(pre-commit --version 2>/dev/null || echo 'pre-commit absent'); $(awk -W version 2>&1 | head -1); user $(id -un)"  # pipefail-safe: a banner shown on one echo line; the status of a substitution inside an argument is never read.
 # OKF_SUITE_JOBS (gate speed): how many suites run at once; default the CPU count, at most 4. Each suite has its own mktemp folder
@@ -111,6 +131,13 @@ for s in $SIDE $BYSIZE; do
   run_one "$s" "$n" & pids="$pids $!"
 done
 for p in $pids; do wait "$p"; done
+# The net under every route above: a list that started nothing is a failure, never a run that ends green on --selftest alone
+# (the public CI passing a suite that skipped 399 of its 400 cases, []). The checks above catch the routes this release
+# found; this one holds whatever way a later change finds of starting nothing.
+if [ -z "$order" ]; then
+  echo "run-suites: no suite in the list was started: $SUITES" >&2
+  exit 1
+fi
 for s in $SUITES; do
   i=0; k=1; while [ "$k" -le "$n" ]; do eval "[ \"\$idx_$k\" = \"\$s\" ]" && i=$k; k=$((k + 1)); done
   [ "$i" -gt 0 ] || continue

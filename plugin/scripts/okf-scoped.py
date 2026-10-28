@@ -9,8 +9,9 @@ result with a full run's findings for the same note, so a drift between the two 
 
 Output: one line per finding, `<rel>: L1 error: ...`, `<rel>: L1 warning: ...`, `<rel>: Trust warning: ...`,
 `<rel>: Trust advisory: ...`, `<rel>: Trust error: ...` (the loader refused the note for its size); nothing for a clean note.
-Exit 1: an L1 error, a Trust error, or with --strict-trust a Trust warning or a near-miss actor (okf-check's own
---strict-trust rule). Exit 0: otherwise. Exit 2: could not run.
+Exit 1: an L1 error, a Trust error, or with --strict-trust a Trust warning or advisory or a near-miss actor
+(okf-check's own --strict-trust rule, which counts warnings and advisories as the whole-bundle run does). Exit 0:
+otherwise. Exit 2: could not run.
 Run with the vendored PyYAML on the path (okf-check does this through py_with_vendor).
 """
 import importlib.util
@@ -69,7 +70,10 @@ def main(argv: list) -> int:
         except (OSError, UnicodeDecodeError, trust.yaml.YAMLError, ValueError):
             meta = None   # L1 already reports an unreadable or malformed note
         if isinstance(meta, dict):
-            rows = trust.findings_for(meta)
+            # list(): findings_for is a generator, and the printing loop below already walks it. Read twice, a
+            # generator is empty the second time — the strict test saw no warning and exited 0 on a note whose
+            # Trust warning it had just printed.
+            rows = list(trust.findings_for(meta))
 
     for e in errors:
         print(f"{rel}: L1 error: {e}")
@@ -79,7 +83,11 @@ def main(argv: list) -> int:
         print(f"{rel}: Trust error: the note was too large to read, so its trust claims were not checked: {too_large}")
     for severity, entry, reason in rows:
         print(f"{rel}: Trust {severity}: {entry} {reason}")
-    strict_hit = strict and (any(s == "warning" for s, _, _ in rows) or any(NEAR_MISS in w for w in warnings))
+    # --strict-trust counts Trust warnings AND advisories, as the whole-bundle run does (its TRUST_FINDINGS is
+    # warnings + advisories): an agent note verified by a human is the advisory form of the same claim, and the
+    # whole-bundle run fails it. The near-miss actor wording is the validator's own, never typed again.
+    strict_hit = strict and (any(s in ("warning", "advisory") for s, _, _ in rows)
+                             or any(NEAR_MISS in w for w in warnings))
     return 1 if errors or too_large or strict_hit else 0
 
 

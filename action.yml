@@ -17,8 +17,9 @@ inputs:
     default: 'false'
   require-house-rules:
     description: >-
-      'true' fails the job (exit 3) when the house-rule layer (L2) was skipped, for example because okflint is not
-      installed on the runner or the bundle has no okf-base.yaml. Without it a skipped layer is only a warning.
+      'true' fails the job (exit 3) when a house-rule layer was skipped: L2 profile (okflint is not installed on the
+      runner, or the bundle has no okf-base.yaml) or L2 index (no index.md, an index.md that declares no counts, or no
+      python3). Without it a skipped layer is only a warning.
     required: false
     default: 'false'
   args:
@@ -131,26 +132,110 @@ runs:
         args+=(${extra[@]+"${extra[@]}"})
         # okf-check's own exit code is the job's exit code: 0 pass, 1 L1/trust, 2 could not run, 3 house rules, 4 stale.
         # The log is kept so the job can say, with a ::warning::, when exit 0 means less than "everything was checked".
-        log=$(mktemp)
+        # Three temp files hold the job's own output: the merged log the checks read, and the two streams kept apart. A
+        # temp folder that is not writable would stop the step under `set -e` with mktemp's own message and no
+        # annotation, so it is named here, and the files go on every exit path (they hold bundle content).
+        if ! log=$(mktemp) || ! out=$(mktemp) || ! err=$(mktemp); then
+          echo "::error::the runner's temp folder (TMPDIR) is not writable, so okf-check cannot report and the job must not pass"
+          exit 2
+        fi
+        trap 'rm -f "$log" "$out" "$err"' EXIT
+        # --json prints one JSON document instead of the text report, so the enforcement below reads the fact from
+        # whichever report the tool printed. A job's verdict must not depend on the output format. The two streams are
+        # captured apart and then printed together: the JSON document is what stdout holds, and a line on stderr (an
+        # okflint or Python warning) is not part of it and must not be able to break the parse.
+        json_out=0
+        for a in ${extra[@]+"${extra[@]}"}; do [ "$a" = --json ] && json_out=1; done
+        py=""
+        [ "$json_out" -eq 1 ] && command -v python3 >/dev/null 2>&1 && py=python3
+        # One parse of the --json document answers every question below: the concept count and, for each layer, whether
+        # it was skipped, could not run, or ran. It reads skipped[] and layers_not_run[] and never searches the document
+        # — a note name or a link target inside it is untrusted text. Each answer is one fixed word, so nothing from the
+        # report reaches a workflow command; "error<TAB>why" says the document cannot be read.
+        facts_parser='import json,sys
+        try:
+            doc = json.load(open(sys.argv[1], encoding="utf-8", errors="replace"))
+        except Exception:
+            print("error\tthe output is not one JSON document"); sys.exit(3)
+        if not isinstance(doc, dict):
+            print("error\tthe report is not a JSON object"); sys.exit(3)
+        skipped = doc.get("skipped")
+        notrun = doc.get("layers_not_run")
+        if not isinstance(skipped, list):
+            print("error\tthe report has no skipped list"); sys.exit(3)
+        if not isinstance(notrun, list):
+            print("error\tthe report has no layers_not_run list"); sys.exit(3)
+        concepts = doc.get("concepts")
+        print("concepts\t%s" % ("0" if concepts == 0 and not isinstance(concepts, bool) else "other"))
+        for layer in sys.argv[2:]:
+            if any(isinstance(x, str) and x == layer for x in notrun):
+                print("%s\tnotrun" % layer)
+            elif any(isinstance(s, str) and s.startswith(layer + ": ") for s in skipped):
+                print("%s\tskipped" % layer)
+            else:
+                print("%s\tno" % layer)'
         set +e   # the runner starts bash with -e and pipefail: keep going after a failing okf-check so the warnings below print
-        "$GITHUB_ACTION_PATH/plugin/scripts/okf-check" "$INPUT_BUNDLE" ${args[@]+"${args[@]}"} 2>&1 | tee "$log"
-        rc=${PIPESTATUS[0]}
-        # Fixed messages only: the log can hold note names, which are untrusted text inside a workflow command.
-        if grep -Eq 'L1 conformance +PASS +0 concepts' "$log"; then
+        "$GITHUB_ACTION_PATH/plugin/scripts/okf-check" "$INPUT_BUNDLE" ${args[@]+"${args[@]}"} >"$out" 2>"$err"
+        rc=$?
+        cat "$out" "$err" | tee "$log"
+        # The per-run facts, once: the concept count and one state per layer. A report that cannot be read leaves them
+        # empty and says why; the enforcement below then fails CLOSED, and the warnings stay quiet (a warning decides
+        # nothing). The text report answers the same questions from its own anchored lines, without python.
+        facts=""; facts_why=""
+        if [ "$json_out" -eq 1 ]; then
+          if [ -z "$py" ]; then facts_why="python3 is not on PATH"
+          elif ! facts=$("$py" -c "$facts_parser" "$out" 'L2 profile' 'L2 index' 'L2 graph'); then
+            facts_why=$(awk -F'\t' '$1 == "error" { print $2; exit }' <<<"$facts"); facts=""
+          fi
+        fi
+        fact() { [ -n "$facts" ] && awk -F'\t' -v k="$1" '$1 == k { print $2; exit }' <<<"$facts"; }
+        # A parser that prints something else — a shim, or a broken interpreter that still exits 0 — is not an answer:
+        # every row this run asks for must be there, or the report counts as unreadable and the enforcement fails CLOSED.
+        if [ -n "$facts" ]; then
+          for k in concepts 'L2 profile' 'L2 index' 'L2 graph'; do
+            [ -n "$(fact "$k")" ] || { facts_why="the parser gave no table row for $k"; facts=""; break; }
+          done
+        fi
+        # Fixed messages only: a note name can spell "L1 conformance PASS 0 concepts", so the text line is anchored to the
+        # report's own shape (two leading spaces; findings are indented 19) and the JSON answer is the parsed count.
+        zero=0
+        if [ "$json_out" -eq 1 ]; then [ "$(fact concepts)" = 0 ] && zero=1
+        elif grep -Eq '^  L1 conformance +PASS +0 concepts' "$log"; then zero=1; fi
+        if [ "$zero" -eq 1 ]; then
           echo "::warning::okf-check found 0 concepts, so nothing was checked. Is the 'bundle' path right?"
         fi
-        l2_skipped=0
-        grep -Eq '^ +L2 profile +SKIPPED' "$log" && l2_skipped=1
-        for layer in 'L2 profile' 'L2 index' 'L3 staleness'; do
-          if grep -Eq "^ +$layer +SKIPPED" "$log"; then
-            echo "::warning::okf-check skipped a layer ($layer): it is not a pass. See the log above for the reason."
+        # Every layer okf-check can skip from the command line gets its own warning, in both report styles. L2 graph also
+        # has a COULD NOT RUN path that still exits 0 (okf-memory answered nothing readable): the job passes, so it is
+        # warned about too, in its own words. L3 derived is not here: its skip cannot be reached from the command line
+        # (with no python the run stops earlier and the JSON carries no skipped list), so listing it would be an
+        # unpinned name; L3 staleness prints COULD NOT RUN and fails the job, never SKIPPED.
+        for layer in 'L2 profile' 'L2 index' 'L2 graph'; do
+          if [ "$json_out" -eq 1 ]; then state=$(fact "$layer"); else
+            state=no
+            grep -Eq "^  $layer +SKIPPED( —|$)" "$log" && state=skipped
+            grep -Eq "^  $layer +COULD NOT RUN" "$log" && state=notrun
           fi
+          case "$state" in
+            skipped) echo "::warning::okf-check skipped a layer ($layer): it is not a pass. See the log above for the reason." ;;
+            notrun)  echo "::warning::okf-check could not run a layer ($layer): it is not a pass. See the log above for the reason." ;;
+          esac
         done
-        if [ "$INPUT_REQUIRE_HOUSE_RULES" = true ] && [ "$l2_skipped" -eq 1 ] && [ "$rc" -eq 0 ]; then
-          echo "::error::house rules were required but L2 was skipped (okflint missing, or no okf-base.yaml in the bundle)"
+        # The enforcement fails CLOSED: a report that cannot be read means a skipped layer cannot be ruled out.
+        enforce_skipped() {
+          if [ "$json_out" -ne 1 ]; then grep -Eq "^  $1 +SKIPPED( —|$)" "$log"; return; fi
+          [ -n "$facts" ] || { echo "::error::okf-check --json did not give one readable report (${facts_why:-no detail}), so a skipped layer cannot be ruled out"; return 0; }
+          [ "$(fact "$1")" = skipped ]
+        }
+        # The house-rule layers are L2 profile (okflint + okf-base.yaml) and L2 index (the declared counts). Either one
+        # skipped means the house rules were not checked, so require-house-rules fails the job for both. The other layers
+        # that can be skipped (L2 graph, L3 derived) are not house rules: L2 graph is warned about above, L3 derived is
+        # out of that list because its skip cannot be reached from the command line, and neither fails the job.
+        if [ "$INPUT_REQUIRE_HOUSE_RULES" = true ] && [ "$rc" -eq 0 ] \
+           && { enforce_skipped 'L2 profile' || enforce_skipped 'L2 index'; }; then
+          echo "::error::house rules were required but a house-rule layer was skipped (L2 profile: okflint missing or no okf-base.yaml; L2 index: no index.md, an index.md that declares no counts, or no python3)"
           rc=3
         fi
-        rm -f "$log"
+        rm -f "$log" "$out" "$err"
         # verify: okf-verify always runs when asked, so one failing tool does not hide the other. The job takes okf-check's
         # exit code, or okf-verify's when okf-check passed.
         # report-args: each report mode runs on its own, after the gate. Their exit code never decides the job (a bad ref in

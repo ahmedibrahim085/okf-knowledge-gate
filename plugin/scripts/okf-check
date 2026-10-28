@@ -43,7 +43,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.55"
+VERSION="0.9.56"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -65,6 +65,8 @@ advise() {
 }
 # The sentence under a Trust finding, in the text report and as `trust_note` in --json (RM-20): it is one fact, said in both places.
 TRUST_NOTE='okf-check cannot prove who a person is. A human: entry is a claim in the file.'
+# Said once: an .okfignore that leaves no note in means nothing was looked at, in the gate and in the conservation report.
+IGNORE_ALL_WHY='.okfignore excludes every note - nothing was checked (not a pass)'
 ADVISORIES=0; SKIPPED=0; TRUST_RAN=1; TRUST_FINDINGS=0; TRUST_POLICY_FAIL=0; L2_PROFILE=ran
 
 # ---------------------------------------------------------------- locate self
@@ -165,6 +167,10 @@ Checks of a bundle:
   --fail-lost         with --conserve: a LOST line blocks (exit 1)
   --deleted FILE      with --conserve: FILE declares the deletions that are intended
 
+A report mode (--duplicates, --duplicates-body, --facts, --conserve) runs instead of the gate, so a gate
+flag given with one would be read by nothing: that command line is refused (exit 64) instead of run
+without the flag. --fail-lost and --deleted are refused without --conserve for the same reason.
+
 Set-up and the machine:
   --init-house-rules <bundle>   write a starter <bundle>/okf-base.yaml (never overwrites)
   --init-ignore <bundle>        write a starter <bundle>/.okfignore (never overwrites)
@@ -185,7 +191,8 @@ Exit codes (in order of precedence: a verdict that was reached outranks a gate t
     6  the bundle changed mid-scan (only with --fail-on-change)
     4  stale notes (only with --fail-stale)
     0  every gate passed
-   64  usage error: no bundle, an unknown flag, or a path that is not a folder
+   64  usage error: no bundle, an unknown flag, a path that is not a folder, or a gate flag the given
+       mode cannot read
   130  interrupted (Ctrl-C), no verdict
   143  terminated, no verdict
 
@@ -212,6 +219,9 @@ HELP
 }
 
 BUNDLE=""; MODE="check"; DUP_BODY=0; JSON=0; FAIL_STALE=0; STRICT_TRUST=0; ASSUME_YES=0; USE_LATEST=0
+# Initialised here too: a variable this script reads but never sets would take its value from the caller's environment,
+# so an exported FAIL_LOST or DELETED_GIVEN would refuse or change a plain run the user never asked to change.
+FAIL_LOST=0; DELETED_GIVEN=0
 for a in "$@"; do
   case "$a" in
     --doctor)      MODE="doctor" ;;
@@ -223,12 +233,13 @@ for a in "$@"; do
                    MODE="scoped"; _want_file=1 ;;   # its value is the next argument (run_scoped)
     --fail-on-change) FAIL_ON_CHANGE=1 ;;
     --fingerprint) MODE="fingerprint" ;;
+    --ignore-filter) MODE="ignore-filter" ;;   # internal seam: which of these note paths .okfignore excludes (okf-conserve)
     --duplicates)  MODE="duplicates" ;;
     --duplicates-body) MODE="duplicates"; DUP_BODY=1 ;;
     --facts)       MODE="facts"; _want_fact=1 ;;   # an optional NAME: the next bare argument once the bundle is known
     --conserve)    MODE="conserve"; _want_ref=1 ;;  # its <ref> is the next bare argument once the bundle is known
     --fail-lost)   FAIL_LOST=1 ;;
-    --deleted)     _want_del=1 ;;
+    --deleted)     _want_del=1; DELETED_GIVEN=1 ;;
     --preflight)   MODE="preflight" ;;
     --init-ignore) MODE="init-ignore" ;;
     --init-house-rules) MODE="init-house-rules" ;;
@@ -253,6 +264,40 @@ for a in "$@"; do
                    BUNDLE="$a" ;;
   esac
 done
+
+# A flag the given mode never reads used to be dropped in silence: `okf-check B --duplicates --fail-stale` ran the report
+# and exited 0, and `okf-check B --fail-lost` without --conserve ran the whole gate and exited 0 with the flag unread. To
+# the user both read as "the gate I asked for passed", the one answer this tool may not give wrongly. Refused at the
+# command line, before any layer runs.
+report_mode=""
+case "$MODE" in
+  duplicates) if [ "$DUP_BODY" = 1 ]; then report_mode="--duplicates-body"; else report_mode="--duplicates"; fi ;;
+  facts)      report_mode="--facts" ;;
+  conserve)   report_mode="--conserve" ;;
+  ignore-filter) report_mode="--ignore-filter" ;;   # internal, not a user mode: a gate flag beside it would be unread
+esac
+# <flag> <report mode>: the flag decides a gate verdict and the mode only reports, so together the flag would be read by
+# nothing. The name printed is the one the tool reads, not the spelling typed: --strict prints --strict-trust.
+refuse_with_report() {
+  echo "error: $1 cannot be combined with $2: a report mode replaces the gate run, so $1 would be read by nothing — run the gate and the report as two commands" >&2
+  exit 64
+}
+# <flag> [<report mode>]: work only --conserve does (the lines that vanished since a ref). Given anywhere else the flag
+# was read by nothing and the run still exited 0. These are not gate flags, so "run the gate" is the wrong advice: the
+# flag needs the conservation report, and the second sentence says so.
+refuse_without_conserve() {
+  echo "error: $1 only works with --conserve${2:+, not with $2}: run --conserve <ref> $1, or drop the flag" >&2
+  exit 64
+}
+if [ "$MODE" != conserve ]; then
+  [ "$FAIL_LOST" = 1 ]     && refuse_without_conserve "--fail-lost" "$report_mode"
+  [ "$DELETED_GIVEN" = 1 ] && refuse_without_conserve "--deleted" "$report_mode"
+fi
+if [ -n "$report_mode" ]; then
+  [ "$FAIL_STALE" = 1 ]     && refuse_with_report "--fail-stale" "$report_mode"
+  [ "$STRICT_TRUST" = 1 ]   && refuse_with_report "--strict-trust" "$report_mode"
+  [ "$FAIL_ON_CHANGE" = 1 ] && refuse_with_report "--fail-on-change" "$report_mode"
+fi
 
 PY=""
 for c in python3 python; do command -v "$c" >/dev/null 2>&1 && { PY="$c"; break; }; done
@@ -582,7 +627,8 @@ report_refused() {
 
 # run_scoped <bundle> <note>: `--file` mode (the edit hook calls it). L1 and Trust for one note through
 # okf-scoped.py: one line per finding, nothing for a clean note, no other layer. Exit codes keep their meaning:
-# 1 an L1 error (or, with --strict-trust, a Trust warning or near-miss actor), 0 otherwise, 2 could not run,
+# 1 an L1 error (or, with --strict-trust, a Trust warning or advisory, or a near-miss actor), 0 otherwise, 2 could not
+# run,
 # 64 the note is missing, not .md, or outside the bundle.
 run_scoped() {
   local bundle note rel out rc keep
@@ -2462,10 +2508,19 @@ run_staleness() {
   # PYTHONPATH. No consumer reads it today — G-2 was also harmless until okflint
   # silently changed parser. xargs passes its environment to awk, so ENVIRON
   # still sees it and R-7 (newline-safe root) is preserved. (G-12)
-  report=$(okf_md_files "$bundle" | OKF_L3_ROOT="$bundle/" xargs -0 awk -v today="$today" "$L3_AWK_LIB"'
+  # A byte order mark at the head of a note is NOT content: L1, Trust and the derived L3 read every note as utf-8-sig
+  # (okf_notes.py). Without the same strip here the opening fence reads as a mark and "---", l3_begin answers "nofm",
+  # and an expired note leaves the scan without a line — so --fail-stale exited 0 on it.
+  # LC_ALL=C: this scan compares bytes; in the C locale every awk counts the mark's three bytes as three characters,
+  # the same count the shell's printf gives the -v value, so index() finds the mark at position 1 and substr() drops
+  # exactly it. In a UTF-8 locale a multibyte-aware awk counts it as one character on both sides, which agrees too;
+  # under C both sides are bytes by POSIX, so the strip does not depend on which awk the host ships.
+  report=$(okf_md_files "$bundle" | OKF_L3_ROOT="$bundle/" xargs -0 env LC_ALL=C awk -v today="$today" -v bom="$(printf '\357\273\277')" "$L3_AWK_LIB"'
     BEGIN { root = ENVIRON["OKF_L3_ROOT"] }
     { sub(/\r$/, "") }   # CRLF notes: "---\r" never equalled "---" (LT-02)
-    FNR==1 { b=FILENAME; n=index(b,root); if (n==1) b=substr(b,length(root)+1)
+    FNR==1 { if (index($0, bom) == 1) $0 = substr($0, length(bom) + 1)
+             # the mark is not content: dropped before the fence test, as every other layer reads a note
+             b=FILENAME; n=index(b,root); if (n==1) b=substr(b,length(root)+1)
              base=b; sub(/^.*\//,"",base)
              skip=(l3_begin($0, base=="index.md"||base=="log.md") != "open"); next }
     skip { next }
@@ -2861,6 +2916,18 @@ fi
 # cannot enter would otherwise read as "link target not found", or as a PermissionError before Python 3.14. The edit hook
 # runs this and treats exit 2 as "could not check": it stays silent (fail-open).
 [ "$MODE" = scoped ] && { run_scoped "$BUNDLE" "${SCOPED_FILE:-}"; exit $?; }
+# INTERNAL, not a user mode (no help line, the list is in plugin.test.sh S51): stdin is a NUL-separated list of note paths
+# relative to the bundle, and the paths .okfignore excludes come back NUL-separated. The conservation report asks it about the notes the
+# ref still had, because its list of counted notes comes from the files on disk: a note that was deleted is on no disk
+# listing, and answering about the PATH keeps a deleted counted note a LOST line while an ignored one is not read at all.
+# One matcher answers — this one — so the report cannot drift from the layers.
+if [ "$MODE" = ignore-filter ]; then
+  okfignore_load "$BUNDLE"; [ $? -eq 2 ] && { echo "okf-check: .okfignore could not be applied, so which notes it excludes cannot be told" >&2; exit $EXIT_DEP; }
+  while IFS= read -r -d '' _rel; do
+    [ -n "$_rel" ] && okfignore_match "$_rel" && printf '%s\0' "$_rel"
+  done
+  exit 0
+fi
 
 if ! doctor >/dev/null 2>&1; then
   doctor; echo "L1 cannot run — fix the above." >&2
@@ -2876,7 +2943,21 @@ resolve_note_cap "$BUNDLE" || { stop_json "Note cap" "okf_check.max_note_bytes c
 # yaml nor the validator's loader), so a hostile frontmatter cannot stall it.
 if [ "$MODE" = conserve ]; then
   [ -n "${CONSERVE_REF:-}" ] || { echo "usage: okf-check <bundle> --conserve <ref> [--fail-lost] [--deleted FILE]" >&2; exit 64; }
-  OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor "$HERE/okf-conserve.py" "$BUNDLE" "$CONSERVE_REF" "$VERSION" "$JSON" "${FAIL_LOST:-0}" ${DELETED_FILE:+"$DELETED_FILE"}
+  # .okfignore decides what counts as a note for every layer, so it decides it for this report too: a line that now lives
+  # only in an ignored note is not in the bundle any more, and reads LOST like a deletion. The list of counted notes comes
+  # from okfignore_list — the one matcher the layers and --duplicates read, negation rule, note cap, refusal rules and
+  # outside-the-bundle links included — not from a second matcher written for this mode.
+  conserve_keep=""
+  if okfignore_present "$BUNDLE"; then
+    okfignore_load "$BUNDLE"
+    [ $? -eq 2 ] && { echo "okf-check: .okfignore could not be applied, so --conserve cannot run" >&2; stop_json Conserve ".okfignore could not be applied (see the message above)"; exit $EXIT_DEP; }
+    # A list that could not be written is NOT "no ignore file": an empty OKF_KEEP_LIST would count every note and quietly
+    # restore the false pass this mode is fixing.
+    okfignore_list "$BUNDLE" > "$TMP/conserve-keep.lst" \
+      || { echo "okf-check: the notes .okfignore leaves in could not be listed, so --conserve cannot run" >&2; stop_json Conserve "the notes .okfignore leaves in could not be listed"; exit $EXIT_DEP; }
+    conserve_keep="$TMP/conserve-keep.lst"
+  fi
+  OKF_KEEP_LIST="$conserve_keep" OKF_CHECK_BIN="$HERE/okf-check" OKF_IGNORE_ALL_WHY="$IGNORE_ALL_WHY" OKF_VENDOR_DIR="$ROOT/vendor" OKF_SCRIPTS_DIR="$HERE" py_with_vendor "$HERE/okf-conserve.py" "$BUNDLE" "$CONSERVE_REF" "$VERSION" "$JSON" "$FAIL_LOST" ${DELETED_FILE:+"$DELETED_FILE"}
   exit $?
 fi
 if [ "$MODE" = facts ]; then
@@ -2941,7 +3022,7 @@ if [ "${_exall:-0}" -gt 0 ] || [ -s "$TMP/refused.lst" ]; then   # an ignore fil
 fi
 LAYER_BUNDLE="$TMP/okfmirror"; MIRROR_ROOT="$LAYER_BUNDLE"
 if okfignore_present "$BUNDLE" && [ "${_kept:-0}" -eq 0 ] && [ "${_exnotes:-0}" -gt 0 ]; then
-  say "  IGNORE           .okfignore excludes every note - nothing was checked (not a pass)"
+  say "  IGNORE           $IGNORE_ALL_WHY"
   [ "$JSON" -eq 1 ] && emit_json "$EXIT_DEP"
   exit $EXIT_DEP
 fi

@@ -191,7 +191,7 @@ Read the exit code, do not just test for zero:
 | 4 | L3: stale concepts (with `--fail-stale`) |
 | 5 | `--selftest` failed: a gate stopped firing |
 | 6 | The bundle changed during the scan (with `--fail-on-change`) |
-| 64 | Usage error: no bundle, an unknown flag, or a path that is not a folder |
+| 64 | Usage error: no bundle, an unknown flag, a path that is not a folder, or a gate flag the given mode cannot read |
 
 ### Verify
 
@@ -394,10 +394,19 @@ included) is MOVED when it appears anywhere in the bundle now (an untracked note
 declared, CHANGED when a line added at the same place replaces it (shown old -> new, paired by position, so ten lines
 compressed into two are two CHANGED and eight LOST), and LOST otherwise, with its note and old line number. Only notes
 (`*.md`) are compared; blank lines, whitespace-only changes, lines with no letter or digit and the frontmatter are not
-counted. A declaration counts only as a trailer, in the last paragraph of the commit message. The report is advisory
+counted. `.okfignore` decides what counts as a note on both sides of the comparison, as it does in every layer: a line
+moved into a note it excludes is LOST — moving a paragraph into `archive/` is a deletion, unless the same line is still in
+a counted note — while reorganising or deleting a note it excludes loses nothing the bundle counted, so the report exits 0.
+A declaration counts only as a trailer, in the last paragraph of the commit message. The report is advisory
 (exit 0); `--fail-lost` exits 1 on a LOST line. Declare intended deletions with `--deleted FILE` (a note path per line
 for a whole note, or `line: <text>` for one line) or an `OKF-Deleted: <note>` trailer in the commit message. `--json`
-gives every entry. The bundle must be in a git repository (exit 2 otherwise, or for an unknown ref).
+gives every entry. The bundle must be in a git repository (exit 2 otherwise, or for an unknown ref), and a `.okfignore`
+that cannot be read, or that excludes every note (`index.md` and `log.md` are not notes here, as in the gate) while notes exist — on the disk or at the ref — stops the report with
+exit 2: a comparison of nothing is not a pass. A bundle that never held a note passes, as it does in the whole-bundle run.
+
+A report mode (`--duplicates`, `--duplicates-body`, `--facts`, `--conserve`) runs instead of the gate, so a gate flag
+on the same command line would be read by nothing: `okf-check` refuses that command line (exit 64) instead of running
+without the flag. `--fail-lost` and `--deleted` are refused without `--conserve` for the same reason.
 
 **Notes that are not regular files, and the byte cap:** a note is opened only when, after symlinks are resolved, it is a
 regular file of at most `okf_check.max_note_bytes` bytes (a whole number from 1, default `5242880`, 5 MB; a bad value
@@ -509,12 +518,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.55
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.56
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
           fail-stale: 'false'     # optional, default 'false'
-          require-house-rules: 'false'   # optional; 'true' fails the job (exit 3) when L2 was skipped
+          require-house-rules: 'false'   # optional; 'true' fails the job (exit 3) when L2 profile or L2 index was skipped
           args: '--fail-on-change --json'   # optional; extra options for okf-check: only those four, see below
           report-args: '--duplicates'       # optional; reports run after the gate: they print, and never change the exit code
 ```
@@ -527,7 +536,7 @@ To check the commits, paths and line citations the notes cite as well, add `veri
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.55
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.56
         with:
           bundle: path/to/bundle
           verify: 'true'                  # also run okf-verify; default 'false'
@@ -550,7 +559,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.55
+    rev: v0.9.56
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]

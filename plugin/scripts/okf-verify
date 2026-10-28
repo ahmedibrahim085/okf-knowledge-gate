@@ -994,27 +994,46 @@ def check_line(target: str, lines: str, by_name: bool, note_dir: Path, bundle: P
 _ROOT_FORMS: dict[str, tuple] = {}
 
 
+def resolved_root(p: Path) -> Path:
+    """`p` as an absolute path for reading a bundle or a `--repo`, with `..` collapsed only where the system collapses it
+    the same way.
+
+    A `..` after a link names two folders: `link/..` taken off the spelling is the folder that holds the link, while the
+    system follows the link first and steps up from there. Collapsing it lexically before the read therefore changes
+    which folder is searched, or which bundle is opened, and an invocation that worked stops working. The lexical answer
+    counts only when both spellings name the same folder; otherwise the path is joined with the working directory and
+    left as written, and the system resolves it. `realpath` is asked about the roots, never reported: the report names
+    the path the user typed.
+    """
+    collapsed = Path(os.path.abspath(p))
+    if os.path.realpath(collapsed) == os.path.realpath(p):
+        return collapsed
+    return p if os.path.isabs(p) else Path(os.getcwd()) / p
+
+
 def root_forms(r) -> tuple:
     """The spellings of the root folder `r` that a path written in a note can be inside of.
 
-    Its own (normpath) and its real location (realpath). A RELATIVE root has one more: the folder the shell was in, as the
-    shell spells it (`$PWD`). `--repo repo` run from a macOS temp folder is `/private/var/...` for the system but `/var/...` for a
-    note that was written there. Only the root side is looked at on disk, once per root, and the spelling counts only when it
-    names the same folder as the root itself.
+    Its own (normpath) and its real location (realpath). One more: the folder as the shell spells it (`$PWD`). That spelling
+    serves a relative root and an absolute one alike: `--repo repo` run from a macOS temp folder is `/private/var/...` for the
+    system but `/var/...` for a note that was written there, and a root resolved before searching meets the same split.
+    Only the root side is looked at on disk, once per root, and the spelling counts only when it names the same folder as the
+    root itself.
     """
     key = str(r)
     if key not in _ROOT_FORMS:
         forms = [os.path.normpath(key), os.path.realpath(key)]
         pwd = os.environ.get("PWD", "")
-        if not os.path.isabs(key) and os.path.isabs(pwd):
+        if os.path.isabs(pwd):
             try:
                 if os.path.samefile(pwd, os.getcwd()):   # $PWD can be stale: it counts only while it names the folder we are in
-                    logical = os.path.normpath(os.path.join(pwd, key))
+                    # The spelling $PWD gives this root: the shell's name for the folder we are in, then the rest of the path.
+                    logical = os.path.normpath(os.path.join(pwd, os.path.relpath(forms[0], os.getcwd())))
                     # normpath takes `..` off the spelling (`L/..` is `.` there) while the system takes it off the real folder: a
                     # `..` under a linked $PWD names two different folders. The spelling counts only when it is the same one.
                     if os.path.realpath(logical) == forms[1]:
                         forms.append(logical)
-            except OSError:
+            except (OSError, ValueError):   # relpath answers ValueError for two paths on two drives
                 pass
         _ROOT_FORMS[key] = tuple(dict.fromkeys(forms))
     return _ROOT_FORMS[key]
@@ -1687,8 +1706,9 @@ HELP_END = """\
 Exit codes:
   0  no claim is REFUTED or MOVED (with --strict: and none is UNRESOLVED or uncheckable)
   1  a claim is REFUTED or MOVED, or --strict found one UNRESOLVED or a note with no checkable claim
-  2  no verdict was possible: the bundle is not a readable folder, an okf-base.yaml that cannot be read,
-     an unknown --since ref, an .okfignore that excludes every note; also a command-line error
+  2  no verdict was possible: the bundle is not a readable folder, a --repo that is not a directory,
+     an okf-base.yaml that cannot be read, an unknown --since ref, an .okfignore that excludes every note;
+     also a command-line error
 
 Environment variables (all optional):
   OKF_GITLAB_HOSTS         (none)    comma-separated self-hosted GitLab hosts that --remote may ask,
@@ -1720,7 +1740,9 @@ def main() -> int:
         _v = "unknown"
     ap.add_argument("--version", action="version", version=f"okf-verify {_v}", help="print the version and exit")
     ap.add_argument("bundle", type=Path, help="the folder of notes to verify")
-    ap.add_argument("--repo", type=Path, action="append", default=[], metavar="DIR",
+    # str, not Path: `Path("")` is `.`, so an empty value — an unset shell variable in `--repo "$REPO"` — would arrive as
+    # the folder the shell is in. It is read as the string typed here and turned into a Path below, after the check.
+    ap.add_argument("--repo", type=str, action="append", default=[], metavar="DIR",
                     help="repository to resolve cited SHAs in (repeatable; the only repositories searched)")
     ap.add_argument("--host-paths", action="store_true",
                     help="also look up cited absolute paths outside the bundle and the --repo folders")
@@ -1745,14 +1767,46 @@ def main() -> int:
     end = argv.index("--") if "--" in argv else len(argv)
     a = ap.parse_args(["--strict" if x == "--strict-trust" else x for x in argv[:end]] + argv[end:])
 
+    typed_bundle = a.bundle
     try:
         is_dir = _guard().path_is_dir(a.bundle)
     except OSError as e:   # a folder above it that nobody may enter: stat raises instead of answering
-        print(f"error: {a.bundle} cannot be read ({e.strerror or type(e).__name__})", file=sys.stderr)
+        print(f"error: {typed_bundle} cannot be read ({e.strerror or type(e).__name__})", file=sys.stderr)
         return 2
     if not is_dir:
-        print(f"error: {a.bundle} is not a directory", file=sys.stderr)
+        print(f"error: {typed_bundle} is not a directory", file=sys.stderr)
         return 2
+
+    # A --repo the tool cannot use stops the run: a mistyped repository must never give a green run. The bundle is asked
+    # first, as it was, so a run with both a missing bundle and a missing --repo still names the bundle. The value is
+    # read as the string that was typed, because the folder it would become is not the one anybody asked for: `--repo ""`
+    # (an unset shell variable) is empty, and `Path("")` is `.`, which would search the folder the shell is in. A folder
+    # that is there but holds no repository is a different mistake and stays a skip with its printed reason, so only a
+    # definite answer refuses here; one this process may not enter raises and the run names it 'cannot read, skipped'.
+    # This path is stated twice — here, and again by git_dir() when the repository is opened — on purpose: the answer
+    # decides the exit code here, and the second look is what the report lists.
+    for spelled in a.repo:
+        if not spelled:
+            print("error: --repo is empty: pass the folder that holds the repository, or drop the flag", file=sys.stderr)
+            return 2
+        try:
+            usable = _guard().path_is_dir(Path(spelled))
+        except OSError:
+            continue
+        if not usable:
+            print(f"error: --repo {spelled} is not a directory", file=sys.stderr)
+            return 2
+
+    # The bundle and every --repo are resolved before any layer reads them (`resolved_root`). `root_of` compares a path
+    # with the root's spellings lexically, and a path under a root spelled `.` normalises to `d.md`, which never starts
+    # with `./`: an unpinned line citation under that root read UNRESOLVED (exit 0) and a document name that exists twice
+    # read ambiguous, where the absolute spelling gave the right verdict. The spelling the user typed stays in the
+    # report: the error lines, the skipped line and the `--json` bundle field all name what was asked for.
+    a.repo = [Path(spelled) for spelled in a.repo]
+    typed_repos = list(a.repo)
+    a.bundle = resolved_root(a.bundle)
+    a.repo = [resolved_root(r) for r in a.repo]
+    as_typed = {str(r): str(t) for t, r in zip(typed_repos, a.repo)}   # the report names the typed path, not the resolved one
 
     if a.check_config:
         try:
@@ -1761,7 +1815,7 @@ def main() -> int:
                 check_node(data["okf_check"], schema, "okf_check", a.bundle)
                 yaml11_booleans((a.manifest_dir or a.bundle) / "okf-base.yaml", schema)
         except BaseConfigError as e:
-            print(f"error: {a.bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
+            print(f"error: {typed_bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
             return 2
         inside = data.get("okf_check") if isinstance(data.get("okf_check"), dict) else {}
         for key in misplaced_keys(data, schema):
@@ -1779,7 +1833,7 @@ def main() -> int:
         if not os.access(d, os.R_OK | os.X_OK)
     )
     if unreadable:
-        print(f"error: {a.bundle} contains directories this process cannot read — "
+        print(f"error: {typed_bundle} contains directories this process cannot read — "
               f"no verdict is possible", file=sys.stderr)
         for d in unreadable[:3]:
             print(f"  unreadable: {d}", file=sys.stderr)
@@ -1794,7 +1848,7 @@ def main() -> int:
         # One cap for this process and for ignore-lib.sh, which not_ignored() runs: the bundle's setting, else the default.
         os.environ["OKF_MAX_NOTE_BYTES"] = str(_guard().note_cap(a.bundle))
     except BaseConfigError as e:
-        print(f"error: {a.bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
+        print(f"error: {typed_bundle / 'okf-base.yaml'} {e}", file=sys.stderr)
         return 2
     def git_dir(r: Path):
         """(True, "") when `r` holds a .git; else (False, why it could not be looked at, or "" for a folder without one)."""
@@ -1814,8 +1868,8 @@ def main() -> int:
         if r.resolve() not in seen_repos:  # passed twice with --repo: searched once
             seen_repos.add(r.resolve())
             repos.append(r)
-    skipped = [str(r) for r, found, why in looked if not found and not why]
-    unreadable = [{"path": str(r), "why": why} for r, found, why in looked if why]
+    skipped = [as_typed.get(str(r), str(r)) for r, found, why in looked if not found and not why]
+    unreadable = [{"path": as_typed.get(str(r), str(r)), "why": why} for r, found, why in looked if why]
     try:
         keep = not_ignored(a.bundle)
     except IgnoreRefused as e:
@@ -1868,9 +1922,9 @@ def main() -> int:
         return x
 
     if a.json:
-        report = {"bundle": str(a.bundle), "counts": counts,
+        report = {"bundle": str(typed_bundle), "counts": counts,
                   "no_checkable_claims": no_claims,
-                  "repos_searched": [str(r) for r in repos],
+                  "repos_searched": [as_typed.get(str(r), str(r)) for r in repos],
                   "repos_skipped_not_git": skipped,
                   "passed": not failed, "results": results}
         if hints:   # present only when okf-base.yaml has an okf_check option outside okf_check:

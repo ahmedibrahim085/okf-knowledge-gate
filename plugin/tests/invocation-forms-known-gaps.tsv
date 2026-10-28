@@ -1,0 +1,23 @@
+# Known gaps of the invocation-forms suite (release 0.9.56 "stop the false passes").
+#
+# One line per case key that still gives the WRONG verdict, four tab-separated fields:
+#
+#   <case key>	<what this form answers today>	<slug of the slice that fixes it>	<the exit code it gives today>
+#
+# The suite (plugin/scripts/invocation-forms.test.sh) reads this file and enforces five rules:
+#   - a listed case that fails prints KNOWN GAP and is not a failure;
+#   - a listed case that passes fails the run (the line is stale: the slice that fixes it has landed);
+#   - a listed case that fails with ANOTHER exit code than the fourth field records fails the run, so a crash or a
+#     refused argument cannot hide behind a known gap;
+#   - a line whose key names no case fails the run;
+#   - the lines are sorted by key, so a slice removes only its own line and two slices never edit the same one.
+#
+# A slice that fixes its line deletes that line in the same commit as the fix, and adds the case's controls and the
+# negative case to the suite. Do not renumber, reorder or reformat other slices' lines.
+#
+# A key of a case carried to a later release says so in the reason. The two action-report-mode-with-value cases are NOT
+# listed: they pass on 0.9.55. The 0.9.55 audit reported exit 64 for them because its Action probe ran in a directory
+# where the bundle path it passed does not exist, and okf-check answers 64 for a folder that is not there — the code
+# this file records for a missing bundle, not a wrong report.
+repo-is-a-repository-subfolder-happy-1	okf-verify exits 1 with "repos searched: NONE" when --repo is a folder inside the repository; carried to 0.9.60	repo-is-a-repository-subfolder	1
+trust-bare-string-verified-list-happy-1	a verified list of bare strings is skipped by Trust, so --strict-trust exits 0 where L1 warns and the fix exits 1; carried to 0.9.60	trust-bare-string-verified-list	0
