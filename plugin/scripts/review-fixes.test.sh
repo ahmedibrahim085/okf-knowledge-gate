@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for review findings parked in the backlog registers and fixed in 0.9.35 (cases S26-RF-* in docs/0.9.x-cases.md):
+# Tests for review findings found in review and fixed in 0.9.35 (cases S26-RF-*):
 #   - B-4 (narrow): a `verified.by` that only LOOKS like `human:` (Cyrillic and Greek lookalikes) is named as such;
 #   - the Config line names the real fault when okf-verify is missing or its check fails without a message (0.9.4);
 #   - --selftest probes the Config check and the lookalike rule.
@@ -181,22 +181,22 @@ grep -qx '  name: "bundle"' "$B/okf-base.yaml" \
   || bad "SC-2765 fallback name" "$(grep -n 'name:' "$B/okf-base.yaml" | head -1)"
 
 section "trust note in --json"
-# RM-20: the text report says once, under a Trust finding, that okf-check cannot prove who a person is. The --json report held
+# the text report says once, under a Trust finding, that okf-check cannot prove who a person is. The --json report held
 # only the finding objects, so a CI job or an agent reading it never saw that a `human:` entry is a claim in the file.
 B="$TMP/tn1"; mkb "$B"; vnote "$B/v.md" 'human:dana'
 "$CHECK" --json "$B" >"$TMP/tn1.json" 2>"$TMP/tn1.err"; rc=$?
 note=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["trust_findings"]), d.get("trust_note", "<absent>"))' "$TMP/tn1.json" 2>&1)
 { [ "$rc" = 0 ] && [ "$note" = "1 okf-check cannot prove who a person is. A human: entry is a claim in the file." ]; } \
-  && ok "RM-20 --json carries trust_note, the text report's sentence, beside a trust finding" \
-  || bad "RM-20 trust_note present" "rc=$rc trust_findings/trust_note: $note"
+  && ok "--json carries trust_note, the text report's sentence, beside a trust finding" \
+  || bad "trust_note present" "rc=$rc trust_findings/trust_note: $note"
 "$CHECK" "$B" >"$TMP/tn1.txt" 2>&1
 [ "$(grep -c 'cannot prove who a person is' "$TMP/tn1.txt")" = 1 ] && grep -q '^                   okf-check cannot prove who a person is. A human: entry is a claim in the file.$' "$TMP/tn1.txt" \
-  && ok "RM-20 the text report still prints the sentence once, indented under the Trust lines" \
-  || bad "RM-20 text sentence" "$(grep -n 'prove who' "$TMP/tn1.txt" | head -2)"
+  && ok "the text report still prints the sentence once, indented under the Trust lines" \
+  || bad "text sentence" "$(grep -n 'prove who' "$TMP/tn1.txt" | head -2)"
 B="$TMP/tn2"; mkb "$B"
 "$CHECK" --json "$B" >"$TMP/tn2.json" 2>"$TMP/tn2.err"
 note=$(python3 -I -c 'import json,sys; d=json.load(open(sys.argv[1])); print(len(d["trust_findings"]), d.get("trust_note", "<absent>"))' "$TMP/tn2.json" 2>&1)
-[ "$note" = "0 <absent>" ] && ok "RM-20 --json has no trust_note when there is no human: finding" || bad "RM-20 trust_note absent" "$note"
+[ "$note" = "0 <absent>" ] && ok "--json has no trust_note when there is no human: finding" || bad "trust_note absent" "$note"
 
 okf_test_summary
 [ "$FAIL" -eq 0 ] || exit 1

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for declared facts, okf_check.facts (public okf-knowledge-gate #15; cases S22-DF-* in docs/0.9.x-cases.md).
+# Tests for declared facts, okf_check.facts (public okf-knowledge-gate #15; cases S22-DF-*).
 #
 # A fact (a count, a version, a list of countries) is stated in many notes. The bundle declares its value once, with the
 # patterns that find where it is stated; a note that states another value is a FACT-CONFLICT, a house-rule error (exit 1,

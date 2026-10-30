@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for okf-verify --remote: a commit that exists only on the forge (public okf-knowledge-gate #6, first comment; cases
-# S24-RL-* in docs/0.9.x-cases.md; spec row RL-1). A local clone that is behind says UNRESOLVED for a commit a teammate read on
+# S24-RL-*; spec row RL-1). A local clone that is behind says UNRESOLVED for a commit a teammate read on
 # the forge. With --remote (or okf_check.verify.remote: true) okf-verify asks the forge's API, read-only, for each SHA no
 # searched clone holds: found there, it is CONFIRMED (remote) and the detail says the local copy is behind; not found or no
 # answer, it stays UNRESOLVED. The clone is never fetched into.

@@ -15,8 +15,15 @@ allowed-tools:
 # /okf:check
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" $ARGUMENTS
+"${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" "<bundle-dir>"
 ```
+
+The bundle path is everything before the first word that starts with `--`. If the argument text already quotes a path
+(`"my notes" --json`), use it as typed; a path that itself holds a word starting with `--` has to be quoted for the
+same reason. Put the path in double quotes as one argument and the flags after it, outside the quotes, so
+`sp ace/b --json` runs as `"sp ace/b" --json`: unquoted, that path reaches the tool as two bundles and the run exits
+64. A path that follows a flag (`--file <note>`, `--deleted <file>`) is quoted the same way. If the path holds a `"`,
+a `$` or a backtick, put it in single quotes instead, and write a `'` inside them as `'\''`.
 
 The bundle folder comes first. With none, the tool exits 64. Read the exit code with the table in the `okf` skill
 (`/okf:okf`): `2` means a gate could not run and is never a pass.

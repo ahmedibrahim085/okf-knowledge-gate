@@ -4,10 +4,6 @@
 # This is the HOUSE layer. It answers "is this valid OUR OKF?" — required fields
 # per type, controlled vocabularies, hygiene levels. The SPEC layer ("is this
 # valid OKF at all?") is the vendored okf_validate.py and needs no config.
-#
-# Values below are the ones verified against ~/.claude/lessons on 2026-07-30:
-# they caught 2 real errors (a status outside vocabulary, and a missing log.md)
-# and both RED probes fired.
 
 okf_version: "0.2"
 

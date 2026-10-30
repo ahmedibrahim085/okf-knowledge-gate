@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for the opt-in PostToolUse edit hook (okf-edit-hook.py, okf-knowledge-gate#8). Cases S9-H1, S9-N1, S9-N2,
-# S9-E1 in docs/gherkin/s09-edit-hook.feature.
+# S9-E1.
 #
 # The hook is driven the way Claude Code drives it (https://code.claude.com/docs/en/hooks): a PostToolUse JSON
 # object on stdin with an absolute `tool_input.file_path`; exit 2 with stderr is the warning Claude sees, exit 0 is

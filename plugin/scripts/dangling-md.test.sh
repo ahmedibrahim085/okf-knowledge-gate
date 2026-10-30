@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Tests for a dangling *.md symlink in a bundle (cases S14-DL-* in docs/0.9.x-cases.md and
-# docs/gherkin/s14-dangling-md.feature).
+# Tests for a dangling *.md symlink in a bundle (cases S14-DL-*).
 #
 # okflint (third party) raises FileNotFoundError on a dangling *.md link, so the whole L2 layer used to be
 # COULD NOT RUN. L1 and L3 skip such a link by design. L2 now runs on a mirror without the link and REPORTS it as an

@@ -24,7 +24,7 @@ sys.dont_write_bytecode = True   # a direct run must not leave scripts/__pycache
 sys.path.insert(0, str(HERE.parent / "vendor"))
 sys.path.insert(0, str(HERE))
 import okf_validate as v  # noqa: E402
-from okf_guard import OUTSIDE_WHY, read_note, refusal  # noqa: E402  (stat-based refusal and a bounded read)
+from okf_guard import OUTSIDE_WHY, read_note, refusal, shown  # noqa: E402  (stat-based refusal and a bounded read)
 
 _spec = importlib.util.spec_from_file_location("okf_trust", HERE / "okf-trust.py")
 trust = importlib.util.module_from_spec(_spec)
@@ -82,7 +82,9 @@ def main(argv: list) -> int:
     if too_large:
         print(f"{rel}: Trust error: the note was too large to read, so its trust claims were not checked: {too_large}")
     for severity, entry, reason in rows:
-        print(f"{rel}: Trust {severity}: {entry} {reason}")
+        # shown(): the reason quotes the note's own `by` text, and a control character in it would forge a report line
+        #. The text report spells it; the JSON copy in the whole run keeps the JSON escape.
+        print(f"{rel}: Trust {severity}: {entry} {shown(reason)}")
     # --strict-trust counts Trust warnings AND advisories, as the whole-bundle run does (its TRUST_FINDINGS is
     # warnings + advisories): an agent note verified by a human is the advisory form of the same claim, and the
     # whole-bundle run fails it. The near-miss actor wording is the validator's own, never typed again.

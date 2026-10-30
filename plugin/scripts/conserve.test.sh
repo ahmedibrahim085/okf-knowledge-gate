@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the conservation check, `okf-check <bundle> --conserve <ref>` (public okf-knowledge-gate #16; cases S23-CS-* in
-# docs/0.9.x-cases.md; spec row CS-1).
+# Tests for the conservation check, `okf-check <bundle> --conserve <ref>` (public okf-knowledge-gate #16; cases S23-CS-*; spec row CS-1).
 #
 # A change that reorganises notes (a split, a section moved to a companion note, a merge) should keep every line. Each line
 # removed since <ref> must reappear somewhere in the bundle (MOVED); a removed line with a new line at the same place is an

@@ -1,12 +1,11 @@
 #!/usr/bin/env bash
-# Tests for okf-export (an Obsidian-style vault folder -> a conformant OKF bundle).
+# Tests for okf-export (an Obsidian-style vault folder -> an OKF bundle; every note needs its own frontmatter).
 #
 # Every case drives the real command at its only seam, `okf-export <vault> <out>`, and reads the
 # effect where a user would: the files in <out>, the exit code, and the report. Fixture vaults are
 # built under a temp dir; nothing is ever written into a real vault.
 #
-# Case ids (S10-*) are the use cases in docs/0.9.x-cases.md and the scenarios in
-# docs/gherkin/s10-vault-export.feature.
+# Case ids (S10-*) are labels for the behaviours this suite checks; one case is one behaviour.
 set -uo pipefail
 
 HERE=$(cd -P "$(dirname "$0")" && pwd)
@@ -701,7 +700,7 @@ want=$(printf '# Log\n\n## 2026-05-23\n* a\n\n## 2026-05-22\n    - 2026-05-21: r
 # probes the output disk and, where it folds case, refuses names that differ only in case. The unit cases (CO-U*)
 # hand the rule an in-memory file list; CO-M* run main() with a fake probe result (a seam), because a case-folding
 # disk cannot be made in the Debian container. On macOS a case-sensitive APFS image (hdiutil, no sudo) gives the real
-# disks: BL-929a..b in the hdiutil block below run the same pair end to end without the seam.
+# disks: in the hdiutil block below run the same pair end to end without the seam.
 # folds <root-name> <vault-relative file>...: the (first, second) pairs okf-export refuses on a case-folding output.
 folds() {
   "$REALPY" - "$EXPORT" "$@" <<'PY' 2>&1
@@ -741,7 +740,7 @@ loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])
 mod = importlib.util.module_from_spec(importlib.util.spec_from_loader("okf_export", loader))
 loader.exec_module(mod)
 if sys.argv[2] in ("probe", "probe-kill"):
-    if sys.argv[2] == "probe-kill":   # BL-722: SIGKILL (untrappable) when the probe creates a file, as a kill -9 in that window
+    if sys.argv[2] == "probe-kill":   # SIGKILL (untrappable) when the probe creates a file, as a kill -9 in that window
         import os, signal
         real_open = os.open
         def killed(*a, **k):
@@ -774,22 +773,22 @@ seam probe "$P/not/yet" >/dev/null; got2=$(cat "$TMP/out.txt"); left2=$(ls -A "$
 { [ "$got1" = "$want" ] && [ "$got2" = "$want" ] && [ -z "$left1$left2" ]; } \
   && ok "S10-CO-P1 the output probe agrees with the disk ($want), also for an output not yet made, and leaves nothing behind" \
   || bad "S10-CO-P1 probe" "want $want got '$got1' '$got2' left: $left1 $left2"
-# BL-722: a kill -9 inside the probe window leaves nothing behind: the probe writes nothing (it compares the folder with its
+# a kill -9 inside the probe window leaves nothing behind: the probe writes nothing (it compares the folder with its
 # case-swapped name), so a SIGKILL at a write never fires and the answer still agrees with the disk.
 rc=$(seam probe-kill "$P/not/yet"); got3=$(cat "$TMP/out.txt"); left3=$(ls -A "$P")
 { [ "$rc" = 0 ] && [ "$got3" = "$want" ] && [ -z "$left3" ]; } \
-  && ok "BL-722 a SIGKILL at any write of the output probe leaves nothing beside <out>: the probe writes nothing (answer $want)" \
-  || bad "BL-722 probe debris" "rc=$rc want $want got '$got3' left: $left3"
-# BL-722b: the name of a volume's mount folder is looked up on the disk above it, so the write-free probe must not judge a
+  && ok "a SIGKILL at any write of the output probe leaves nothing beside <out>: the probe writes nothing (answer $want)" \
+  || bad "probe debris" "rc=$rc want $want got '$got3' left: $left3"
+# the name of a volume's mount folder is looked up on the disk above it, so the write-free probe must not judge a
 # case-sensitive volume by it. A 20 MB case-sensitive APFS image (hdiutil, no sudo) is mounted and <out> is made in its root.
 if command -v hdiutil >/dev/null 2>&1 && hdiutil create -size 20m -fs "Case-sensitive APFS" -volname okfcs "$TMP/cs.dmg" -quiet 2>/dev/null \
   && hdiutil attach "$TMP/cs.dmg" -mountpoint "$TMP/csmnt" -nobrowse -quiet 2>/dev/null; then
   seam probe "$TMP/csmnt/not/yet" >/dev/null; got4=$(cat "$TMP/out.txt")
-  # BL-722c as a user meets it: a vault on the case-sensitive volume holds Notes.md and notes.md, and <out> goes in a folder
+  # as a user meets it: a vault on the case-sensitive volume holds Notes.md and notes.md, and <out> goes in a folder
   # named ıx on this disk ('ıx'.swapcase() is 'IX', which APFS does not take for ıx). Exit 2 on a folding disk, never a lost note.
   V="$TMP/csmnt/kb"; O="$P/ıx/out"; mkdir -p "$P/ıx"; note "$V" Notes.md "UPPER"; note "$V" notes.md "lower"
   rc5=$(run "$V" "$O"); [ "$want" = True ] && want5=2 || want5=0
-  # BL-929: S10-CO-M1..M2 below fake the probe's answer (a seam); here the same pair runs end to end on two real disks. A
+  # S10-CO-M1..M2 below fake the probe's answer (a seam); here the same pair runs end to end on two real disks. A
   # vault on the case-sensitive volume holds sub/Notes.md and sub/notes.md. Exported onto this Mac's own disk it stops with
   # exit 2 and writes nothing when that disk folds case ($want); exported onto the case-sensitive volume both notes are written.
   V="$TMP/csmnt/kb2"; note "$V" sub/Notes.md "UPPER"; note "$V" sub/notes.md "lower"
@@ -800,30 +799,30 @@ if command -v hdiutil >/dev/null 2>&1 && hdiutil create -size 20m -fs "Case-sens
   if [ "$want" = True ]; then
     { [ "$rc7" = 2 ] && grep -qxF "okf-export: sub/Notes.md and sub/notes.md would be written over each other: $O7 is on a disk that does not tell upper from lower case; rename one of them in the vault" "$TMP/out7.txt" \
       && [ -z "$left7" ]; } \
-      && ok "BL-929a a vault on a real case-sensitive volume exported onto this Mac's case-insensitive disk: Notes.md + notes.md stop the export (exit 2), named, nothing written" \
-      || bad "BL-929a real case-folding output" "rc=$rc7 report: $(head -2 "$TMP/out7.txt" | tr '\n' '|') out: $left7"
+      && ok "a vault on a real case-sensitive volume exported onto this Mac's case-insensitive disk: Notes.md + notes.md stop the export (exit 2), named, nothing written" \
+      || bad "real case-folding output" "rc=$rc7 report: $(head -2 "$TMP/out7.txt" | tr '\n' '|') out: $left7"
   else
-    printf '  SKIP  BL-929a this disk does not fold case, so it cannot be the case-folding output\n'
+    printf '  SKIP  real-disk case: this disk does not fold case, so it cannot be the case-folding output\n'
   fi
   { [ "$rc8" = 0 ] && [ "$up8" = UPPER ] && [ "$lo8" = lower ]; } \
-    && ok "BL-929b the same vault exported onto the real case-sensitive volume: both notes written, each with its own text (exit 0)" \
-    || bad "BL-929b real case-sensitive output" "rc=$rc8 report: $(head -2 "$TMP/out8.txt" | tr '\n' '|') Notes.md='$up8' notes.md='$lo8'"
+    && ok "the same vault exported onto the real case-sensitive volume: both notes written, each with its own text (exit 0)" \
+    || bad "real case-sensitive output" "rc=$rc8 report: $(head -2 "$TMP/out8.txt" | tr '\n' '|') Notes.md='$up8' notes.md='$lo8'"
   rm -rf "$O7"
-  [ "$got4" = False ] && ok "BL-722b an <out> in the root of a case-sensitive volume probes as case-sensitive (False)" \
-    || bad "BL-722b mount root" "got '$got4' for a case-sensitive APFS volume"
-  [ "$rc5" = "$want5" ] && ok "BL-722c Notes.md + notes.md exported into a folder named ıx: exit $want5 on this disk (case-insensitive: $want), no note lost" \
-    || bad "BL-722c ıx output folder" "rc=$rc5 want $want5 report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(ls "$O" 2>/dev/null | tr '\n' ' ')"
+  [ "$got4" = False ] && ok "an <out> in the root of a case-sensitive volume probes as case-sensitive (False)" \
+    || bad "mount root" "got '$got4' for a case-sensitive APFS volume"
+  [ "$rc5" = "$want5" ] && ok "Notes.md + notes.md exported into a folder named ıx: exit $want5 on this disk (case-insensitive: $want), no note lost" \
+    || bad "ıx output folder" "rc=$rc5 want $want5 report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(ls "$O" 2>/dev/null | tr '\n' ' ')"
   rm -rf "$P/ıx"
 else
-  printf '  SKIP  BL-722b..c no hdiutil or no case-sensitive APFS image here (macOS only)\n'
+  printf '  SKIP  real-disk cases: no hdiutil or no case-sensitive APFS image here (macOS only)\n'
 fi
-# BL-722c: the probe agrees with the disk for an output whose nearest folder has a non-ASCII name: ıx (dotless i), straße,
+# the probe agrees with the disk for an output whose nearest folder has a non-ASCII name: ıx (dotless i), straße,
 # ﬁle (a ligature) and İx. Their swapcase is not the name the disk folds them to.
 mkdir -p "$P/ıx" "$P/straße" "$P/ﬁle" "$P/İx"; got6=""
 for d in ıx straße ﬁle İx; do seam probe "$P/$d/out" >/dev/null; got6="$got6$d=$(cat "$TMP/out.txt") "; done
 rm -rf "$P/ıx" "$P/straße" "$P/ﬁle" "$P/İx"
-[ "$got6" = "ıx=$want straße=$want ﬁle=$want İx=$want " ] && ok "BL-722c the probe agrees with the disk ($want) under folders named ıx, straße, ﬁle and İx" \
-  || bad "BL-722c non-ASCII folder names" "want $want for each, got: $got6"
+[ "$got6" = "ıx=$want straße=$want ﬁle=$want İx=$want " ] && ok "the probe agrees with the disk ($want) under folders named ıx, straße, ﬁle and İx" \
+  || bad "non-ASCII folder names" "want $want for each, got: $got6"
 
 V="$TMP/co/kb"; O="$TMP/co/out"; note "$V" a.md "# A"; mkdir -p "$O"; chmod 555 "$O"
 if [ "$(id -u)" = 0 ]; then
@@ -852,14 +851,14 @@ else
     || bad "S10-CO-M2 sensitive output" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
 fi
 
-# BL-929c: S10-PO-17 gives two notes NFC and NFD output names through a seam. On a disk that keeps café.md in NFC and in NFD
+# S10-PO-17 gives two notes NFC and NFD output names through a seam. On a disk that keeps café.md in NFC and in NFD
 # as two files (the Debian gate; APFS, case-sensitive or not, stores one) a real vault holds both, and the export stops
 # with exit 2 before any write, naming both (escaped, as they look alike).
 U="$TMP/co/nfd"; O="$TMP/co/nfd-out"; mkdir -p "$U"
 NFC_N=$(printf 'caf\303\251'); NFD_N=$(printf 'cafe\314\201')
 printf x > "$U/$NFC_N.md"; printf x > "$U/$NFD_N.md"; nfiles=("$U"/*.md)
 if [ "${#nfiles[@]}" -ne 2 ]; then
-  printf '  SKIP  BL-929c this disk stores café.md in NFC and NFD as one file (APFS): no vault can hold both (run on the Debian gate)\n'
+  printf '  SKIP  real-disk case: this disk stores café.md in NFC and NFD as one file (APFS), so no vault can hold both (run on the Debian gate)\n'
 else
   note "$U" "$NFC_N.md" "composed"; note "$U" "$NFD_N.md" "decomposed"; rc=$(run "$U" "$O")
   # The names are printed escaped (café.md, caf\xe9.md). GNU grep -F under C.UTF-8 does not match a pattern holding
@@ -867,11 +866,11 @@ else
   { [ "$rc" = 2 ] && grep -qF 'u0301.md and caf' "$TMP/out.txt" \
     && grep -qF 'xe9.md would be written over each other: their output names differ only in Unicode normalisation' "$TMP/out.txt" \
     && [ ! -e "$O" ]; } \
-    && ok "BL-929c a real vault holding café.md in NFC and in NFD stops the export (exit 2) before any write, naming both" \
-    || bad "BL-929c real NFC/NFD vault" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
+    && ok "a real vault holding café.md in NFC and in NFD stops the export (exit 2) before any write, naming both" \
+    || bad "real NFC/NFD vault" "rc=$rc report: $(head -2 "$TMP/out.txt" | tr '\n' '|') out: $(find "$O" -type f 2>/dev/null | tr '\n' ' ')"
 fi
 
-# --- F-5 (0.9.14 and 0.9.15 registers, spec row PO-1): okf-export polish ------------------------------------------------------------
+# --- F-5 (spec row PO-1): okf-export polish ------------------------------------------------------------
 # S10-PO-1: --version on okf-export and okf-verify prints the plugin version (plugin.json), so LT-31a compares versions.
 want=$("$REALPY" -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$HERE/../.claude-plugin/plugin.json")
 ev=$("$EXPORT" --version 2>&1); erc=$?; vv=$("$HERE/okf-verify" --version 2>&1); vrc=$?
@@ -1252,7 +1251,7 @@ rc=$(run "$V" "$TMP/po15c/out")
 { [ "$rc" = 0 ] && grep -qF "$(printf '(h.md#cafe\314\201-menu)')" "$TMP/po15c/out/u.md"; } \
   && ok "S10-PO-15c an NFD heading matches an NFC link (the anchor keeps the heading's NFD form, S10-PO-30)" || bad "S10-PO-15c NFC heading" "rc=$rc $(head -2 "$TMP/out.txt" | tr '\n' ' ') $(grep -o '(h.md#[^)]*)' "$TMP/po15c/out/u.md" | od -c | head -2 | tr '\n' ' ')"
 # 15d: a lazy underline (`===` with no '>') or an underline under a lazy paragraph line of a deeper quote makes no heading,
-# and `---` there is a break; `> Kept` / `> ===` is a heading (BL-884), as `Kept` / `===` outside a quote.
+# and `---` there is a break; `> Kept` / `> ===` is a heading, as `Kept` / `===` outside a quote.
 V="$TMP/po15d/vault"; note "$V" q1.md "> Title
 ==="; note "$V" q2.md "> > a
 > ==="; note "$V" q3.md "> > b
@@ -1262,7 +1261,7 @@ V="$TMP/po15d/vault"; note "$V" q1.md "> Title
 note "$V" u.md "[[q1#Title]] [[q2#a]] [[q3#b]] [[q4#Kept]] [[q5#Kept]]"
 rc=$(run "$V" "$TMP/po15d/out")
 { [ "$rc" = 1 ] && [ "$(grep -c 'missing heading \[\[q[1-3]#' "$TMP/out.txt")" = 3 ] && grep -qF '(q4.md#kept)' "$TMP/po15d/out/u.md" && grep -qF '(q5.md#kept)' "$TMP/po15d/out/u.md"; } \
-  && ok "S10-PO-15d a lazy === and a --- break in a quote make no heading; > Kept / > === does (BL-884), as outside a quote" \
+  && ok "S10-PO-15d a lazy === and a --- break in a quote make no heading; > Kept / > === does, as outside a quote" \
   || bad "S10-PO-15d quote underline" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
 # 15e: the line for a file that leads outside the vault names it as the vault sees it (its name and its link text), never
 # the host path it resolves to.
@@ -1290,12 +1289,12 @@ b c
 > > ==="
 note "$V" u.md "[[r1#b c]] [[r2#b c]] [[r3#b c]] [[r4#b]] [[r5#a b]]"
 rc=$(run "$V" "$TMP/po15g/out")
-# r5 is a heading in CommonMark (`b` is a lazy line of the deeper quote's paragraph, `> > ===` its underline): BL-884 reads it
+# r5 is a heading in CommonMark (`b` is a lazy line of the deeper quote's paragraph, `> > ===` its underline): reads it
 { [ "$rc" = 1 ] && [ "$(grep -c 'missing heading \[\[r[1-4]#' "$TMP/out.txt")" = 4 ] && [ "$(grep -o '\.md#[a-z-]*' "$TMP/po15g/out/u.md")" = ".md#a-b" ]; } \
   && ok "S10-PO-15g dash lines, quoted list items, indented code and lazy lines in quotes give no anchor CommonMark lacks; r5 a b is one it has" \
   || bad "S10-PO-15g quote shapes" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300) | $(tail -1 "$TMP/po15g/out/u.md" 2>/dev/null)"
 
-# BL-884: a setext heading inside a block quote is a heading, at any quote depth and in a quoted list item; a paragraph that
+# a setext heading inside a block quote is a heading, at any quote depth and in a quoted list item; a paragraph that
 # holds a lazy line which could start a block (here an indented `# foo`) gives no anchor (that line's text is not read), so
 # a link to it fails loudly and never gets an anchor CommonMark lacks.
 V="$TMP/bl884/vault"; note "$V" a.md "> Title
@@ -1312,27 +1311,27 @@ note "$V" u.md "see [[a#Title]] [[a#Deep]] [[a#Item]] [[z#Top # foo]]"
 rc=$(run "$V" "$TMP/bl884/out")
 { [ "$rc" = 1 ] && grep -qF '(a.md#title)' "$TMP/bl884/out/u.md" && grep -qF '(a.md#deep)' "$TMP/bl884/out/u.md" \
   && grep -qF '(a.md#item)' "$TMP/bl884/out/u.md" && [ "$(grep -c 'missing heading' "$TMP/out.txt")" = 1 ] && ! grep -qF 'z.md#' "$TMP/bl884/out/u.md"; } \
-  && ok "BL-884 setext headings inside quotes (nested, in a quoted item) resolve; one over an unread lazy line fails loudly" \
-  || bad "BL-884 setext in a quote" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+  && ok "setext headings inside quotes (nested, in a quoted item) resolve; one over an unread lazy line fails loudly" \
+  || bad "setext in a quote" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
 
-# RM-230b, SC-export417: a lazy line (no '>') stays in the quote only if the quote's own reader has a paragraph open there.
-# RM-230b: `lazy` goes on with the item paragraph in the quote, so `- # Head` after it starts a new list: a heading.
+# SC-export417: a lazy line (no '>') stays in the quote only if the quote's own reader has a paragraph open there.
+# `lazy` goes on with the item paragraph in the quote, so `- # Head` after it starts a new list: a heading.
 V="$TMP/rm230b/vault"; note "$V" a.md "> - x
 lazy
 - # Head"; note "$V" u.md "see [[a#Head]]"
 rc=$(run "$V" "$TMP/rm230b/out")
 { [ "$rc" = 0 ] && grep -qF '(a.md#head)' "$TMP/rm230b/out/u.md"; } \
-  && ok "RM-230b a heading after a quote whose last line is lazy is read: [[a#Head]] resolves (exit 0)" \
-  || bad "RM-230b heading after a lazy quote line" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
-# BL-886b: after a heading in a quoted list item no paragraph is open, so the 4-space line is no lazy line: the quote ends
+  && ok "a heading after a quote whose last line is lazy is read: [[a#Head]] resolves (exit 0)" \
+  || bad "heading after a lazy quote line" "rc=$rc $(tr '\n' ' ' < "$TMP/out.txt" | cut -c1-300)"
+# after a heading in a quoted list item no paragraph is open, so the 4-space line is no lazy line: the quote ends
 # and the line is indented code, its link stays as written.
 V="$TMP/bl886b/vault"; note "$V" n.md "# N"; note "$V" a.md " >1. # Dup
 >     1. # Dup
     [[n]]"
 rc=$(run "$V" "$TMP/bl886b/out")
 { [ "$rc" = 0 ] && grep -qxF '    [[n]]' "$TMP/bl886b/out/a.md"; } \
-  && ok "BL-886b SC-export417 a 4-space line after a heading in a quoted list item is code: its [[n]] stays as written" \
-  || bad "BL-886b code after a quoted item" "rc=$rc $(grep -n 'n' "$TMP/bl886b/out/a.md" 2>&1 | tr '\n' ' ')"
+  && ok "SC-export417 a 4-space line after a heading in a quoted list item is code: its [[n]] stays as written" \
+  || bad "code after a quoted item" "rc=$rc $(grep -n 'n' "$TMP/bl886b/out/a.md" 2>&1 | tr '\n' ' ')"
 # D23-a: an HTML block inside a quote is raw HTML (4.6) as it is outside one: its [[b]] stays as written. A line with no
 # '>' after it is no lazy line (no paragraph is open), so it is read outside the quote and its link is converted.
 V="$TMP/d23a/vault"; note "$V" b.md "# B"; note "$V" a.md "> <div>
@@ -2172,13 +2171,13 @@ rc=$?
   || bad "S10-PO-24 early TooDeep" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt")"
 
 # S10-PO-25: the two texts a user reads, the README and the plugin's SKILL.md, say what the export reads in block quotes
-# since BL-884 and D23-a: setext headings are headings and raw HTML is copied unchanged, inside block quotes too; the old
+# since and D23-a: setext headings are headings and raw HTML is copied unchanged, inside block quotes too; the old
 # limit sentence is gone. The README sits above the plugin folder: a copy of the plugin alone has none, shown as a SKIP.
 for doc in "$HERE/../skills/okf/SKILL.md" "$HERE/../../README.md"; do
   if [ ! -f "$doc" ]; then printf '  SKIP  S10-PO-25 %s not found\n' "$(basename "$doc")"; continue; fi
   { ! grep -qF 'a setext heading inside a block quote is not recognised' "$doc" && ! grep -qF 'outside block quotes' "$doc" \
     && [ "$(grep -cF 'inside block quotes too' "$doc")" -ge 2 ]; } \
-    && ok "S10-PO-25 $(basename "$doc") says setext headings and raw HTML are read inside block quotes too (BL-884, D23-a), no old limit" \
+    && ok "S10-PO-25 $(basename "$doc") says setext headings and raw HTML are read inside block quotes too, no old limit" \
     || bad "S10-PO-25 $(basename "$doc")" "the old setext-in-quote or HTML-outside-quotes limit is still stated, or 'inside block quotes too' is missing for headings and raw HTML"
 done
 
@@ -2269,6 +2268,40 @@ PY
 rc=$?
 [ "$rc" = 0 ] && ok "S10-PO-34 a 1 MB paragraph (unclosed openers, backtick runs of 1-3 at 24 MB, open tags, closed items, one span over 60 000 lines) costs linear time: 8 times the size at most 24 times as much plus 0.25 s (a quadratic control is caught)" \
   || bad "S10-PO-34 1 MB paragraph" "rc=$rc $(tr '\n' ';' < "$TMP/out.txt")"
+
+# --- the Example in --help runs as written, a missing link included -----------------------------
+# The Example is the command shape a user copies, so it has to be true on a vault that reports a problem.
+# It read `okf-export ~/vault ./bundle && okf-check ./bundle`: on a vault with a missing link the export
+# exits 1 (and the bundle IS written, as the same help's exit-code paragraph says), so `&&` skipped the
+# gate and the user never learned the bundle was broken. The two commands now sit on their own lines.
+# This case EXECUTES the Example out of --help, with the temp vault and a temp working folder substituted
+# and HOME in a temp folder, so it can neither read nor write a real ~ or a real vault.
+V="$TMP/exhelp/vault"; note "$V" a.md 'See [[nothere]].'
+mkdir -p "$TMP/exhelp/home" "$TMP/exhelp/cwd"
+HOME="$TMP/exhelp/home" "$EXPORT" --help > "$TMP/exhelp/help.txt" 2>&1
+# Only the INDENTED lines are commands: the Example block also carries a sentence about exit 2, and a
+# prose line must not be executed as one.
+sed -n '/^Example:/,/^$/p' "$TMP/exhelp/help.txt" | sed '1d' | sed '/^  /!d' | sed "s#~/vault#$V#g" > "$TMP/exhelp/example.sh"
+( cd "$TMP/exhelp/cwd" && HOME="$TMP/exhelp/home" PATH="$HERE:$PATH" bash "$TMP/exhelp/example.sh" ) > "$TMP/exhelp/run.txt" 2>&1
+ex_rc=$?
+grep -qF 'missing target [[nothere]]' "$TMP/exhelp/run.txt" \
+  && ok "export-help-example-runs-the-check-broken-link-1 the Example's export reports the missing link (exit 1, bundle written)" \
+  || bad "export-help-example-runs-the-check-broken-link-1 the Example's export reports the missing link" "rc=$ex_rc run: $(head -3 "$TMP/exhelp/run.txt" | tr '\n' ';')"
+grep -qE '^okf-check [0-9]' "$TMP/exhelp/run.txt" \
+  && ok "export-help-example-runs-the-check-broken-link-1b the Example still runs okf-check when the export exits 1" \
+  || bad "export-help-example-runs-the-check-broken-link-1b the Example still runs okf-check after an export that wrote a bundle with problems" "example rc=$ex_rc, no okf-check verdict in: $(head -3 "$TMP/exhelp/run.txt" | tr '\n' ';')"
+[ -f "$TMP/exhelp/cwd/bundle/a.md" ] \
+  && ok "export-help-example-runs-the-check-broken-link-1c the Example writes its bundle in the folder it is run from" \
+  || bad "export-help-example-runs-the-check-broken-link-1c Example bundle location" "no bundle/a.md under the temp cwd; example was: $(tr '\n' ';' < "$TMP/exhelp/example.sh")"
+# Running the check unconditionally is only right for exit 0 and exit 1. On exit 2 nothing was written, so
+# ./bundle is either absent or an older bundle, and checking it would report on the wrong thing: the help
+# says so, next to the example and in the sentence about <out>, and both sentences are pinned here.
+grep -qF 'After exit 2 nothing was written: do not check ./bundle.' "$TMP/exhelp/help.txt" \
+  && ok "export-help-example-runs-the-check-broken-link-2 --help says not to check the bundle after exit 2" \
+  || bad "export-help-example-runs-the-check-broken-link-2 the exit-2 warning after the example" "no 'After exit 2 nothing was written: do not check ./bundle.' in --help: $(grep -F 'exit 2' "$TMP/exhelp/help.txt" | tr '\n' ';')"
+grep -qF 'Run okf-check on <out> after exit 0 or 1.' "$TMP/exhelp/help.txt" \
+  && ok "export-help-example-runs-the-check-broken-link-2b the sentence about <out> names the exits after which the check runs" \
+  || bad "export-help-example-runs-the-check-broken-link-2b the sentence about <out>" "no 'Run okf-check on <out> after exit 0 or 1.': $(grep -F 'okf-check on' "$TMP/exhelp/help.txt" | tr '\n' ';')"
 
 echo
 echo "  $PASS passed, $FAIL failed"

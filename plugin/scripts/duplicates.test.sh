@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the limits of `okf-check --duplicates` / `--duplicates-body` (backlog F-7; cases S25-DU-* in docs/0.9.x-cases.md).
+# Tests for the limits of `okf-check --duplicates` / `--duplicates-body` (cases S25-DU-*).
 #
 # The report is advisory (always exit 0), so what it says about how far it got is the whole contract: a stub body is
 # not a duplicate signal, the time limit covers reading the notes too, and a cut in the body pass names that pass.

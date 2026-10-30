@@ -8,7 +8,10 @@
 # Override per-machine with OKF_PINNED_VERSIONS=/path/to/your/file
 
 okf_validate  7ed3084267d050f198eea6cd9f67d5357e9ed047
-okflint       0.5.0
-# Where the SUPPORTED okflint comes from while okflint#11 is unmerged: the fork commit that carries the
-# BOM, non-UTF-8 and impossible-date fixes. After it merges, delete this line (PyPI okflint==<pin> is then enough).
-okflint_source git+https://github.com/ahmedibrahim085/okflint@c505b8405b9ef07396a81734c2bdfaa33c57aa25
+okflint       0.5.1
+# Why 0.5.1 and no okflint_source: 0.5.1 is the first release that carries every fix this gate needs from okflint, so
+# no fork build is pinned any more — the byte order mark, a non-UTF-8 note and an impossible date, all
+# three through pull request (merged 2026-10-23), and the OKF v0.2 ISO 8601 datetime timestamps. 0.5.0 drew
+# a false S204 advisory on a note whose stale_after is a datetime, which OKF v0.2 allows. The gate still reads
+# an okflint_source line if a fork pin is ever needed again; the installer and CI read this file, never a version of
+# their own.

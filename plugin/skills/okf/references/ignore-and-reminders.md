@@ -13,5 +13,5 @@ slow one (2 s limit) or a failing one: the reminder is unchanged.
 A `.okfignore` at the bundle root (one glob per line, `#` comments, trailing `/` = directories
 only, no `/` = a name at any depth, a leading `**/` = any depth with the root, `!` unsupported) keeps paths such as `archive/` or `.trash/`
 out of every layer, `okf-verify` included. The run prints `ignore: N file(s) excluded`; a file that
-excludes every note exits 2. Never create it yourself: only `okf-check --init-ignore <bundle>`
+excludes every note exits 2. Never create it yourself: only `okf-check --init-ignore "<bundle>"`
 writes it, once, on the owner's request.

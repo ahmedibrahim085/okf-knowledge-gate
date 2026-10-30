@@ -10,7 +10,7 @@
 #
 # Part A: the readers as a user runs them (okf-check, okf-verify, okf-export) over every form.
 # Part B: the two historic bugs that need more than "does not crash", replayed from the same list:
-#   B1 (BL-722): okf-export's case probe must agree with the disk for every name form.
+#   B1: okf-export's case probe must agree with the disk for every name form.
 #   B2 (LT-14, 0.5.12 fixed in 0.5.18): crash isolation must never delete a file outside the bundle through a link.
 set -uo pipefail
 
@@ -161,7 +161,7 @@ while IFS=$'\t' read -r id slot spec build why; do
 done < "$FORMS"
 [ "$NFORMS" -ge 20 ] && ok "the list holds $NFORMS forms (at least 20)" || bad "the list is too short" "$NFORMS forms in nasty-inputs.tsv"
 
-# --- B1: the case probe agrees with the disk for every name form (BL-722) -------------------
+# --- B1: the case probe agrees with the disk for every name form -------------------
 cat > "$TMP/probe.py" <<'PY'
 import importlib.machinery, importlib.util, os, pathlib, sys
 loader = importlib.machinery.SourceFileLoader("okf_export", sys.argv[1])

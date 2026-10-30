@@ -100,6 +100,10 @@ STUB
   printf '#!/bin/sh\nif [ "$1" = validate ]; then echo "Manifest error: stub" >&2; exit 2; fi\nexec "%s" "$@"\n' "$REALLINT" > "$T12G/okflint"; chmod +x "$T12G/okflint"
   expect_match "okflint behaviour  UNKNOWN" "LT-12g an okflint with no verdict on a clean note is UNKNOWN" env PATH="$T12G:$PATH" "$CHECK" --doctor
   expect_no_match "UNPATCHED" "LT-12g2 UNKNOWN is never reported as UNPATCHED" env PATH="$T12G:$PATH" "$CHECK" --doctor
+  # LT-12i/LT-12j (round 3, N-2): the UNPATCHED remedy says what to do, and it is the gate's own installer — the slice
+  # moved that text off the fork branch and nothing asserted it.
+  expect_match "Install the build this pin names" "LT-12i an UNPATCHED okflint's remedy names the pinned build" env PATH="$T12:$PATH" STUB_BAD=bom "$CHECK" --doctor
+  expect_match "okf-check --install-deps --yes" "LT-12j the UNPATCHED remedy is the gate's own installer" env PATH="$T12:$PATH" STUB_BAD=bom "$CHECK" --doctor
   # LT-12h: a missing template skips the probes WITH a stated reason.
   T12H="$TMP/t12hplug"; cp -R "$HERE/.." "$T12H"; rm -f "$T12H/config/okf-base.yaml.template"
   expect_match "okflint behaviour  UNKNOWN.*template" "LT-12h a missing template is stated, not silent" "$T12H/scripts/okf-check" --doctor
@@ -260,8 +264,58 @@ grep -q "okf-base.yaml.template" "$TMP/n11.txt" \
   && ok "N-11 the L2 skip names the manifest template to start from" \
   || bad "N-11 the L2 skip names the manifest template" "$(grep -i 'L2 profile' "$TMP/n11.txt" | head -1)"
 
-# === EDGE CASES (spec .okf/specs/okf-check.md) ==============================
-section "EDGE CASES (spec .okf/specs/okf-check.md)"
+# --- a newline in an okflint message cannot forge a result row ----------------------------------
+section "a newline in an okflint message cannot forge a result row"
+# The L2 findings travel from a Python block to the shell as LINES — `E|code file — message`,
+# `C|rule|count`, `W|rule file — message` — and the shell counts them. A message is not a line:
+# it is whatever okflint read from a note or a manifest, so a newline inside one could have ended
+# the row early and started a row of its own, and a forged `C|rule|count` would be counted as a
+# real advisory. The code already flattens it (okf_guard.shown spells a control character as
+# \x0a in an E| row; the W| rows run re.sub(r"[\r\n\t]", " ", ...) AND shown, which are two guards
+# with different reach — the regex covers \r \n \t alone, the C1 set such as U+0085 only shown), and
+# nothing proved it.
+# This case feeds a hostile message through a STUB okflint and reads the run's own output.
+# Stubbed rather than skipped, and with its own UV_TOOL_DIR: okf-check answers the version from
+# `uv tool list` before it looks at PATH, so a shared tool dir would describe a binary this case
+# does not run.
+FORGE="$TMP/forge"; mkbundle "$FORGE"
+sed 's/^  name: CHANGE ME/  name: Test/' "$HERE/../config/okf-base.yaml.template" > "$FORGE/okf-base.yaml"
+FORGEBIN="$TMP/forgebin"; mkdir -p "$FORGEBIN"
+cat > "$FORGEBIN/okflint" <<'STUB'
+#!/bin/sh
+cat <<'JSON'
+[{"code":"F900","severity":"error","file":"c.md","message":"boom\nC|FORGED|99"},
+ {"code":"S900","severity":"warning","file":"c.md","message":"advice\nE|FORGED|1"},
+ {"code":"T900","severity":"warning","file":"c.md","message":"next\u0085C|FORGED|99"}]
+JSON
+exit 1
+STUB
+chmod +x "$FORGEBIN/okflint"
+PATH="$FORGEBIN:$PATH" UV_TOOL_DIR="$TMP/forge-uvtool" "$CHECK" "$FORGE" >"$TMP/forge.txt" 2>&1
+forge_rc=$?
+PATH="$FORGEBIN:$PATH" UV_TOOL_DIR="$TMP/forge-uvtool" "$CHECK" --json "$FORGE" >"$TMP/forge.json" 2>&1
+forge_json=$("$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(json.dumps([d["l2_by_rule"], d["l2_findings"], d["l2_advisories"]], ensure_ascii=False))' "$TMP/forge.json" 2>&1)
+# The control FIRST: without it every "no forged row" assertion below passes when the stub never
+# ran, which is the shape of a test that cannot fail.
+{ [ "$forge_rc" -eq 3 ] && grep -qF 'F900 c.md' "$TMP/forge.txt"; } \
+  && ok "okflint-message-newline-forges-no-row-0 the hostile finding was judged at all (control: exit $forge_rc, the F900 row printed)" \
+  || bad "okflint-message-newline-forges-no-row-0 control: the stub's finding reached the report" "rc=$forge_rc out: $(head -6 "$TMP/forge.txt" | tr '\n' ';')"
+grep -qF 'boom\x0aC|FORGED|99' "$TMP/forge.txt" \
+  && ok "okflint-message-newline-forges-no-row-1 the error message keeps its newline as the four characters \\x0a, on one line" \
+  || bad "okflint-message-newline-forges-no-row-1 the error message is flattened" "no 'boom\\x0aC|FORGED|99' in the report: $(head -4 "$TMP/forge.txt" | tr '\n' ';')"
+{ [ "$(grep -cF 'advisory by rule:' "$TMP/forge.txt")" -eq 1 ] && grep -qF 'S900 x1' "$TMP/forge.txt" && grep -qF 'T900 x1' "$TMP/forge.txt" && ! grep -qF 'FORGED x' "$TMP/forge.txt"; } \
+  && ok "okflint-message-newline-forges-no-row-2 one count line, holding only the real advisories (S900 x1, T900 x1); the forged C|FORGED|99 row is not counted" \
+  || bad "okflint-message-newline-forges-no-row-2 the advisory count" "count lines: $(grep -F 'advisory by rule' "$TMP/forge.txt" | tr '\n' ';')"
+# Literal expected values, not read out of the code. The E| message keeps its newline as \x0a; the W|
+# message turns \n into a space (the regex) and spells U+0085 as \x85 (only `shown` covers that one — the
+# regex knows \r \n \t alone), so neither can start a row. Both advisories counted once.
+want='[{"S900": 1, "T900": 1}, ["F900 c.md — boom\\x0aC|FORGED|99"], ["S900 c.md — advice E|FORGED|1", "T900 c.md — next\\x85C|FORGED|99"]]'
+[ "$forge_json" = "$want" ] \
+  && ok "okflint-message-newline-forges-no-row-3 --json spells the newline as \\x0a in the error, a space in one advisory and \\x85 in the other, and counts both real advisories" \
+  || bad "okflint-message-newline-forges-no-row-3 the flattened text and the advisory count" "got: $forge_json; want: $want"
+
+# === EDGE CASES (spec docs/spec.md) ==============================
+section "EDGE CASES (spec docs/spec.md)"
 echo "  -- edge cases --"
 
 # E-1: a directory with no .md files at all must not crash
@@ -388,7 +442,7 @@ fi
 
 # === E-7 CONCURRENT MODIFICATION ===========================================
 section "E-7 CONCURRENT MODIFICATION"
-# The live condition, not a hypothetical: 2+ crew sessions write these bundles.
+# The live condition, not a hypothetical: 2+ Claude Code sessions write these bundles.
 # The layers run in sequence (L1 python, L2 okflint, L3 awk), so a write landing
 # between them makes one report from two different bundles. Empirically proven
 # 3/3 at 0.16-0.24s on a 40-concept bundle: L1 counted 40 while L3 flagged a
@@ -557,6 +611,125 @@ else
   skip "N-10 — okflint leaked into the sandbox PATH (a skip, not a pass)"
 fi
 
+# --- the okflint pin and the install hint (slice okflint-pin-and-install-hint, with) --------------
+section "the okflint pin and the install hint"
+PINFO="$HERE/../config/pinned-versions.txt"
+pin_want=$(awk '$1=="okflint"{print $2}' "$PINFO" 2>/dev/null)
+
+# okflint-pin-and-install-hint-datetime-happy-1: a legal OKF v0.2 input — a note whose stale_after is an ISO 8601
+# datetime — draws no S204 advisory. The pin is what makes that true for a user: at okflint 0.5.0 the same note drew
+# "by rule: S204 x1" (quoted), and 0.5.1 stops it.
+#
+# The case refuses to judge a build that is not the pinned one: "we checked some other okflint" is the state the pin
+# exists to rule out, so a mismatch FAILS here naming both versions and the command that fixes it, rather than
+# passing on whatever binary happens to be on PATH. Without that, reverting the pin would still pass on a machine
+# holding 0.5.1 and the revert would prove nothing.
+DTP="$TMP/pin-datetime"; mkbundle "$DTP"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: 2030-01-01T00:00:00Z\n---\n\nbody\n' > "$DTP/dt.md"
+"$CHECK" --init-house-rules "$DTP" >/dev/null 2>&1
+if command -v okflint >/dev/null 2>&1; then
+  # The version is the only "okflint" line whose second field is a number ("okflint behaviour ...", "okflint manifest
+  # check ..." come after it); taking the first such line instead printed three words and failed every run.
+  pin_got=$("$CHECK" --doctor 2>/dev/null | awk '$1=="okflint" && $2 ~ /^[0-9]/{print $2; exit}')
+  if [ "$pin_got" != "$pin_want" ]; then
+    bad "okflint-pin-and-install-hint-datetime-happy-1 the gate runs the okflint the pin names" \
+        "installed okflint is '${pin_got:-unknown}', the pin names '${pin_want:-none}': run uv tool install okflint==$pin_want (the case judges the pinned build only)"
+  else
+    "$CHECK" "$DTP" >"$TMP/pin-datetime.txt" 2>&1
+    ! grep -q 'S204' "$TMP/pin-datetime.txt" \
+      && ok "okflint-pin-and-install-hint-datetime-happy-1 a datetime stale_after draws no S204 advisory (okflint $pin_got)" \
+      || bad "okflint-pin-and-install-hint-datetime-happy-1 datetime stale_after" "$(grep 'S204' "$TMP/pin-datetime.txt" | head -1 | cut -c1-160)"
+  fi
+else
+  skip "okflint-pin-and-install-hint-datetime-happy-1 — okflint absent, and the case needs a real one at the pin" "uv tool install okflint==$pin_want"
+fi
+
+# okflint-pin-and-install-hint-pinned-package-happy-1: a user without okflint is told to install the PINNED package,
+# in both places the gate says it — --doctor and the L2 SKIPPED line. "uv tool install okflint" installs whatever PyPI
+# calls latest, which is exactly how reaches a user. The sandbox has no okflint at all, as on a fresh machine.
+SBPIN="$TMP/sb-pin"; mksandbox "$SBPIN" $BASETOOLS python3
+if ! PATH="$SBPIN" command -v okflint >/dev/null 2>&1; then
+  PATH="$SBPIN" "$CHECK" --doctor >"$TMP/pin-doctor.txt" 2>&1
+  PATH="$SBPIN" "$CHECK" "$CLEAN" >"$TMP/pin-run.txt" 2>&1
+  if grep -q "okflint==$pin_want" "$TMP/pin-doctor.txt" && grep -q "okflint==$pin_want" "$TMP/pin-run.txt"; then
+    ok "okflint-pin-and-install-hint-pinned-package-happy-1 --doctor and the L2 SKIPPED line both name the pinned package (okflint==$pin_want)"
+  else
+    bad "okflint-pin-and-install-hint-pinned-package-happy-1 pinned package named" \
+        "doctor: $(grep -i 'okflint *MISSING' "$TMP/pin-doctor.txt" | head -1 | cut -c1-120) | run: $(grep -A1 'L2 profile' "$TMP/pin-run.txt" | head -2 | tr '\n' ' ' | cut -c1-160)"
+  fi
+else
+  skip "okflint-pin-and-install-hint-pinned-package-happy-1 — okflint leaked into the sandbox PATH (a skip, not a pass)"
+fi
+
+# okflint-pin-and-install-hint-date-only-negative-1: the CONTROL for the datetime case. A date-only stale_after is the
+# form okflint accepted before the pin moved, and the fix must leave it alone: no S204 at any okflint the gate runs on.
+# It is judged without the pin guard, because "this input passed before and still passes" is the whole claim.
+if command -v okflint >/dev/null 2>&1; then
+  DTO="$TMP/pin-date-only"; mkbundle "$DTO"
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$DTO/do.md"
+  "$CHECK" --init-house-rules "$DTO" >/dev/null 2>&1
+  "$CHECK" "$DTO" >"$TMP/pin-date-only.txt" 2>&1; rc_do=$?
+  ! grep -q 'S204' "$TMP/pin-date-only.txt" \
+    && ok "okflint-pin-and-install-hint-date-only-negative-1 a date-only stale_after still draws no S204 (the control the datetime fix must not disturb)" \
+    || bad "okflint-pin-and-install-hint-date-only-negative-1 date-only control" "exit $rc_do: $(grep -E 'L2 profile|S204|okf-base' "$TMP/pin-date-only.txt" | head -2 | tr '\n' ' ' | cut -c1-160)"
+else
+  skip "okflint-pin-and-install-hint-date-only-negative-1 — okflint absent" "uv tool install okflint==$pin_want"
+fi
+
+# okflint-pin-and-install-hint-pin-present-no-hint-negative-1: the negative of the pinned-package case. When okflint IS
+# there, neither hint may appear: a user on a working machine must not be told to install anything. The two hints are
+# the doctor's MISSING line and the L2 SKIPPED line.
+if command -v okflint >/dev/null 2>&1; then
+  HPN="$TMP/pin-hint-negative"; mkbundle "$HPN"
+  "$CHECK" --init-house-rules "$HPN" >/dev/null 2>&1
+  "$CHECK" --doctor >"$TMP/pin-hint-doctor.txt" 2>&1
+  "$CHECK" "$HPN" >"$TMP/pin-hint-run.txt" 2>&1
+  ! grep -q 'okflint *MISSING' "$TMP/pin-hint-doctor.txt" && ! grep -q 'L2 profile *SKIPPED.*okflint not installed' "$TMP/pin-hint-run.txt" \
+    && ok "okflint-pin-and-install-hint-pin-present-no-hint-negative-1 with okflint installed neither the MISSING line nor the L2 SKIPPED hint appears" \
+    || bad "okflint-pin-and-install-hint-pin-present-no-hint-negative-1 no hint when okflint is there" "doctor: $(grep -i 'okflint *MISSING' "$TMP/pin-hint-doctor.txt" | head -1 | cut -c1-100); run: $(grep -i 'L2 profile' "$TMP/pin-hint-run.txt" | head -1 | cut -c1-100)"
+else
+  skip "okflint-pin-and-install-hint-pin-present-no-hint-negative-1 — okflint absent, so the hint is right to appear" "uv tool install okflint==$pin_want"
+fi
+
+# The three states where no package may be named (round 2, N-C): a pin file with no okflint line, one whose source the
+# gate refuses, and one it cannot read. Each must print the reason and NO install command — the bare `uv tool install
+# okflint` is the statement, and it used to come back in all three.
+hint_case() { # <case key> <pins file> <reason it must print>
+  local key=$1 pf=$2 why=$3
+  PATH="$SBPIN" OKF_PINNED_VERSIONS="$pf" "$CHECK" "$CLEAN" >"$TMP/hint-case.txt" 2>&1
+  if ! grep -q 'uv tool install' "$TMP/hint-case.txt" && grep -qF "$why" "$TMP/hint-case.txt"; then
+    ok "$key the hint names no package and says why ($why)"
+  else
+    bad "$key hint names no package" "$(grep -E 'L2 profile' "$TMP/hint-case.txt" | head -1 | cut -c1-180)"
+  fi
+}
+if ! PATH="$SBPIN" command -v okflint >/dev/null 2>&1; then
+  printf 'okf_validate 7ed3084267d050f198eea6cd9f67d5357e9ed047\n' > "$TMP/pins-noline.txt"
+  hint_case "okflint-pin-and-install-hint-pin-file-without-okflint-edge-1" "$TMP/pins-noline.txt" "names no okflint"
+  printf 'okflint 0.5.1\nokflint_source --index-url=http://evil.invalid/simple\n' > "$TMP/pins-unsafe.txt"
+  hint_case "okflint-pin-and-install-hint-unsafe-source-edge-1" "$TMP/pins-unsafe.txt" "refusing an unsafe okflint_source"
+  hint_case "okflint-pin-and-install-hint-unreadable-pin-file-edge-1" "$TMP/no-such-pins.txt" "pins file unreadable"
+else
+  skip "okflint-pin-and-install-hint-{pin-file-without-okflint,unsafe-source,unreadable-pin-file}-edge-1 — okflint leaked into the sandbox PATH"
+fi
+
+# okflint-pin-and-install-hint-latest-names-unpinned-happy-1 (round 3, N-1): --latest is the ONE state where naming the
+# bare `okflint` is right — the reader asked for whatever PyPI calls latest. Both hints must name it and neither may claim
+# the pin file names no okflint; a helper that dropped the --latest branch would print the refusal text instead.
+if ! PATH="$SBPIN" command -v okflint >/dev/null 2>&1; then
+  PATH="$SBPIN" "$CHECK" --latest "$CLEAN" >"$TMP/latest-run.txt" 2>&1
+  PATH="$SBPIN" "$CHECK" --doctor --latest >"$TMP/latest-doctor.txt" 2>&1
+  latest_ok=1
+  for f in "$TMP/latest-run.txt" "$TMP/latest-doctor.txt"; do
+    grep -q 'uv tool install okflint' "$f" && ! grep -q 'names no okflint' "$f" || latest_ok=0
+  done
+  [ "$latest_ok" -eq 1 ] \
+    && ok "okflint-pin-and-install-hint-latest-names-unpinned-happy-1 --latest names the unpinned okflint in both hints" \
+    || bad "okflint-pin-and-install-hint-latest-names-unpinned-happy-1 --latest hint" "run: $(grep -i 'L2 profile' "$TMP/latest-run.txt" | head -1 | cut -c1-120) | doctor: $(grep -i 'okflint *MISSING' "$TMP/latest-doctor.txt" | head -1 | cut -c1-120)"
+else
+  skip "okflint-pin-and-install-hint-latest-names-unpinned-happy-1 — okflint leaked into the sandbox PATH"
+fi
+
 # P-7: the staleness hook's bundle path must be overridable, or the plugin ships
 # one machine's layout. Marked ✅ in the spec with zero test references anywhere.
 HOOK="$HERE/lessons-staleness-check.sh"
@@ -569,7 +742,7 @@ if [ -f "$HOOK" ]; then
   out=$(OKF_BUNDLE_DIR="$TMP/does-not-exist" bash "$HOOK" 2>&1); rc=$?
   [ -z "$out" ] && [ "$rc" -eq 0 ] && ok "P-7 a missing OKF_BUNDLE_DIR exits quietly (fail-open by design)" \
     || bad "P-7 missing OKF_BUNDLE_DIR is quiet" "rc=$rc out=$(printf '%s' "$out" | head -1)"
-  # LT-02b (.scratch/okf-local-bugs/02): CRLF note is not "missing frontmatter" and is checked.
+  # LT-02b (a bug found by hand, 02): CRLF note is not "missing frontmatter" and is checked.
   P7C="$TMP/p7crlf"; mkdir -p "$P7C"
   printf -- '---\r\ntype: Lesson\r\nstale_after: "2000-01-01"\r\n---\r\nb\r\n' > "$P7C/crlf-expired.md"
   out=$(OKF_BUNDLE_DIR="$P7C" bash "$HOOK" 2>&1)
@@ -920,7 +1093,7 @@ chmod 755 "$G8/sub"
   || bad "G-8 nested unreadable directory failed OPEN" \
          "exit 0 — reported '$(grep -o "L3 staleness.*" "$TMP/g8.txt" | head -1)' over a subtree it could not read"
 
-# bare-validator-unreadable-folder (BL-1046): the vendored validator run by itself skipped a folder nobody may enter (Python's
+# bare-validator-unreadable-folder: the vendored validator run by itself skipped a folder nobody may enter (Python's
 # rglob swallows the PermissionError) and said "conformant" over a note it never read. okf-check stops at such a folder before
 # it runs the validator (G-8, above); the validator itself now reports the folder as an error, so no entry point says conformant.
 if [ "$(id -u)" != 0 ]; then
@@ -2522,6 +2695,80 @@ c4run tm stable team:ga4 2026-01-01 "verified:
 $(vent human:dana 2026-02-01)"
 c4quiet "LT-43f a team:<id> generator stays a non-agent (no advisory): the open prefix family is unchanged"
 
+# --- a verified list of bare strings (slice trust-reads-a-verified-list-of-bare-strings) -------------------------------
+section "a verified list of bare strings"
+# L1 says the entry is not a `{by, at}` mapping, and the claim is in the file all the same: Trust reads a bare string as its
+# `by` actor, as it already reads the scalar `verified: human:dana` (LT-43d). Before this the entry was skipped, so a draft
+# note whose only verification was `- human:dana` passed Trust ("no unauthenticated human verification") and --strict-trust
+# exited 0 in the whole run and with --file, while the same note written as a mapping exited 1.
+c4run bs1 draft agent/1 2026-01-01 "verified:
+  - human:dana"
+"$CHECK" "$C4DIR" --strict-trust >"$C4OUT.s" 2>&1; src=$?
+{ [ "$C4RC" -eq 0 ] && grep -Eq '^ +n\.md: verified\[0\]\.by .*draft' "$C4OUT" && grep -q '1 warning(s), 0 advisory' "$C4OUT" && grep -q 'trust policy failure (--strict-trust)' "$C4OUT.s" && [ "$src" -eq 1 ]; } \
+  && ok "the bare-string list on a draft note: one Trust warning naming verified[0].by, exit 0, and exit 1 under --strict-trust" \
+  || bad "bare-string list, draft" "rc=$C4RC strict=$src $(grep -n 'Trust\|n.md' "$C4OUT" | head -2 | tr '\n' ' ')"
+
+# One reading per entry: a mapping at index 0 and a bare string at index 1 give two findings, one per entry.
+c4run bs2 draft agent/1 2026-01-01 "verified:
+$(vent human:eve 2026-02-01)
+  - human:dana"
+{ grep -Eq '^ +n\.md: verified\[0\]\.by `human:eve`' "$C4OUT" && grep -Eq '^ +n\.md: verified\[1\]\.by `human:dana`' "$C4OUT" && grep -q '2 warning(s), 0 advisory' "$C4OUT"; } \
+  && ok "a mapping and a bare string in one list: two findings, verified[0] and verified[1]" \
+  || bad "bare string at index 1" "$(grep -n 'Trust\|n.md' "$C4OUT" | head -3 | tr '\n' ' ')"
+
+# The look-alike check runs on a bare string too: it is the same actor, read the same way.
+c4run bs3 draft agent/1 2026-01-01 "verified:
+  - ${CYR}:dana"
+"$CHECK" "$C4DIR" --strict-trust >"$C4OUT.s" 2>&1; src=$?
+{ grep -q 'only looks like `human:`' "$C4OUT" && [ "$src" -eq 1 ]; } \
+  && ok "a bare string that only looks like human: (Cyrillic a) gives the look-alike warning, exit 1 under --strict-trust" \
+  || bad "bare string, look-alike" "strict=$src $(grep -n 'looks like\|Trust' "$C4OUT" | head -2 | tr '\n' ' ')"
+
+# The draft row is not the only row: a bare string on an agent-generated note is the advisory form of the same claim.
+c4run bs4 stable agent/1 2026-01-01 "verified:
+  - human:dana"
+"$CHECK" "$C4DIR" --strict-trust >"$C4OUT.s" 2>&1; src=$?
+{ grep -q '0 warning(s), 1 advisory' "$C4OUT" && [ "$src" -eq 1 ]; } \
+  && ok "a bare string on a stable agent-generated note: the advisory, exit 1 under --strict-trust" \
+  || bad "bare string, advisory" "strict=$src $(grep -n 'Trust' "$C4OUT" | head -2 | tr '\n' ' ')"
+
+c4run bs5 stable human:t 2026-01-01 "verified:
+  - human:dana"
+c4quiet "a bare string on a stable note a human wrote, reviewed: no finding (the actor decides, not the shape)"
+
+c4run bs6 stable human:t 2026-01-01 "verified:
+  - process:ci"
+c4quiet "a bare process: actor is never reported (the human: scope is unchanged)"
+
+# Hostile text: the actor is printed verbatim. A newline in it is spelled \x0a, so the finding is one line and the string
+# cannot write a finding of its own. (L1 words that note its own way; its wording is the validator's, out of this slice.)
+c4run bs7 draft agent/1 2026-01-01 "verified:
+  - \"human:dana\\nTrust warning: forged\""
+{ [ "$(grep -cF 'n.md: verified[0].by `human:dana\x0aTrust warning: forged` on a draft note' "$C4OUT")" = 1 ] && ! grep -Eq '^ *Trust warning: forged' "$C4OUT"; } \
+  && ok "a bare string holding a newline: one Trust line, the newline spelled, no forged finding line" \
+  || bad "bare string, newline in the actor" "$(head -6 "$C4OUT" | tr '\n' '|')"
+# The text spells the newline and --json does not: `trust_findings[].reason` is the note's text as written, carried by the
+# ordinary JSON escape (okf_guard.shown's contract: --json keeps a control character in a quoted claim as its JSON escape).
+"$CHECK" "$C4DIR" --strict-trust --json > "$C4OUT.j" 2>&1
+{ grep -qF 'human:dana\nTrust warning: forged' "$C4OUT.j" && ! grep -q 'x0a' "$C4OUT.j"; } \
+  && ok "--json keeps the newline as the JSON escape (no \\x0a in trust_findings[].reason)" \
+  || bad "--json reason for a newline actor" "$(grep -o 'trust_findings[^]]*' "$C4OUT.j" | cut -c1-160)"
+
+# The shapes this slice does NOT change, so the new reading cannot quietly widen. None of them is a Trust finding: an empty
+# list holds no entry at all, a nested list holds an entry this layer cannot judge, and a number, null or true is not an
+# actor. What L1 does with each, measured with --file: the nested list and each non-string entry get their §5.2 warning
+# ("every `verified` entry needs a `by` actor"), and `verified: []` is valid and silent (no L1 line, exit 0).
+c4run bs8 draft agent/1 2026-01-01 "verified: []"
+c4quiet "an empty verified list: no Trust finding (nothing claims a review)"
+c4run bs9 draft agent/1 2026-01-01 "verified:
+  - - by: human:dana"
+c4quiet "a nested verified list ('- - by: human:dana'): no Trust finding; L1 reports the shape"
+c4run bs10 draft agent/1 2026-01-01 "verified:
+  - 7
+  - null
+  - true"
+c4quiet "the non-string entries 7, null and true: no Trust finding (no actor to judge)"
+
 # --- LT-44 (0.9.2 F3): L1/L3 robustness found by the 0.9.1 final review --------------------------------------------
 section "LT-44 (0.9.2 F3)"
 # note44 <bundle> <extra-frontmatter-lines...>: one-note bundle whose note has a full, valid header plus the extra lines
@@ -3148,7 +3395,7 @@ mk56 lnk; D="$TMP/lt56-lnk"; note56 "$D" a.md "Alias" "One"; ln -s a.md "$D/alia
 { [ "$rcl" -eq 0 ] && grep -q 'no candidate duplicates' "$D.txt"; } \
   && ok "LT-56q a symlink alias of a note is not listed as a duplicate of its target" \
   || bad "LT-56q symlink alias" "rc=$rcl $(head -4 "$D.txt" | tr '\n' ' ')"
-# LT-56r (0.9.9 review register): the alias and its target are ONE note, so a third note that duplicates it is one
+# LT-56r: the alias and its target are ONE note, so a third note that duplicates it is one
 # pair, listed under the real note. The alias sorts first on purpose: the real path must win, not the walk order.
 mk56 lnk3; D="$TMP/lt56-lnk3"; note56 "$D" b.md "Alias" "One"; ln -s b.md "$D/a-link.md"; note56 "$D" c.md "Alias" "Two"
 "$CHECK" "$D" --duplicates >"$D.txt" 2>&1; rcl=$?

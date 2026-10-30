@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Tests for how every file walker treats symlinks (cases S8-H1, S8-N1, S8-E1 in docs/0.9.x-cases.md and
-# docs/gherkin/s08-symlink-aliases.feature).
+# Tests for how every file walker treats symlinks (cases S8-H1, S8-N1, S8-E1).
 #
 # The rule all walkers share is the vendored validator's, because that file is not ours to edit:
 # Python's rglob never enters a symlinked FOLDER and does yield a symlinked FILE. So a folder link is
@@ -264,7 +263,7 @@ else
   printf '  SKIP  S58-H2 the disk is case-sensitive: a path in another case is another path\n'
 fi
 
-# --- self-link-loop-has-a-cap (BL-188): the walk that finds a script's own folder gives up after 40 links --------------
+# --- self-link-loop-has-a-cap: the walk that finds a script's own folder gives up after 40 links --------------
 # Bash refuses a cyclic link at exec, but $0 is read again by the walk after exec, so a link swapped to point at itself
 # after the start spun for ever (58 of 200 runs hung in the container: tools/capped-container-tests.sh). Here the loop is
 # made certain and bounded without a hang: `bash -c '. script' <cyclic link>` gives the script that link as $0, and a

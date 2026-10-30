@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the .okfignore L2 mirror (cases S12-IG-* in docs/0.9.x-cases.md and
-# docs/gherkin/s12-ignore-mirror.feature; public okf-knowledge-gate #12).
+# Tests for the .okfignore L2 mirror (cases S12-IG-*, public okf-knowledge-gate #12).
 #
 # Under a .okfignore that excludes something, L2 runs on a filtered mirror of the bundle. The mirror
 # used to hold only notes and config, so a link to an existing image/SVG/PDF read as broken (L002).
@@ -170,7 +169,7 @@ else
   fi
 fi
 
-# --- F-6 (0.9.11 register, spec row IA-1): .okfignore reaches a file alias, and the symlinks line honours it -------------------------
+# --- F-6 (spec row IA-1): .okfignore reaches a file alias, and the symlinks line honours it -------------------------
 # S12-IG-F1: archive/ is ignored and alias.md -> archive/old.md (a note with no frontmatter, an L1 error) is an alias of
 # an ignored note: it is ignored too, by every walker, instead of being checked through the back door.
 B="$TMP/f1"; mkb "$B"; ln -s archive/old.md "$B/alias.md"
@@ -228,7 +227,7 @@ PY
   done
 fi
 
-# BL-1072a: .okfignore is not a note, so okf_check.max_note_bytes does not apply to it (as for okf-base.yaml). A bundle that
+# .okfignore is not a note, so okf_check.max_note_bytes does not apply to it (as for okf-base.yaml). A bundle that
 # lowers the note cap to 300 bytes still reads its own 640-byte .okfignore; one over the manifest limit is still refused, named.
 B="$TMP/cap-a"; mkb "$B"
 python3 - "$B/.okfignore" <<'PY'
@@ -238,8 +237,8 @@ PY
 sz=$(wc -c < "$B/.okfignore" | tr -d ' ')
 list=$(OKF_MAX_NOTE_BYTES=300 timeout 30 bash "$HERE/ignore-lib.sh" --list "$B" 2>"$TMP/cap-a.err" | tr '\0' ' '); rc=$?
 { [ "$sz" -gt 300 ] && [ "$rc" -eq 0 ] && [ "$list" != "${list/a.md/}" ] && [ "$list" = "${list/archive/}" ] && [ ! -s "$TMP/cap-a.err" ]; } \
-  && ok "BL-1072a a $sz-byte .okfignore is read under max_note_bytes 300, and its pattern applies" \
-  || bad "BL-1072a .okfignore under the note cap" "size=$sz rc=$rc list=$list err=$(head -2 "$TMP/cap-a.err" | tr '\n' ' ')"
+  && ok "a $sz-byte .okfignore is read under max_note_bytes 300, and its pattern applies" \
+  || bad ".okfignore under the note cap" "size=$sz rc=$rc list=$list err=$(head -2 "$TMP/cap-a.err" | tr '\n' ' ')"
 B="$TMP/cap-b"; mkb "$B"; printf 'okf_check:\n  max_note_bytes: 300\n' >> "$B/okf-base.yaml"
 python3 - "$B/.okfignore" <<'PY'
 import sys
@@ -247,8 +246,8 @@ open(sys.argv[1], "w").write("# " + "x" * 600 + "\narchive/\n")
 PY
 "$CHECK" "$B" > "$TMP/cap-b.out" 2>&1; rc=$?
 { [ "$rc" -ne 2 ] && ! grep -q 'larger than 300 bytes' "$TMP/cap-b.out" && ! grep -q 'no verdict is possible' "$TMP/cap-b.out"; } \
-  && ok "BL-1072a okf-check with max_note_bytes: 300 and a 600-byte .okfignore gives a verdict" \
-  || bad "BL-1072a okf-check end to end" "rc=$rc $(grep -n 'okfignore\|IGNORE' "$TMP/cap-b.out" | head -3 | tr '\n' ' ')"
+  && ok "okf-check with max_note_bytes: 300 and a 600-byte .okfignore gives a verdict" \
+  || bad "okf-check end to end" "rc=$rc $(grep -n 'okfignore\|IGNORE' "$TMP/cap-b.out" | head -3 | tr '\n' ' ')"
 B="$TMP/cap-c"; mkb "$B"
 python3 - "$B/.okfignore" <<'PY'
 import sys
@@ -256,8 +255,8 @@ open(sys.argv[1], "w").write("#" * 1048577 + "\n")
 PY
 timeout 30 bash "$HERE/ignore-lib.sh" --list "$B" > "$TMP/cap-c.out" 2> "$TMP/cap-c.err"; rc=$?
 { [ "$rc" -eq 2 ] && grep -q 'larger than 1048576 bytes (the config file size limit, manifest_max_bytes' "$TMP/cap-c.err"; } \
-  && ok "BL-1072a a .okfignore over the 1 MB manifest limit is still refused, naming the limit" \
-  || bad "BL-1072a over-limit .okfignore" "rc=$rc $(head -2 "$TMP/cap-c.err" | tr '\n' ' ')"
+  && ok "a .okfignore over the 1 MB manifest limit is still refused, naming the limit" \
+  || bad "over-limit .okfignore" "rc=$rc $(head -2 "$TMP/cap-c.err" | tr '\n' ' ')"
 
 echo
 echo "  $PASS passed, $FAIL failed, $SKIPPED skipped"

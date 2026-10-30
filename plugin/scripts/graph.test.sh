@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the optional okf-memory layer, "L2 graph" (.scratch okf-ecosystem; cases S27-GR-* in docs/0.9.x-cases.md).
+# Tests for the optional okf-memory layer, "L2 graph" (the okf-memory ecosystem; cases S27-GR-*).
 #
 # okf-memory (`okf validate --json`) reports orphan notes and broken concept links, which no other layer looks for. The
 # layer is opt-in (okf_check.graph: true, or OKF_MEMORY_BIN), runs on the frozen copy under a time limit, and its findings

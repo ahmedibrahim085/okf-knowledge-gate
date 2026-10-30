@@ -20,4 +20,3 @@
 # where the bundle path it passed does not exist, and okf-check answers 64 for a folder that is not there — the code
 # this file records for a missing bundle, not a wrong report.
 repo-is-a-repository-subfolder-happy-1	okf-verify exits 1 with "repos searched: NONE" when --repo is a folder inside the repository; carried to 0.9.60	repo-is-a-repository-subfolder	1
-trust-bare-string-verified-list-happy-1	a verified list of bare strings is skipped by Trust, so --strict-trust exits 0 where L1 warns and the fix exits 1; carried to 0.9.60	trust-bare-string-verified-list	0

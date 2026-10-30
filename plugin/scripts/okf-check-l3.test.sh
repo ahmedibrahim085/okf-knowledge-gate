@@ -22,13 +22,13 @@ expect_match "old.md (stale_after" "L3 names the expired concept" "$CHECK" "$STA
 expect_exit 0 "N-8 staleness is advisory by default" -- "$CHECK" "$STALE"
 expect_exit 4 "N-9 --fail-stale makes staleness blocking" -- "$CHECK" "$STALE" --fail-stale
 
-# LT-01 (.scratch/okf-local-bugs/01): README.md is a concept (I-4, L1) — L3 skipped it,
+# LT-01 (a bug found by hand, 01): README.md is a concept (I-4, L1) — L3 skipped it,
 # so an expired README was never reported. index.md and log.md stay reserved.
 T01="$TMP/t01"; mkbundle "$T01"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n---\nbody\n' > "$T01/README.md"
 expect_match "README.md (stale_after" "LT-01 L3 flags an expired README.md" "$CHECK" "$T01"
 
-# LT-02 (.scratch/okf-local-bugs/02): a CRLF note was invisible to L3 (awk saw "---\r").
+# LT-02 (a bug found by hand, 02): a CRLF note was invisible to L3 (awk saw "---\r").
 T02="$TMP/t02"; mkbundle "$T02"
 printf -- '---\r\ntype: Lesson\r\ntitle: T\r\ndescription: D\r\nstatus: stable\r\nstale_after: "2000-01-01"\r\n---\r\nbody\r\n' > "$T02/crlf.md"
 expect_match "crlf.md (stale_after" "LT-02 L3 flags an expired CRLF note" "$CHECK" "$T02"
@@ -46,7 +46,7 @@ T42C="$TMP/t42c"; mkbundle "$T42C"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\nstale_after: "2000-01-01"\n---\nbody\n---\nmore\n---\n' > "$T42C/twice.md"
 n42=$("$CHECK" "$T42C" 2>&1 | grep -c 'twice.md (stale_after')
 [ "$n42" = 1 ] && ok "LT-42d an expired note with body '---' lines is listed once" || bad "LT-42d listed once" "listed $n42 times"
-# LT-03 (.scratch/okf-local-bugs/03): value parsing in L3.
+# LT-03 (a bug found by hand, 03): value parsing in L3.
 T03="$TMP/t03"; mkbundle "$T03"
 printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable  # ok\n---\nbody\n' > "$T03/cmt.md"
 expect_no_match "cmt.md (stable" "LT-03a a trailing comment is not part of the status value" "$CHECK" "$T03"
@@ -424,9 +424,10 @@ mv "$T17/bin/okflint" "$T17/bin/okflint.off"
 t17 UV_HAS= OKF_AUTO_INSTALL=1 UV_FAIL=1 UV_TOOLDIR="$T17/tooldir" UV_BINDIR="$T17/bindir" -- --preflight; rc=$?
 [ "$rc" -eq 0 ] && ok "LT-17t preflight exits 0 even when the auto-install fails" || bad "LT-17t preflight exit" "rc=$rc"
 mv "$T17/bin/okflint.off" "$T17/bin/okflint"
-# LT-17u: --latest says plainly that stock PyPI okflint lacks the okflint#11 fixes.
+# LT-17u: --latest says plainly that the newest PyPI release is not the build this gate was verified against. It used
+# to name okflint#11, which is merged and shipped in 0.5.1, so naming it would be a stale claim.
 t17 UV_HAS=0.3.1 -- --install-deps --latest
-grep -qi "okflint#11" "$T17/out.txt" && ok "LT-17u --latest warns that the PyPI release may lack the okflint#11 fixes" \
+grep -qi "may lack" "$T17/out.txt" && grep -qi "preflight" "$T17/out.txt" && ok "LT-17u --latest warns that the PyPI release may lack fixes this gate was verified against" \
   || bad "LT-17u latest warning" "out=$(head -6 "$T17/out.txt" | tr '\n' ' ')"
 # LT-17v: jq is reported in the plan (optional, and what is off without it).
 grep -q "jq" "$T17/out.txt" && ok "LT-17v the plan reports jq (optional)" || bad "LT-17v jq line" "out=$(head -8 "$T17/out.txt" | tr '\n' ' ')"

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Installs uv <version> in ~/.local/bin from its GitHub release tarball, only when the tarball's sha256 is the one pinned in
 # uv-sha256.txt next to this script. It replaces `curl .../install.sh | sh`, which ran a downloaded script that nothing
-# checked (BL-881). Usage: install-uv.sh <version>
+# checked. Usage: install-uv.sh <version>
 set -euo pipefail
 v=${1:?usage: install-uv.sh <uv version>}
 case "$(uname -m)" in

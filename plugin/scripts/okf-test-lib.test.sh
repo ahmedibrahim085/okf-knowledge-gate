@@ -46,7 +46,7 @@ else
   bad "TS-1 timing lines" "$(grep -c '^TIMING' "$TMP/on.txt" 2>/dev/null) TIMING lines; output: $(head -12 "$TMP/on.txt" | tr '\n' '|')"
 fi
 
-# TS-4 (BL-587): the seconds have a fraction. Two sections of 0.3 s and 0.4 s used to print "0s" and "1s" (whole seconds from
+# TS-4: the seconds have a fraction. Two sections of 0.3 s and 0.4 s used to print "0s" and "1s" (whole seconds from
 # $SECONDS), so a section could not be told from one twice as long. Each value must be a decimal number of seconds, within
 # a wide band around the sleep (a loaded machine runs long, never short), and the two must not both read as whole seconds.
 cat > "$TMP/fine.test.sh" <<'FINE'

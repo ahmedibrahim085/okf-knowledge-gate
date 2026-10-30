@@ -487,7 +487,7 @@ done < <(find "$PLUGIN/scripts" -type d -name __pycache__ -prune -o -type f -pri
 # which is what a ✅ asserts. Whether that assertion has teeth is what mutation
 # testing is for.
 # The public export keeps the spec at docs/spec.md.
-SPEC="$MKT_ROOT/.okf/specs/okf-check.md"
+SPEC="$MKT_ROOT/docs/spec.md"
 [ -f "$SPEC" ] || SPEC="$MKT_ROOT/docs/spec.md"
 if [ ! -f "$SPEC" ]; then
   skip "D-1 spec traceability — no spec beside this copy (installed plugin, not a source tree)"
@@ -680,7 +680,7 @@ section '^## Platforms' > "$TMP_W/readme_platforms.txt"
 win_bad=$(grep -n -i 'windows' "$README" | grep -v -i 'wsl\|no native\|unsupported' || true)
 [ -z "$win_bad" ] && ok "LT-30b S23-N1 every README line that mentions Windows says WSL, no native support, or unsupported (a bare 'not' does not count)" || bad "LT-30b S23-N1" "$win_bad"
 grep -i '^| Windows' "$TMP_W/readme_platforms.txt" > "$TMP_W/readme_winrow.txt"
-# Windows is not supported, now or later (owner decision 2026-10-24, RM-600 dropped): the row says so for WSL, the Action
+# Windows is not supported, now or later (decided 2026-10-24): the row says so for WSL, the Action
 # and the pre-commit hook, names the two supported platforms, and no longer calls Windows UNVERIFIED (a pending check).
 { [ -s "$TMP_W/readme_winrow.txt" ] && ! grep -q 'UNVERIFIED' "$TMP_W/readme_winrow.txt" && grep -q 'macOS and Linux' "$TMP_W/readme_winrow.txt" \
   && grep -q 'WSL' "$TMP_W/readme_winrow.txt" && grep -q 'pre-commit' "$TMP_W/readme_winrow.txt" && grep -q 'Action' "$TMP_W/readme_winrow.txt"; } \
@@ -693,17 +693,159 @@ latest_msg=$(PYTHONPATH="$PLUGIN/vendor/pyyaml" OKF_PINNED_VERSIONS="$PLUGIN/con
   || bad "LT-30g --latest wording" "tool says: '$latest_msg'; README has 'may lack': $(grep -c 'may lack' "$README")"
 ! grep -q 'Requires `python3` with `pyyaml`' "$README" && ok "LT-30h the README no longer says pyyaml must be installed (it is vendored)" || bad "LT-30h pyyaml line" "README still says pyyaml is required"
 ! grep -n -i 'should behave\|should work\|probably\|likely' "$README" > "$TMP_W/readme_hedge.txt" && ok "LT-30i the README has no hedge words in its platform claims" || bad "LT-30i hedge words" "$(head -2 "$TMP_W/readme_hedge.txt" | tr '\n' ' ')"
+# LT-30j: the export does not make a bundle okf-check passes. Every note needs its own YAML frontmatter with a non-empty
+# `type` field; the export writes no frontmatter into the notes, so a vault without it exports with exit 0 and is then
+# refused at L1 (§11.1, §11.2). The three pages a reader meets the export on must say so: the README's Export section,
+# the export skill's page, and the okf skill's export section. The awk uses /^(#|##|###) / on purpose: mawk 1.3.4 (Debian)
+# reads /^#{1,3} / as an interval expression and would run the section to the end of the file.
+readme_export=$(awk '/^### Export$/{f=1;next} f && /^(#|##|###) /{exit} f' "$README")
+export_skill="$PLUGIN/skills/export/SKILL.md"
+okf_skill="$PLUGIN/skills/okf/SKILL.md"
+okf_export=$(awk '/^## okf-export:/{f=1;next} f && /^## /{exit} f' "$okf_skill" 2>/dev/null)
+miss30j=""
+for pair in "README:$readme_export" "export-skill:$(cat "$export_skill" 2>/dev/null)" "okf-skill:$okf_export"; do
+  name=${pair%%:*}; body=$(printf '%s' "${pair#*:}" | tr '\n' ' ')   # a doc line wrap must not break the pin
+  grep -qi 'frontmatter' <<<"$body" || miss30j="$miss30j $name:frontmatter"
+  grep -q '`type`' <<<"$body" || miss30j="$miss30j $name:type"
+  grep -qi 'writes no frontmatter' <<<"$body" || miss30j="$miss30j $name:writes-none"
+  grep -q 'L1' <<<"$body" || miss30j="$miss30j $name:L1"
+done
+[ -z "$miss30j" ] && ok "LT-30j the README Export section, the export skill and the okf skill say every note needs its own frontmatter with a non-empty type, that the export writes none, and that the gate refuses it at L1" || bad "LT-30j export frontmatter" "$miss30j"
+
+
+# LT-30k: an embed is left as written. `![[x]]` transcludes x, which a Markdown link cannot say, so the exporter keeps it.
+# The two pages that describe the conversion must say so, and each claim is pinned in the paragraph that carries it: a token
+# met elsewhere in the section would pass a page that says nothing about embeds (measured: the section's later "left as
+# written" is about a link in a code span, and "L1" is on both pages for other reasons). The embed paragraph is named by BOTH
+# its `![[` example and its "left as written", so an unrelated earlier `![[..]]` example cannot hijack it; the layer
+# paragraph is named by BOTH `L001` and "L1 does not check", so a paragraph that mentions L001 for something else cannot
+# hijack that one. The words are a FLOOR, not the proof: a page can say the right thing and the tool
+# can still disagree, which is why LT-30l runs the tool. Same mawk-safe cut as LT-30j: `/^(#|##|###) /`, never `/^#{1,3} /`.
+readme_embed=$(printf '%s' "$readme_export" | awk 'BEGIN{RS=""} /!\[\[/ && /left as written/ {print; exit}')
+skill_embed=$(awk 'BEGIN{RS=""} /!\[\[/ && /left as written/ {print; exit}' "$export_skill" 2>/dev/null)
+readme_layers=$(printf '%s' "$readme_export" | awk 'BEGIN{RS=""} /L001/ && /L1 does not check/ {print; exit}')
+skill_layers=$(awk 'BEGIN{RS=""} /L001/ && /L1 does not check/ {print; exit}' "$export_skill" 2>/dev/null)
+miss30k=""
+for pair in "README:$readme_embed" "export-skill:$skill_embed"; do
+  name=${pair%%:*}; body=$(printf '%s' "${pair#*:}" | tr '\n' ' ')
+  grep -qF -- '![[' <<<"$body" || miss30k="$miss30k $name:embed-example"
+  grep -qi 'left as written' <<<"$body" || miss30k="$miss30k $name:left-as-written"
+  grep -qi 'transclu' <<<"$body" || miss30k="$miss30k $name:why"
+  grep -qi 'inside the vault' <<<"$body" || miss30k="$miss30k $name:inside-the-vault"
+  grep -qi 'not copied' <<<"$body" || miss30k="$miss30k $name:not-copied"
+  grep -qi 'starts with a dot' <<<"$body" || miss30k="$miss30k $name:starts-with-a-dot"
+done
+for pair in "README:$readme_layers" "export-skill:$skill_layers"; do
+  name=${pair%%:*}; body=$(printf '%s' "${pair#*:}" | tr '\n' ' ')
+  grep -qi 'L1 does not check' <<<"$body" || miss30k="$miss30k $name:L1-does-not-check"
+  grep -q 'L001' <<<"$body" || miss30k="$miss30k $name:L001"
+  grep -qi 'advisory' <<<"$body" || miss30k="$miss30k $name:advisory"
+  # An advisory must not be sold as a passing run: the starter profile fails on F101/R201 for notes it does not declare
+  # (measured), so the page carries that limit with the claim.
+  grep -qi 'house-rule' <<<"$body" || miss30k="$miss30k $name:house-rule"
+done
+[ -z "$miss30k" ] && ok "LT-30k the README Export section and the export skill say, in the paragraph that carries each claim, that an embed is left as written, that a file inside the vault (and not in a folder or file whose name starts with a dot) is copied and one outside the vault or with such a name is not, that L1 does not check it, that L2 lists an L001 advisory, and that a house-rule error still fails the run" || bad "LT-30k embeds left as written" "$miss30k"
+
+# LT-30l: what the pages promise about an embed, RUN instead of read. A bundle with a present-target embed, a missing-target
+# embed and an image embed goes through okf-check twice: with no house-rules file (L1 only, which resolves no embed target and
+# prints no embed line) and with the starter okf-base.yaml (L2 runs okflint, which reads `![[x]]` as `[[x]]` and lists the
+# missing note target and the image as L001 advisories, while the note the third embed names is not listed). The image must
+# also survive the export, and an embed whose target sits OUTSIDE the vault or is a dot file at the vault root must not:
+# the page says such a file is not copied, and the export writes nothing about it (exit 0), so the bundle's file list is
+# the only witness there.
+# Skips, naming the reason, when okflint is absent.
+# The bundle is typed `Reference` and carries `log.md` ON PURPOSE: that makes the starter profile otherwise satisfied, so
+# exit 0 here asserts the one thing the pages claim of an advisory -- it does not by itself fail a satisfied profile -- and
+# nothing about a run whose profile is failing for another reason (the starter as shipped exits 3 on F101/R201; measured).
+if ! command -v okflint >/dev/null 2>&1; then
+  skip "LT-30l embed layer behaviour — okflint is not installed, so L2 cannot run (UNVERIFIED until it is)"
+else
+  EL="$TMP_W/embed_layers"; mkdir -p "$EL/v" "$EL/o"
+  printf -- '---\ntype: Reference\ntitle: A\n---\n# A\n\npresent ![[b]]\nmissing ![[nope]]\nimage ![[img.png]]\noutside ![[../outside.png]]\ndotfile ![[.hidden.png]]\n' > "$EL/v/a.md"
+  printf -- '---\ntype: Reference\ntitle: B\n---\n# B\n\ntext\n' > "$EL/v/b.md"
+  printf 'PNG' > "$EL/v/img.png"
+  printf 'PNG' > "$EL/outside.png"   # one level above the vault: the export must not copy it in
+  printf 'PNG' > "$EL/v/.hidden.png" # a dot file at the vault root: skipped for the same reason a dot folder is
+  "$REALPY" "$PLUGIN/scripts/okf-export" "$EL/v" "$EL/o" > "$EL/export.txt" 2>&1; rc_exp=$?
+  "$PLUGIN/scripts/okf-check" "$EL/o" > "$EL/l1.txt" 2>&1; rc_l1=$?
+  l1_embed=$(grep -E '\[\[|L001' "$EL/l1.txt" || true)
+  l1_pass=$(grep -F 'L1 conformance   PASS' "$EL/l1.txt" | head -1)
+  "$PLUGIN/scripts/okf-check" --init-house-rules "$EL/o" > "$EL/init.txt" 2>&1
+  printf '# Log\n' > "$EL/o/log.md"
+  "$PLUGIN/scripts/okf-check" "$EL/o" > "$EL/l2.txt" 2>&1; rc_l2=$?
+  l2_pass=$(grep -F 'L2 profile       PASS' "$EL/l2.txt" | head -1)
+  l2_json=$("$PLUGIN/scripts/okf-check" "$EL/o" --json 2>/dev/null)
+  { [ "$rc_exp" = 0 ] && [ -f "$EL/o/img.png" ] && [ ! -f "$EL/o/outside.png" ] && [ ! -f "$EL/o/.hidden.png" ] && [ -n "$l1_pass" ] && [ -z "$l1_embed" ] && [ "$rc_l1" = 0 ] \
+    && [ "$rc_l2" = 0 ] && [ -n "$l2_pass" ] && grep -q '(advisory)' "$EL/l2.txt" \
+    && grep -qF 'broken wikilink: [[nope]]' <<<"$l2_json" \
+    && grep -qF 'broken wikilink: [[img.png]]' <<<"$l2_json" \
+    && grep -qF 'broken wikilink: [[../outside.png]]' <<<"$l2_json" \
+    && grep -qF 'broken wikilink: [[.hidden.png]]' <<<"$l2_json" \
+    && ! grep -qF 'broken wikilink: [[b]]' <<<"$l2_json"; } \
+    && ok "LT-30l an embed: L1 prints no embed line (no target resolved); with the starter okf-base.yaml L2 lists the missing note target, the image embed, an outside-vault target and a dot file as L001 advisories, leaves the note it names out; an inside file is copied, an outside one and a dot file are not; that advisory alone does not fail a profile it satisfies" \
+    || bad "LT-30l embed layer behaviour" "export rc=$rc_exp image copied=$([ -f "$EL/o/img.png" ] && echo yes || echo no) outside copied=$([ -f "$EL/o/outside.png" ] && echo yes || echo no) dotfile copied=$([ -f "$EL/o/.hidden.png" ] && echo yes || echo no) l1 rc=$rc_l1 PASS='$l1_pass' l1 embed lines='$l1_embed' l2 rc=$rc_l2 PASS='$l2_pass' json L001='$(grep -o 'L001[^"]*' <<<"$l2_json" | tr '\n' ' ')'"
+fi
+
+# LT-30m: outside a Claude Code session there is no bare `okf-check`. The Install section must say where the tool comes
+# from (the public repository, cloned, with the exact URL), what a clone with python3 alone runs, and that L2 is skipped
+# without okflint. Each claim is pinned in the paragraph that carries it: the clone paragraph is named by BOTH `git clone`
+# and `okf-knowledge-gate`, the uv paragraph by BOTH `uv` and `--install-deps --yes`, and the python floor over the
+# section. The `--install-deps` and `uv` words alone are NOT checked over the section: README:106-107 carried them before
+# this text existed, so a section-wide check would pass a page that never said where the tool comes from. Same mawk-safe
+# cut as LT-30j: `/^(#|##|###) /`, never `/^#{1,3} /`.
+readme_install=$(awk '/^## Install$/{f=1;next} f && /^## /{exit} f' "$README")
+clone_para=$(printf '%s' "$readme_install" | awk 'BEGIN{RS=""} /git clone/ && /okf-knowledge-gate/ {print; exit}')
+uv_para=$(printf '%s' "$readme_install" | awk 'BEGIN{RS=""} /uv/ && /--install-deps --yes/ {print; exit}')
+miss30m=""
+clone_body=$(printf '%s' "$clone_para" | tr '\n' ' ')
+uv_body=$(printf '%s' "$uv_para" | tr '\n' ' ')
+install_body=$(printf '%s' "$readme_install" | tr '\n' ' ')
+grep -qF -- 'git clone https://github.com/ahmedibrahim085/okf-knowledge-gate.git' <<<"$clone_body" || miss30m="$miss30m clone-command-and-url"
+grep -q 'python3' <<<"$clone_body" || miss30m="$miss30m python3"
+grep -qi 'SKIPPED' <<<"$clone_body" || miss30m="$miss30m l2-skipped"
+grep -q 'plugin/scripts/okf-check' <<<"$clone_body" || miss30m="$miss30m script-path"
+grep -qF -- '--install-deps --yes' <<<"$uv_body" || miss30m="$miss30m install-deps-yes"
+grep -qF -- 'plugin/config/pinned-versions.txt' <<<"$uv_body" || miss30m="$miss30m pin-file"
+grep -q '3\.9' <<<"$install_body" || miss30m="$miss30m python-floor"
+[ -z "$miss30m" ] && ok "LT-30m the README's Install section says where the tool comes from outside a session: the exact git clone of the public repository, the script path, python3 alone running everything but L2, the L2 SKIPPED line, the uv route to L2 with the pin file it installs from, and the python floor" || bad "LT-30m running outside Claude Code" "$miss30m"
+
+# LT-30n: the claims LT-30m pins, RUN. A copy of the plugin dir (what a clone holds), a stranger's HOME, and
+# PATH=/usr/bin:/bin:/usr/sbin:/sbin with no uv and no okflint: a real run of `plugin/scripts/okf-check <bundle>` must exit 0,
+# print L1/Trust/L3 PASS, and print the L2 line the README quotes, byte for byte — which ties that quoted `okflint==...`
+# to the pin: when the pin moves and the README quote does not, this case fails. A second leg puts the clone's `plugin/bin`
+# first on PATH and runs the BARE name, the route the README offers.
+# `--version` is not used: okf-check answers it while parsing arguments, before any layer, so it passes with python3
+# missing; a real run does not (measured: a python3 that cannot run gives `L1 conformance COULD NOT RUN`, exit 2).
+# The case assumes this machine has no okflint at /usr/bin:/bin:/usr/sbin:/sbin: with one there, the bundle has no
+# okf-base.yaml and L2 prints `SKIPPED — no okf-base.yaml in …`, which is not the line the README quotes, so the case
+# FAILS — the failure message prints both strings (`tool_l2=… readme_l2=…`), so the cause is visible, never a silent pass.
+SN="$TMP_W/outside_session"; mkdir -p "$SN/home" "$SN/b"; cp -R "$PLUGIN" "$SN/plugin"
+printf -- '---\ntype: Reference\ntitle: A\n---\n# A\n\ntext\n' > "$SN/b/a.md"; printf '# Log\n' > "$SN/b/log.md"
+out30n=$(env -i HOME="$SN/home" PATH=/usr/bin:/bin:/usr/sbin:/sbin "$SN/plugin/scripts/okf-check" "$SN/b" 2>&1); rc30n=$?
+tool_l2=$(printf '%s' "$out30n" | grep -m1 'L2 profile' | sed 's/^[[:space:]]*//')
+readme_l2=$(printf '%s' "$readme_install" | grep -o 'L2 profile .*okflint==[0-9][0-9.]*)' | head -1)
+bare30n=$(env -i HOME="$SN/home" PATH="$SN/plugin/bin:/usr/bin:/bin:/usr/sbin:/sbin" okf-check "$SN/b" 2>&1); rcb=$?
+{ [ "$rc30n" = 0 ] && grep -q 'L1 conformance   PASS' <<<"$out30n" && grep -q 'Trust (C4)       PASS' <<<"$out30n" \
+  && grep -q 'L3 staleness     PASS' <<<"$out30n" && [ -n "$readme_l2" ] && [ "$tool_l2" = "$readme_l2" ] \
+  && [ "$rcb" = 0 ] && grep -q 'L1 conformance   PASS' <<<"$bare30n"; } \
+  && ok "LT-30n from a copy of the plugin with a stranger's HOME and PATH=/usr/bin:/bin:/usr/sbin:/sbin: plugin/scripts/okf-check exits 0 with L1, Trust and L3 PASS and prints exactly the L2 line the README quotes; with plugin/bin first on PATH the bare okf-check does the same" \
+  || bad "LT-30n run outside a session" "rc=$rc30n tool_l2='$tool_l2' readme_l2='$readme_l2' bare rc=$rcb out='$(printf '%s' "$out30n" | tr '\n' ' ' | cut -c1-160)'"
+
 OKFS_PIN=$(awk '$1=="okf_validate"{print $2}' "$PLUGIN/config/pinned-versions.txt")
-OKFL_PIN=$(awk '$1=="okflint_source"{n=split($2,a,"@"); print a[n]}' "$PLUGIN/config/pinned-versions.txt")
+# okflint is pinned by RELEASE, not by a fork commit, since 0.5.1 carries every fix this gate needs: the
+# README, the pin file and the installer all name the same release, and no fork SHA is claimed anywhere.
+OKFL_PIN=$(awk '$1=="okflint"{print $2}' "$PLUGIN/config/pinned-versions.txt")
+OKFL_SRC=$(awk '$1=="okflint_source"{print $2}' "$PLUGIN/config/pinned-versions.txt")
 VEND_PIN=$(grep -o 'Pinned commit:\*\* `[0-9a-f]\{40\}`' "$PLUGIN/vendor/VENDOR.md" | grep -o '[0-9a-f]\{40\}' | head -1)
-{ [ -n "$OKFS_PIN" ] && [ "$OKFS_PIN" = "$VEND_PIN" ] && [ -n "$OKFL_PIN" ] && grep -q "$OKFS_PIN" "$README" && grep -q "$OKFL_PIN" "$README"; } \
-  && ok "LT-30d S24-H1/E1 the README names both pinned commits in full, and they equal the pin file and VENDOR.md ($(printf '%.7s' "$OKFS_PIN"), $(printf '%.7s' "$OKFL_PIN"))" \
-  || bad "LT-30d S24-H1/E1" "okf_validate pin=$OKFS_PIN vendor=$VEND_PIN okflint pin=$OKFL_PIN; README has them: $(grep -c "$OKFS_PIN" "$README") / $(grep -c "$OKFL_PIN" "$README")"
+{ [ -n "$OKFS_PIN" ] && [ "$OKFS_PIN" = "$VEND_PIN" ] && [ -n "$OKFL_PIN" ] && grep -q "$OKFS_PIN" "$README" && grep -qF -- "Release $OKFL_PIN" <<<"$(grep -i 'mattdav/okflint' "$README")"; } \
+  && ok "LT-30d S24-H1/E1 the README names the pinned commit in full (equal to the pin file and VENDOR.md, $(printf '%.7s' "$OKFS_PIN")) and the pinned okflint release ($OKFL_PIN)" \
+  || bad "LT-30d S24-H1/E1" "okf_validate pin=$OKFS_PIN vendor=$VEND_PIN okflint pin=$OKFL_PIN; README has them: $(grep -c "$OKFS_PIN" "$README") / $(grep -cF -- "Release $OKFL_PIN" "$README")"
 section '^## Tools it uses' > "$TMP_W/readme_deps.txt"
 n_never=$(tr -s '[:space:]' ' ' < "$TMP_W/readme_deps.txt" | grep -o 'never merged' | wc -l | tr -d ' ')  # joined: the sentence wraps across lines
-{ grep -q 'okf-skills#68\|okf-skills/pull/68' "$TMP_W/readme_deps.txt" && grep -q 'okflint#11\|okflint/pull/11' "$TMP_W/readme_deps.txt" && [ "$n_never" -ge 2 ]; } \
-  && ok "LT-30e S24-N1 the Tools section (Pins) names both pull requests (okf-skills#68, okflint#11) and says what happens if each is never merged" \
-  || bad "LT-30e S24-N1" "never-merged lines: $n_never; section: $(head -c 100 "$TMP_W/readme_deps.txt" | tr '\n' ' ')"
+{ grep -q 'okf-skills#68\|okf-skills/pull/68' "$TMP_W/readme_deps.txt" && [ "$n_never" -ge 1 ] \
+  && { [ -z "$OKFL_SRC" ] || grep -qF "$OKFL_SRC" "$README"; }; } \
+  && ok "LT-30e S24-N1 the Tools section (Pins) names the open pull request (okf-skills#68) and says what happens if it is never merged, and the README names the fork build if the pin file pins one" \
+  || bad "LT-30e S24-N1" "never-merged lines: $n_never; okflint_source=${OKFL_SRC:-none} (README names it: $(grep -cF "$OKFL_SRC" "$README" 2>/dev/null)); section: $(head -c 100 "$TMP_W/readme_deps.txt" | tr '\n' ' ')"
 { grep -q 'ahmedibrahim085/okf-knowledge-gate@' "$README" && grep -q 'id: okf-check' "$README" && grep -q -- '--strict-trust' "$README" && grep -q -- '--init-house-rules' "$README" && grep -q 'python3' "$README"; } \
   && ok "LT-30f the README shows the Action and the pre-commit hook, --strict-trust, --init-house-rules and the python3 prerequisite" \
   || bad "LT-30f README usage" "missing: $(for p in 'okf-knowledge-gate@' 'id: okf-check' '--strict-trust' '--init-house-rules'; do grep -q -- "$p" "$README" || printf '%s ' "$p"; done)"
@@ -840,11 +982,12 @@ for needle in 'searched once' 'path part failed' "file's line count" 'lines star
 done
 [ -z "$vlost" ] && ok "LT-36j the README links the okf-verify reference, which holds every rule the README paragraph used to carry" || bad "LT-36j okf-verify rules" "missing:$vlost"
 grep -q 'Absolute file paths' "$README" && ok "LT-36h the README says what --repo and path checks really do (SHAs via --repo; absolute file paths on disk)" || bad "LT-36h okf-verify wording" "no 'Absolute file paths' sentence"
-if [ -f "$MKT_ROOT/docs/backlog-2026-10-14.md" ]; then
-  grep -q 'Debian 12, 0.9.1' "$MKT_ROOT/docs/backlog-2026-10-14.md" && grep -q 'pre-commit 4.7.0' "$MKT_ROOT/docs/backlog-2026-10-14.md" \
+BLOG=$(ls "$MKT_ROOT"/docs/backlog-*.md 2>/dev/null | head -1)   # the register: present here, absent from the public export
+if [ -n "$BLOG" ]; then
+  grep -q 'Debian 12, 0.9.1' "$BLOG" && grep -q 'pre-commit 4.7.0' "$BLOG" \
     && ok "LT-36i the Debian run the README cites (with okflint and pre-commit) is recorded in the backlog doc" || bad "LT-36i Debian run record" "the backlog doc does not record the run with okflint and pre-commit 4.7.0"
 else
-  skip "LT-36i Debian run record — docs/backlog is not part of this tree (the public export)"
+  skip "LT-36i Debian run record — the register this tree keeps under docs/ is not part of the public export"
 fi
 # Release notes
 CL="$MKT_ROOT/CHANGELOG.md"
@@ -1108,13 +1251,19 @@ done
 [ -z "$sk48_bad" ] && ok "LT-48a skills check, verify, export, setup and explain each exist: name = folder, third-person description with 'Use when' (40-600 chars), argument-hint, at most 90 lines, an allowed-tools list scoped to the scripts it runs (not bare Bash)" || bad "LT-48a entry-point skills" "$sk48_bad"
 sk48_bad=""
 want_cmd() { grep -qF -- "$2" "$SKD/$1/SKILL.md" 2>/dev/null || sk48_bad="$sk48_bad [$1: no '$2']"; }
-want_cmd check '"${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" $ARGUMENTS'
-want_cmd verify '"${CLAUDE_PLUGIN_ROOT}/scripts/okf-verify" $ARGUMENTS'
-want_cmd export '"${CLAUDE_PLUGIN_ROOT}/scripts/okf-export" $ARGUMENTS'
+want_cmd check '"${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" "<bundle-dir>"'
+want_cmd verify '"${CLAUDE_PLUGIN_ROOT}/scripts/okf-verify" "<bundle-dir>"'
+want_cmd export '"${CLAUDE_PLUGIN_ROOT}/scripts/okf-export" "<vault-dir>" "<out-dir>"'
+# A bare $ARGUMENTS after a script word-splits a bundle path that holds a space: the skill must quote the path
+# instead, and the flag text follows outside the quotes.
+for sk in check verify export setup explain okf; do
+  f="$SKD/$sk/SKILL.md"; [ -f "$f" ] || continue
+  grep -qF '" $ARGUMENTS' "$f" && sk48_bad="$sk48_bad [$sk runs its tool with a bare \$ARGUMENTS]"
+done
 for fl in --doctor --install-deps --init-house-rules --init-ignore; do want_cmd setup "scripts/okf-check\" $fl"; done
 want_cmd explain 'references/layers.md'
 want_cmd explain '#what-it-checks'
-[ -z "$sk48_bad" ] && ok "LT-48b each skill names its exact command: check/verify/export run their tool with \$ARGUMENTS, setup has the four setup commands, explain points to the layer reference and the README row" || bad "LT-48b skill commands" "$sk48_bad"
+[ -z "$sk48_bad" ] && ok "LT-48b each skill names its exact command: check/verify/export run their tool with the bundle path in double quotes (never a bare \$ARGUMENTS), setup has the four setup commands, explain points to the layer reference and the README row" || bad "LT-48b skill commands" "$sk48_bad"
 # Every flag a skill names must exist in the tool it names (a skill that teaches a flag the tool lacks is a wrong answer).
 flag_bad=""
 for f in "$SKD"/{check,verify,export,setup,explain}/SKILL.md; do

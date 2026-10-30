@@ -14,7 +14,12 @@ Per `verified` entry whose actor starts with `human:` (exact lowercase, spec §5
   status is draft                                -> warning
   verified.at is earlier than generated.at       -> warning (the content changed after the review)
   generated.by is an agent form                  -> advisory (an honest later review looks the same)
-Entries by `process:` or any other actor are never reported here. Run with PyYAML on the path (okf-check
+Entries by `process:` or any other actor are never reported here.
+A `verified` entry written as a bare string (`verified: human:dana`, or a list item `- human:dana`) is read as its `by` actor:
+L1 reports the shape, and the claim is still in the file, so this layer judges it like the mapping form. The TEXT report is
+printed through `shown()`, which spells a control character, a bidi override or an undecodable byte, so a finding is one line
+and the text in the entry cannot become a line of its own; the record in <findings.json> keeps it as written, so `--json`
+carries the ordinary JSON escape. Run with PyYAML on the path (okf-check
 does this through py_with_vendor). Reads the vendored validator's frontmatter splitter; never edits it.
 """
 import datetime
@@ -136,6 +141,11 @@ def findings_for(meta):
     if not isinstance(entries, list):
         return
     for i, entry in enumerate(entries):
+        if isinstance(entry, str):
+            # L1 warns that the entry is not a `{by, at}` mapping; the claim itself is still read here, as for a scalar
+            # `verified:` above. A string entry carries no `at`, so the dated-before row cannot fire; the draft and
+            # advisory rows read it like the mapping form of the same note.
+            entry = {"by": entry}
         if not isinstance(entry, dict):
             continue
         actor = as_text(entry.get("by"))
@@ -180,7 +190,9 @@ def main():
             records.append({"file": rel, "entry": entry, "severity": severity, "reason": reason})
     for r in records:
         tag = "W" if r["severity"] == "warning" else "A"
-        print(f'{tag}|{r["file"]}: {r["entry"]} {r["reason"]}')
+        # shown() on the text only: the reason quotes the note's own `by` text, and a control character in it would forge a
+        # report line. The record written below keeps it as written, so --json carries the JSON escape, as before.
+        print(f'{tag}|{r["file"]}: {r["entry"]} {shown(r["reason"])}')
     with open(out_path, "w", encoding="utf-8") as fh:
         json.dump([dict(r, file=shown(r["file"])) for r in records], fh)   # --json reads a name that is not UTF-8 as \xff, not a lone surrogate
 

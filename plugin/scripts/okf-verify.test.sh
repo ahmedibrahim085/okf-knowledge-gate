@@ -1000,7 +1000,7 @@ cite "$TMP/rv1" "\`src/a.py:20-10 @$C2\`"; rc=$(run "$TMP/rv1" --repo "$CREPO")
 vok "RV-23 (S2-E4) a reversed range '20-10' is read as up to line 20 (the larger number): CONFIRMED for a 20-line file"
 cite "$TMP/rv2" "\`src/a.py:25-10 @$C2\`"; rc=$(run "$TMP/rv2" --repo "$CREPO")
 vrefuted "RV-23 (S2-E4) ... and REFUTED when the larger number is past the end"
-# --- RV-27 (audit R056/R058): a citation whose text before `:line` holds a space. The parser cuts the path at the space, so `my w.py:3` was
+# --- RV-27 (found by a review of the citation parser): a citation whose text before `:line` holds a space. The parser cuts the path at the space, so `my w.py:3` was
 # checked against `w.py` and CONFIRMED. Fixtures are tiny repos: spcommit makes one commit holding the named files with the given line counts.
 spcommit() { # <repo> <name:lines>... — a fresh repo with one commit; prints the short sha
   local r="$1"; shift; mkdir -p "$r"; git -C "$r" init -q 2>/dev/null; git -C "$r" config user.email t@t; git -C "$r" config user.name t
@@ -1052,12 +1052,12 @@ cite "$TMP/sp-e3" "See C:\\my dir\\w.py:3 @$SP1 here."; rc=$(run "$TMP/sp-e3" --
 # S2-SP-E4: an ordinary word before a citation whose path exists alone stays CONFIRMED (prose, RV-8): only a SPELLED-OUT name changes the reading
 SP6=$(spcommit "$TMP/sp-plain" "w.py:5"); cite "$TMP/sp-e4" "my w.py:3 @$SP6"; rc=$(run "$TMP/sp-e4" --repo "$TMP/sp-plain")
 vok "RV-27 (S2-SP-E4) 'my w.py:3' with only 'w.py' present is CONFIRMED: 'my' is prose when no file is named 'my w.py'"
-# S2-SP-N4 (R058): `path:line` and `@sha` in different paragraphs are two statements, not one citation; a soft-wrapped single newline is still one
+# S2-SP-N4: `path:line` and `@sha` in different paragraphs are two statements, not one citation; a soft-wrapped single newline is still one
 cite "$TMP/sp-n4" "w.py:3
 
 @$SP6"; rc=$(run "$TMP/sp-n4" --repo "$TMP/sp-plain")
 { [ "$rc" = "0" ] && ! grep -qE '^  (REFUTED|unresolved|ok  ) .*citation' "$TMP/out.txt" && ! grep -q '\[citation\]' "$TMP/out.txt"; } \
-  && ok "RV-27 (S2-SP-N4) 'w.py:3', a blank line, '@sha' is not one citation (R058)" || bad "RV-27 S2-SP-N4 paragraphs" "exit $rc: $(sprow)"
+  && ok "RV-27 (S2-SP-N4) 'w.py:3', a blank line, '@sha' is not one citation" || bad "RV-27 S2-SP-N4 paragraphs" "exit $rc: $(sprow)"
 cite "$TMP/sp-n4b" "w.py:3
 at $SP6"; rc=$(run "$TMP/sp-n4b" --repo "$TMP/sp-plain")
 vok "RV-27 (S2-SP-N4) ... while 'w.py:3' and 'at sha' on consecutive lines of one paragraph are still one citation"
@@ -1294,7 +1294,7 @@ PATH="$TMP/gitflaky:$PATH" "$VERIFY" "$TMP/c-p2" --repo "$CREPO" >"$TMP/out.txt"
 { grep -q 'CONFIRMED 1 ' "$TMP/out.txt" && grep -qE '^  unresolved ' "$TMP/out.txt" && ! grep -qE '^  REFUTED ' "$TMP/out.txt"; } && ok "RV-31 (S29-SP-N1) a git killed on its first call is not remembered: one citation UNRESOLVED, the next CONFIRMED, none REFUTED" || bad_hard "RV-31 S29-SP-N1 flaky git" "$(grep -E 'CONFIRMED|^  (ok|unresolved|REFUTED)' "$TMP/out.txt" | cut -c1-140 | tr '\n' '|')"
 # --- S43: a cited blob is read in pieces; memory does not grow with it. A git stand-in writes a 24 MB, 300000-line blob to the pipe
 # (no file of that size exists here), and the peak Python memory of the run (tracemalloc) must stay far below the blob. Real 1, 100
-# and 300 MB blobs are measured in a memory-capped container (docs/0.9.x-cases.md S43), never on this machine.
+# and 300 MB blobs are measured in a memory-capped container (case S43), never on this machine.
 BREPO="$TMP/brepo"; mkdir -p "$BREPO"; git -C "$BREPO" init -q 2>/dev/null
 git -C "$BREPO" config user.email t@t; git -C "$BREPO" config user.name t
 printf 'tiny\n' > "$BREPO/big.txt"; git -C "$BREPO" add big.txt

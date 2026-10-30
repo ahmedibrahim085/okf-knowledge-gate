@@ -69,7 +69,7 @@ lessons hook, from one shared `scripts/l3-lib.sh`):
 
 **Is my okflint the patched build?** `okf-check --doctor` runs okflint on three probe
 notes (a BOM note, a non-UTF-8 note, an impossible date) and prints
-`okflint behaviour  PATCHED` or `UNPATCHED — fails on: ...`. A version string cannot tell
-the builds apart (the patched build is also 0.5.0), so the probe checks behaviour. UNPATCHED
-is advisory: L2 may report a false F001 for a BOM note, or crash on a non-UTF-8 file or an
-impossible date. The fix is mattdav/okflint#11; until it merges, install the fork branch.
+`okflint behaviour  PATCHED` or `UNPATCHED — fails on: ...`. UNPATCHED is advisory: L2 may
+report a false F001 for a BOM note, or crash on a non-UTF-8 file or an impossible date. All
+three are fixed in okflint 0.5.1 (mattdav/okflint#11, merged 2026-10-23), which is the pinned
+release: install it with `okf-check --install-deps --yes`.

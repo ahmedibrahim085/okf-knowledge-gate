@@ -29,17 +29,17 @@ Run these in order. Each ends when its output is read; stop at the first step th
 
    Run it with `--yes` only when the owner says so. `--latest` picks the newest `okflint` instead of the supported one.
 
-3. House rules for the bundle `$ARGUMENTS`: a starter `<bundle>/okf-base.yaml` (never overwrites; edit `name:` and the types to the bundle):
+3. House rules for the bundle you were given: a starter `<bundle>/okf-base.yaml` (never overwrites; edit `name:` and the types to the bundle). Put the path in double quotes, so one with a space stays one argument; one that holds a `"`, a `$` or a backtick needs single quotes instead, with a `'` inside them written as `'\''`:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" --init-house-rules <bundle-dir>
+   "${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" --init-house-rules "<bundle-dir>"
    ```
 
-4. Paths to leave out of every layer: a starter `<bundle>/.okfignore` (never overwrites):
+4. Paths to leave out of every layer: a starter `<bundle>/.okfignore` (never overwrites), the path in double quotes:
 
    ```bash
-   "${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" --init-ignore <bundle-dir>
+   "${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" --init-ignore "<bundle-dir>"
    ```
 
-Steps 3 and 4 write a file: run them on the owner's request. Done when `okf-check <bundle-dir>` shows L2 as PASS or a named reason.
+Steps 3 and 4 write a file: run them on the owner's request. Done when `okf-check "<bundle-dir>"` shows L2 as PASS or a named reason.
 The starter holds a commented `okf_check:` block listing every option.

@@ -43,7 +43,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.56"
+VERSION="0.9.57"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -63,7 +63,7 @@ advise() {
   done
   ADV_SRC+=("$1"); ADV_N+=("$2")
 }
-# The sentence under a Trust finding, in the text report and as `trust_note` in --json (RM-20): it is one fact, said in both places.
+# The sentence under a Trust finding, in the text report and as `trust_note` in --json: it is one fact, said in both places.
 TRUST_NOTE='okf-check cannot prove who a person is. A human: entry is a claim in the file.'
 # Said once: an .okfignore that leaves no note in means nothing was looked at, in the gate and in the conservation report.
 IGNORE_ALL_WHY='.okfignore excludes every note - nothing was checked (not a pass)'
@@ -167,9 +167,18 @@ Checks of a bundle:
   --fail-lost         with --conserve: a LOST line blocks (exit 1)
   --deleted FILE      with --conserve: FILE declares the deletions that are intended
 
-A report mode (--duplicates, --duplicates-body, --facts, --conserve) runs instead of the gate, so a gate
-flag given with one would be read by nothing: that command line is refused (exit 64) instead of run
-without the flag. --fail-lost and --deleted are refused without --conserve for the same reason.
+One run does one thing: a flag the mode you gave never reads is refused (exit 64) instead of dropped.
+A gate flag is one of --fail-stale, --strict-trust and --fail-on-change; --json is not one, because it
+changes the form of the report, not the verdict. A report mode (--duplicates, --duplicates-body,
+--facts, --conserve) runs instead of the gate, so a gate flag beside one is refused, and so is a
+second mode (a flag typed twice, and --duplicates with --duplicates-body, are one mode). --file checks
+one note: it reads --strict-trust and refuses --fail-stale and --fail-on-change. --doctor, --selftest,
+--preflight, --init-ignore, --init-house-rules and --install-deps run no gate, so a gate flag with one
+of them is refused too. --fail-lost and --deleted are refused without --conserve for the same reason.
+Two modes: the message names them in the order typed. A gate flag with a mode: the message names the
+gate flag first, because the gate flag is the one that would be read by nothing. Three modes: it names
+the first and the last distinct one (a repeat at the end is not a new mode); remove one and
+run again.
 
 Set-up and the machine:
   --init-house-rules <bundle>   write a starter <bundle>/okf-base.yaml (never overwrites)
@@ -191,8 +200,8 @@ Exit codes (in order of precedence: a verdict that was reached outranks a gate t
     6  the bundle changed mid-scan (only with --fail-on-change)
     4  stale notes (only with --fail-stale)
     0  every gate passed
-   64  usage error: no bundle, an unknown flag, a path that is not a folder, or a gate flag the given
-       mode cannot read
+   64  usage error: no bundle, an unknown flag, a path that is not a folder, a gate flag the given
+       mode cannot read, or a second mode
   130  interrupted (Ctrl-C), no verdict
   143  terminated, no verdict
 
@@ -222,28 +231,43 @@ BUNDLE=""; MODE="check"; DUP_BODY=0; JSON=0; FAIL_STALE=0; STRICT_TRUST=0; ASSUM
 # Initialised here too: a variable this script reads but never sets would take its value from the caller's environment,
 # so an exported FAIL_LOST or DELETED_GIVEN would refuse or change a plain run the user never asked to change.
 FAIL_LOST=0; DELETED_GIVEN=0
+# The mode flags as the user typed them, in order. The refusal below counts DISTINCT modes, so a flag typed twice is one
+# mode (`--duplicates --duplicates --duplicates` runs once, as it did before) and `--duplicates` with `--duplicates-body`
+# is one mode with its body variant, a documented pair. MODE itself keeps its old meaning (the last one wins).
+# MODE_FLAG_LAST is set only for a mode not seen before, so a repeat at the end of a long command line cannot make the
+# message name a mode against itself (`--doctor --selftest --preflight --doctor` names --doctor and --preflight).
+MODE_FLAG1=""; MODE_FLAG2=""; MODE_FLAG_LAST=""; MODE_FLAG_N=0; MODE_SEEN=" "
+mode_typed() {  # <spelling as typed>
+  local key="$1"
+  case "$1" in --duplicates|--duplicates-body) key="the duplicates family" ;; esac
+  case "$MODE_SEEN" in *" $key "*) return 0 ;; esac
+  MODE_SEEN="$MODE_SEEN$key "
+  MODE_FLAG_LAST="$1"
+  MODE_FLAG_N=$((MODE_FLAG_N + 1))
+  if [ "$MODE_FLAG_N" = 1 ]; then MODE_FLAG1="$1"; elif [ "$MODE_FLAG_N" = 2 ]; then MODE_FLAG2="$1"; fi
+}
 for a in "$@"; do
   case "$a" in
-    --doctor)      MODE="doctor" ;;
-    --selftest)    MODE="selftest" ;;
+    --doctor)      MODE="doctor"; mode_typed "--doctor" ;;
+    --selftest)    MODE="selftest"; mode_typed "--selftest" ;;
     --json)        JSON=1 ;;
     --fail-stale)  FAIL_STALE=1 ;;
     --strict-trust|--strict) STRICT_TRUST=1 ;;   # --strict: the spelling okf-verify uses for the same idea
     --file)        if [ "${_want_file:-0}" = 1 ] || [ -n "${SCOPED_FILE:-}" ]; then echo "error: --file given twice - check one note at a time" >&2; exit 64; fi
-                   MODE="scoped"; _want_file=1 ;;   # its value is the next argument (run_scoped)
+                   MODE="scoped"; mode_typed "--file"; _want_file=1 ;;   # its value is the next argument (run_scoped)
     --fail-on-change) FAIL_ON_CHANGE=1 ;;
-    --fingerprint) MODE="fingerprint" ;;
-    --ignore-filter) MODE="ignore-filter" ;;   # internal seam: which of these note paths .okfignore excludes (okf-conserve)
-    --duplicates)  MODE="duplicates" ;;
-    --duplicates-body) MODE="duplicates"; DUP_BODY=1 ;;
-    --facts)       MODE="facts"; _want_fact=1 ;;   # an optional NAME: the next bare argument once the bundle is known
-    --conserve)    MODE="conserve"; _want_ref=1 ;;  # its <ref> is the next bare argument once the bundle is known
+    --fingerprint) MODE="fingerprint"; mode_typed "--fingerprint" ;;
+    --ignore-filter) MODE="ignore-filter"; mode_typed "--ignore-filter" ;;   # internal seam: which of these note paths .okfignore excludes (okf-conserve)
+    --duplicates)  MODE="duplicates"; mode_typed "--duplicates" ;;
+    --duplicates-body) MODE="duplicates"; mode_typed "--duplicates-body"; DUP_BODY=1 ;;
+    --facts)       MODE="facts"; mode_typed "--facts"; _want_fact=1 ;;   # an optional NAME: the next bare argument once the bundle is known
+    --conserve)    MODE="conserve"; mode_typed "--conserve"; _want_ref=1 ;;  # its <ref> is the next bare argument once the bundle is known
     --fail-lost)   FAIL_LOST=1 ;;
     --deleted)     _want_del=1; DELETED_GIVEN=1 ;;
-    --preflight)   MODE="preflight" ;;
-    --init-ignore) MODE="init-ignore" ;;
-    --init-house-rules) MODE="init-house-rules" ;;
-    --install-deps) MODE="install-deps" ;;
+    --preflight)   MODE="preflight"; mode_typed "--preflight" ;;
+    --init-ignore) MODE="init-ignore"; mode_typed "--init-ignore" ;;
+    --init-house-rules) MODE="init-house-rules"; mode_typed "--init-house-rules" ;;
+    --install-deps) MODE="install-deps"; mode_typed "--install-deps" ;;
     --yes)         ASSUME_YES=1 ;;
     --latest)      USE_LATEST=1 ;;
     --version)     echo "okf-check $VERSION"; exit 0 ;;
@@ -289,6 +313,46 @@ refuse_without_conserve() {
   echo "error: $1 only works with --conserve${2:+, not with $2}: run --conserve <ref> $1, or drop the flag" >&2
   exit 64
 }
+# The same class one step earlier: a second mode used to replace the first in silence (`okf-check B --duplicates --facts`
+# printed only the facts line and exited 0, and `--facts --duplicates` only the duplicates report), and a gate flag beside
+# a mode that reads no gate flag was read by nothing (`--doctor --fail-stale` judged no freshness and exited 0; it was the
+# last open item of this class in the 0.9.56 changelog). Refused at the command line, by flag TYPE and not by argument
+# order, so one command line always gets one answer: a second mode first, then a gate flag with --file, then a gate flag
+# with an action mode, and only then the --fail-lost / --deleted and report-mode refusals below.
+# <first> <second>: the run would keep the LAST mode and drop the first, so the message names the first as the one that
+# would be read by nothing.
+refuse_one_run() {
+  echo "error: $1 cannot be combined with $2: a run does one thing, so $1 would be read by nothing — run them as two commands" >&2
+  exit 64
+}
+# <gate flag>: --file is a scoped gate, not a report. It checks one note and passes --strict-trust to its layer, but reads
+# no other gate flag, so the report-mode text above ("a report mode replaces the gate run") would be wrong here.
+refuse_gate_with_file() {
+  echo "error: $1 cannot be combined with --file: --file checks one note and reads no gate flag, so $1 would be read by nothing — run the gate on the bundle and --file on the note" >&2
+  exit 64
+}
+# Two distinct modes cannot both run (the distinct count above already treats a repeated flag and the --duplicates /
+# --duplicates-body pair as one mode). Two modes: the names are the two typed spellings in the order typed, the first
+# being the one the run would drop. Three or more: the FIRST and the LAST distinct one typed, which is a true pair (the
+# first is dropped, the last wins) and keeps the message short; a command line that long is a mistake, not a habit.
+if [ "$MODE_FLAG_N" -gt 2 ]; then
+  refuse_one_run "$MODE_FLAG1" "$MODE_FLAG_LAST"
+elif [ "$MODE_FLAG_N" -eq 2 ]; then
+  refuse_one_run "$MODE_FLAG1" "$MODE_FLAG2"
+fi
+# A gate flag with --file. A second mode was refused above, so MODE_FLAG1 is the only mode flag here.
+if [ "$MODE_FLAG1" = "--file" ]; then
+  [ "$FAIL_STALE" = 1 ]     && refuse_gate_with_file "--fail-stale"
+  [ "$FAIL_ON_CHANGE" = 1 ] && refuse_gate_with_file "--fail-on-change"
+fi
+# A gate flag with any other mode that reads no gate flag. The report modes keep the text below, which explains that the
+# report replaces the gate run, and --file is handled above (it reads --strict-trust, so that one is never refused).
+case "$MODE_FLAG1" in
+  ""|"--duplicates"|"--duplicates-body"|"--facts"|"--conserve"|"--ignore-filter"|"--file") ;;
+  *) [ "$FAIL_STALE" = 1 ]     && refuse_one_run "--fail-stale" "$MODE_FLAG1"
+     [ "$STRICT_TRUST" = 1 ]   && refuse_one_run "--strict-trust" "$MODE_FLAG1"
+     [ "$FAIL_ON_CHANGE" = 1 ] && refuse_one_run "--fail-on-change" "$MODE_FLAG1" ;;
+esac
 if [ "$MODE" != conserve ]; then
   [ "$FAIL_LOST" = 1 ]     && refuse_without_conserve "--fail-lost" "$report_mode"
   [ "$DELETED_GIVEN" = 1 ] && refuse_without_conserve "--deleted" "$report_mode"
@@ -747,6 +811,18 @@ okflint_target() {  # prints: <spec>|<where it comes from>   (exit 2: pins unrea
   else printf '%s|%s' "okflint" "PyPI, latest release"; fi
 }
 
+# okflint_install_hint: the package an install hint should name, or "!" followed by the reason nothing can be named.
+# Two states must never print the unpinned build: a pins file that names no okflint (okflint_target falls back to bare
+# `okflint`) and any refusal by okflint_target (an unreadable file, an unsafe okflint_source, whose own message is the
+# reason). Bare `okflint` is printed only when --latest asked for it.
+okflint_install_hint() {
+  local t t_rc; t=$(okflint_target 2>/dev/null); t_rc=$?
+  if [ "$t_rc" -ne 0 ]; then printf '!%s' "$t"; return 0; fi
+  t=${t%%|*}
+  if [ "$t" = okflint ] && [ "$USE_LATEST" -eq 0 ]; then printf '!%s names no okflint' "$PINS"; return 0; fi
+  printf '%s' "$t"
+}
+
 preflight() {
   local issues="" want got=""
   [ -n "$PY" ] || issues="$issues python3 is missing (L1 needs it);"
@@ -802,8 +878,8 @@ install_deps() {  # install_deps [yes]  — "yes" is the caller's consent (the O
   else say "  uv        MISSING — okflint is installed with uv: https://docs.astral.sh/uv/getting-started/installation/"; fi
   say "  okflint   ${prev:-not installed} -> $spec   [$where]"
   if [ "$USE_LATEST" -eq 1 ]; then
-    say "  note      the newest PyPI okflint may lack the okflint#11 fixes (BOM, non-UTF-8, impossible date);"
-    say "            --doctor will then report UNPATCHED, and a later preflight with the pin reinstalls the pin"
+    say "  note      the newest PyPI okflint may lack fixes this gate was verified against;"
+    say "            --doctor reports what it finds, and a later preflight with the pin reinstalls the pinned build"
   fi
   if command -v jq >/dev/null 2>&1; then say "  jq        present (optional)"
   else say "  jq        absent (optional): doc-reuse-guard.sh is off without it; install with your package manager"; fi
@@ -1035,8 +1111,8 @@ doctor() {
             say "  okflint behaviour  PATCHED   (BOM, non-UTF-8 and impossible-date probes all reach a verdict)"
           else
             say "  okflint behaviour  UNPATCHED — fails on:${bad%,}"
-            say "                     fixes: mattdav/okflint#11. Install: git clone ahmedibrahim085/okflint, checkout"
-            say "                     fix/encoding-and-dates-8-10, then: uv tool install ."
+            say "                     fixes: mattdav/okflint#11 (merged; shipped in 0.5.1). Install the build this pin names:"
+            say "                     okf-check --install-deps --yes"
             say "                     advisory only: okf-check still names a crashing note (exit 2)."
           fi
         fi
@@ -1065,7 +1141,14 @@ doctor() {
       fi
     fi
   else
-    say "  okflint            MISSING   <- install: uv tool install okflint   (or: pip install okflint)"
+    # The PINNED package, not bare okflint: plain `uv tool install okflint` installs whatever PyPI calls latest, so a
+    # reader lands on a build this gate was never verified against (0.5.0 drew a false S204 on a datetime stale_after,
+    #). A pins file that names no okflint, or one okflint_target refuses, names no package at all and says why.
+    local hint; hint=$(okflint_install_hint)
+    case "$hint" in
+      '!'*) say "  okflint            MISSING   <- ${hint#!}: fix that before installing a build nobody verified" ;;
+      *)    say "  okflint            MISSING   <- install: uv tool install $hint   (or: pip install $hint)" ;;
+    esac
     say "                     L2 (house profile) will be SKIPPED, not silently passed."
   fi
 
@@ -1315,7 +1398,7 @@ run_config() {   # $1 the real bundle (paths in the block resolve against it), $
   fi
   out=$(printf '%s' "$out" | tail -n 1)
   if [ ! -f "$ROOT/scripts/okf-verify" ]; then
-    # The checker itself is gone: python's "can't open file" is not a fault of okf-base.yaml (0.9.4 register).
+    # The checker itself is gone: python's "can't open file" is not a fault of okf-base.yaml.
     out="the config check cannot run: $ROOT/scripts/okf-verify is missing (reinstall the plugin)"
   elif [ "$rc" -eq 2 ] && [ "${out#error: }" != "$out" ]; then
     # The shortest prefix: a value that itself names okf-base.yaml must stay in the message.
@@ -1649,7 +1732,7 @@ run_facts() {
   return 0
 }
 
-# ------------------------------------------------------- L2 graph (optional okf-memory layer, .scratch okf-ecosystem)
+# ------------------------------------------------------- L2 graph (optional okf-memory layer, the okf-memory ecosystem)
 # okf-memory (github.com/okf-memory/okf-agent-memory, MIT) finds what no layer here looks for: notes no other note links to
 # (orphans) and concept links whose target is gone. Opt-in: okf_check.graph: true in okf-base.yaml, or OKF_MEMORY_BIN set.
 # Only its read-only `validate` is run, on the frozen copy, under the watchdog; its findings are advisories (exit code
@@ -1907,7 +1990,14 @@ __l2_core() {
   local manifest="$bundle/okf-base.yaml"
   if ! command -v okflint >/dev/null 2>&1; then
     SKIPPED=$((${SKIPPED:-0} + 1)); L2_PROFILE=skipped; record skipped "L2 profile: okflint not installed"
-    say "  L2 profile       SKIPPED — okflint not installed (install: uv tool install okflint)"
+    # The pinned package, as --doctor names it: bare `uv tool install okflint` is the unpinned build that drew a false
+    # S204 on a datetime stale_after. A pins file that names no okflint, or one okflint_target refuses, names no
+    # package at all and says why.
+    local l2_hint; l2_hint=$(okflint_install_hint)
+    case "$l2_hint" in
+      '!'*) say "  L2 profile       SKIPPED — okflint not installed, and ${l2_hint#!}" ;;
+      *)    say "  L2 profile       SKIPPED — okflint not installed (install: uv tool install $l2_hint)" ;;
+    esac
     say "                   house rules are NOT enforced — this is a skip, not a pass."
     # Two things are missing here, and the person needs both: the tool and the rules file.
     [ -f "$manifest" ] || say "                   there is no okf-base.yaml yet either: create a starter with: okf-check --init-house-rules '$bundle'"
@@ -2117,7 +2207,7 @@ for code, n in sorted(Counter(str(x.get("code", "?")) for x in others).items(), 
 # The advisories themselves, same text format as the E rows, for `l2_advisories` in --json (okf-knowledge-gate#2). One row per
 # finding, so the text is flattened: a newline in a file name or message must not forge a C| or E| row.
 # Sorted: okflint reports in the disk's listing order, which differs between macOS and Linux, and --json keeps only the
-# first 200, so the same bundle listed different advisories on the two systems (BL-624). Code points, not a locale.
+# first 200, so the same bundle listed different advisories on the two systems. Code points, not a locale.
 for w in sorted(shown(re.sub(r"[\r\n\t]", " ", "%s %s \u2014 %s" % (x.get("code", "?"), x.get("file", "?"), x.get("message", "")))) for x in others):
     print("W|" + w)
 if _above:

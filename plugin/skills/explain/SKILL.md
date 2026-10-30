@@ -13,8 +13,14 @@ allowed-tools:
 
 # /okf:explain
 
-The finding is `$ARGUMENTS`. When only a bundle and a note are given, run
-`"${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" <bundle-dir> --file <note>` and take the line it prints.
+The finding is `$ARGUMENTS`. When only a bundle and a note are given, run this and take the line it prints. The bundle is
+the first path, everything before the first word starting with `--`; the note is the path after `--file`, quoted the
+same way. Put both in double quotes, as shown; if the argument text already quotes a path, use it as typed. A path that
+holds a `"`, a `$` or a backtick needs single quotes instead, with a `'` inside them written as `'\''`.
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" "<bundle-dir>" --file "<note>"
+```
 
 1. Find the line's row below (the first word or the layer name on its line).
 2. Read the layer's row in the README table, https://github.com/ahmedibrahim085/okf-knowledge-gate#what-it-checks, and `${CLAUDE_PLUGIN_ROOT}/skills/okf/references/layers.md`.

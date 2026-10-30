@@ -152,7 +152,7 @@ okf_refused_notes() {
 # index.md and log.md; the third counts ignored notes and config, not the linked files). Same file set L1 sees without .okfignore: symlinked directories are NOT
 # entered (find -H, as okf_md_files and the validator), so a note is neither lost nor listed by one layer only. Exit 1 (naming the file on stderr) when a copy or link fails, so a note is never dropped
 # silently. Nothing is deleted outside <dest>. A non-markdown file that .okfignore excludes is not linked, whatever else is
-# excluded: it is not part of the bundle, so a link to it is an L002 advisory (one rule; BL-605).
+# excluded: it is not part of the bundle, so a link to it is an L002 advisory (one rule).
 okfignore_mirror() {
   local bundle="${1%/}" dest="$2" f rel kept=0 excl=0 exall=0 isnote iscfg rc abs dir mdir="" ldir="" l kind late
   local -a pend=() src=()

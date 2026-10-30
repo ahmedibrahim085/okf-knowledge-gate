@@ -84,7 +84,7 @@ PATH_RE = re.compile(r"([`\"'])((?:~|/)[A-Za-z0-9._/ -]*[A-Za-z0-9._-]\.[A-Za-z0
 # answers UNRESOLVED when the cut is the end of a longer file name.
 CITE_RE = re.compile(r"(?<![\w./\\-])([A-Za-z0-9_][A-Za-z0-9_./-]*\.[A-Za-z0-9]{1,8}):(\d+)(?:-(\d+))?`?(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:@|at(?:[ \t]+|[ \t]*\r?\n[ \t]*))`?([0-9a-f]{7,40})\b`?(?:[ \t]+[\"“]([^\"”\n]{1,200})[\"”])?", re.I)
 # The gap between `path:line` and `@sha` may hold ONE line break (a wrapped line) but never a blank line: across a paragraph break the two
-# are separate statements and one was read as the other's citation. (audit R058)
+# are separate statements and one was read as the other's citation. (found by a review of the citation parser)
 # The same claim with a path that holds a space, QUOTED: the quotes say where the path starts, so nothing is cut and nothing is guessed.
 QCITE_RE = re.compile(r"(?<![\w./\\-])([`\"'])(\w[\w./-]*(?: [\w./-]+)+\.[A-Za-z0-9]{1,8})\1:(\d+)(?:-(\d+))?`?(?:[ \t]+|[ \t]*\r?\n[ \t]*)(?:@|at(?:[ \t]+|[ \t]*\r?\n[ \t]*))`?([0-9a-f]{7,40})\b`?(?:[ \t]+[\"“]([^\"”\n]{1,200})[\"”])?", re.I)
 # A line citation into a living document, with no commit (okf-knowledge-gate#14): `decision-12.md:94`, `spec.md:40-42`. The

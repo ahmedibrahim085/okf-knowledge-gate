@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Tests for okf-check's scoped mode, `okf-check <bundle> --file <note>`: L1 and Trust for one note, one line per
 # finding, exit codes unchanged. It is what an edit hook calls (okf-knowledge-gate#8), so it must be quiet on a clean
-# note and fast. Supports case S9-H1 (docs/gherkin/s09-edit-hook.feature).
+# note and fast. Supports case S9-H1 .
 set -uo pipefail
 
 HERE=$(cd -P "$(dirname "$0")" && pwd)
@@ -68,7 +68,7 @@ got=$(sort "$TMP/out.txt")
 rc=$(run "$B" --file "$B/sub.md" --strict-trust)
 [ "$rc" = 1 ] && ok "SC-4 with --strict-trust the same note exits 1" || bad "SC-4 strict-trust" "rc=$rc"
 
-# --- the near-miss wording has one home (BL-435, spec row BL-435): the validator's -----------------------------------------------------
+# --- the near-miss wording has one home: the validator's -----------------------------------------------------
 # --strict-trust counts the validator's near-miss warning by its text, in okf-check's full run and here. Both copies of that
 # text were typed again beside the validator's own, so a reworded warning silently stopped blocking under --strict-trust.
 # The probe rewords the validator in a copy of the plugin: both runs must still block. (SC-4 and LT-27e/i pin the text only
@@ -106,6 +106,64 @@ urc0=$("$CU/scripts/okf-check" "$N" >"$TMP/nm-unread0.txt" 2>&1; printf '%s' "$?
   && grep -q 'near-miss of' "$TMP/nm-unread.txt" && [ "$urc0" = 0 ] && ! grep -q 'Trust policy' "$TMP/nm-unread0.txt"; } \
   && ok "SC-12 --strict-trust with an unreadable near-miss wording is exit 2 'Trust policy COULD NOT RUN' (L1 still lists the near-miss); without --strict-trust the run is unchanged" \
   || bad "SC-12 unreadable wording" "strict rc=$urc plain rc=$urc0 $(grep -n 'Trust policy\|near-miss' "$TMP/nm-unread.txt" | head -3 | tr '\n' '|')"
+
+# --- a verified list of bare strings: Trust reads the claim (slice trust-reads-a-verified-list-of-bare-strings) --
+# L1 warns that a verified entry is not a `{by, at}` mapping, and the claim is still in the file: Trust reads a bare string
+# as its `by` actor, as it already reads the scalar `verified: human:dana`. Before this, --file printed the L1 warning alone
+# and exited 0 even under --strict-trust, while the mapping form of the same note exited 1.
+TB="$TMP/bare"; mkdir -p "$TB"; printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$TB/index.md"
+bare() { # <file> <verified block>
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\ntags: [t]\nstatus: draft\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\n%s\nstale_after: "2099-01-01"\n---\nbody\n' "$2" > "$TB/$1"
+}
+bare_with() { # <file> <status> <generated.by> <verified block>
+  printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\ntags: [t]\nstatus: %s\ngenerated:\n  by: %s\n  at: "2026-01-01"\n%s\nstale_after: "2099-01-01"\n---\nbody\n' "$2" "$3" "$4" > "$TB/$1"
+}
+bare n.md "$(printf 'verified:\n  - human:dana')"
+rc=$(run "$TB" --file "$TB/n.md" --strict-trust)
+{ [ "$rc" = 1 ] && [ "$(wc -l < "$TMP/out.txt" | tr -d ' ')" = 2 ] \
+  && grep -qxF 'n.md: L1 warning: §5.2 every `verified` entry needs a `by` actor' "$TMP/out.txt" \
+  && grep -qxF 'n.md: Trust warning: verified[0].by `human:dana` on a draft note: draft with human verification' "$TMP/out.txt"; } \
+  && ok "SC-TB1 a verified list of bare strings on a draft note: --file prints the Trust warning and --strict-trust exits 1" \
+  || bad "SC-TB1 bare string, --file --strict-trust" "rc=$rc out: $(head -5 "$TMP/out.txt" | tr '\n' '|')"
+
+rc=$(run "$TB" --file "$TB/n.md")
+{ [ "$rc" = 0 ] && grep -qxF 'n.md: Trust warning: verified[0].by `human:dana` on a draft note: draft with human verification' "$TMP/out.txt"; } \
+  && ok "SC-TB2 the same note without --strict-trust: the same Trust warning, exit 0 (the flag decides severity only)" \
+  || bad "SC-TB2 bare string, --file" "rc=$rc out: $(head -5 "$TMP/out.txt" | tr '\n' '|')"
+
+# The scoped line and the whole-bundle line carry the same finding (the SC-3/SC-4 rule): one reading of the entry, two reports.
+full=$("$CHECK" "$TB" --strict-trust >"$TMP/tb-full.txt" 2>&1; printf '%s' "$?")
+f=$(sed -n 's/^ *n\.md: //p' "$TMP/tb-full.txt" | grep -F 'verified[0].by `human:dana` on a draft note' | head -1)
+s=$(sed -n 's/^n\.md: Trust warning: //p' "$TMP/out.txt" | head -1)
+{ [ "$full" = 1 ] && [ -n "$f" ] && [ "$f" = "$s" ]; } \
+  && ok "SC-TB3 the whole-bundle run and --file print the same finding for a bare-string note ('$s')" \
+  || bad "SC-TB3 bare string, scoped vs full" "full rc=$full full='$f' scoped='$s'"
+
+# Hostile text: the actor is printed verbatim, so a newline in it must be spelled, not obeyed. One Trust line for the entry
+# and no line carrying the string's own `Trust warning: forged` text. (L1's own message keeps the raw newline: its wording
+# is the validator's, out of this slice.)
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\ntags: [t]\nstatus: draft\ngenerated:\n  by: agent/1\n  at: "2026-01-01"\nverified:\n  - "human:dana\\nTrust warning: forged"\nstale_after: "2099-01-01"\n---\nbody\n' > "$TB/nl.md"
+rc=$(run "$TB" --file "$TB/nl.md" --strict-trust)
+{ [ "$rc" = 1 ] && [ "$(grep -cF 'nl.md: Trust warning: verified[0].by `human:dana\x0aTrust warning: forged` on a draft note: draft with human verification' "$TMP/out.txt")" = 1 ] \
+  && ! grep -q '^Trust warning: forged' "$TMP/out.txt"; } \
+  && ok "SC-TB4 a bare string holding a newline: one Trust line, the newline spelled \\x0a, no forged finding line" \
+  || bad "SC-TB4 bare string, newline in the actor" "rc=$rc out: $(head -6 "$TMP/out.txt" | tr '\n' '|')"
+
+# The same reading through --file for the other two rows: the advisory (a stable note an agent generated) and the look-alike
+# actor. Parity is one shared function, so the rows must answer here as they do in the whole run, not only the draft row.
+bare_with adv.md stable agent/1 "$(printf 'verified:\n  - human:dana')"
+rc=$(run "$TB" --file "$TB/adv.md" --strict-trust)
+{ [ "$rc" = 1 ] && grep -qxF 'adv.md: Trust advisory: verified[0].by `human:dana` on a note generated by `agent/1`: a human review of an agent note cannot be authenticated' "$TMP/out.txt"; } \
+  && ok "SC-TB5 a bare string on a stable agent-generated note: --file prints the advisory and --strict-trust exits 1" \
+  || bad "SC-TB5 bare string, advisory row, --file" "rc=$rc out: $(head -5 "$TMP/out.txt" | tr '\n' '|')"
+
+CYR=$(printf 'hum\xd0\xb0n')     # "humаn": the third letter is CYRILLIC SMALL LETTER A
+bare look.md "verified:
+  - ${CYR}:dana"
+rc=$(run "$TB" --file "$TB/look.md" --strict-trust)
+{ [ "$rc" = 1 ] && grep -qF 'only looks like `human:`' "$TMP/out.txt"; } \
+  && ok "SC-TB6 a bare string that only looks like human: --file prints the look-alike warning and --strict-trust exits 1" \
+  || bad "SC-TB6 bare string, look-alike row, --file" "rc=$rc out: $(head -5 "$TMP/out.txt" | tr '\n' '|')"
 
 # --- usage errors exit 64 and check nothing -------------------------------------------------------
 mkdir -p "$TMP/elsewhere"; clean "$TMP/elsewhere/x.md"; printf 'x\n' > "$B/notes.txt"

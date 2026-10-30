@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Tests for the L2 advisory list in `okf-check --json` (cases S13-LF-* in docs/0.9.x-cases.md and
-# docs/gherkin/s13-l2-findings.feature; public okf-knowledge-gate #2, second half).
+# Tests for the L2 advisory list in `okf-check --json` (cases S13-LF-*, public okf-knowledge-gate #2, second half).
 #
 # `l2_warnings` and `l2_by_rule` counted the okflint advisories but no key named the files behind them.
 # These tests observe what a CI job or agent reads: the `--json` report of a real okf-check run.
@@ -61,7 +60,7 @@ else
   [ "$got" = "$want" ] && ok "S13-LF-E1 1,200 advisories: 200 listed, an announced cut of 1000, l2_warnings 1200" \
     || bad "S13-LF-E1 capped list" "got: $got; want: $want"
 
-  # BL-624: which 200 advisories survive the cut must not depend on the order okflint reports them in (it follows the
+  # which 200 advisories survive the cut must not depend on the order okflint reports them in (it follows the
   # disk's listing, which differs between macOS and Linux for the same bundle). 250 links written from n249 down to n000:
   # okflint reports them in that order; the report sorts, so the survivors are the 200 first by name, n000 to n199.
   B="$TMP/e1s"; body=""; i=249
@@ -70,8 +69,8 @@ else
   mkb "$B" "$body"
   got=$(jq_py "$B" 'd["l2_warnings"], len(d["l2_advisories"]), d["l2_advisories"][0], d["l2_advisories"][199], d["l2_advisories"][-1]')
   want="250 201 L002 a.md — broken markdown link: n000.md L002 a.md — broken markdown link: n199.md ... and 50 more (l2_warnings has the total)"
-  [ "$got" = "$want" ] && ok "BL-624 250 advisories reported in descending order: the 200 listed are the first 200 by name" \
-    || bad "BL-624 sorted before the cut" "got: $got; want: $want"
+  [ "$got" = "$want" ] && ok "250 advisories reported in descending order: the 200 listed are the first 200 by name" \
+    || bad "sorted before the cut" "got: $got; want: $want"
 
   # S13-LF-E2: the temporary mirror .okfignore builds never shows in the report. log.md is missing, so okflint
   # reports R201 and puts the root it was given into the message.

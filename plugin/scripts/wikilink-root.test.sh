@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Tests for okf_check.wikilink_root (cases S15-WR-* in docs/0.9.x-cases.md and
-# docs/gherkin/s15-wikilink-root.feature; public okf-knowledge-gate #13).
+# Tests for okf_check.wikilink_root (cases S15-WR-*, public okf-knowledge-gate #13).
 #
 # A bundle inside a larger note vault (Obsidian, Foam) links notes by their path from the VAULT root,
 # `[[projects/p/README]]`. okflint resolves a wikilink by file name only, and okf-check's post-filter (okf-knowledge-gate#1) looks

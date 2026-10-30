@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Tests for okf-verify line citations into living documents (public okf-knowledge-gate #14, slice a; cases S21-LC-* in
-# docs/0.9.x-cases.md). A note cites `decision-12.md:94`, `spec.md:40-42` or `decision-12:94` (no commit): the cited file
-# must exist with that many lines. CONFIRMED / REFUTED / UNRESOLVED keep their meaning: REFUTED only when the file was
+# Tests for okf-verify line citations into living documents (public okf-knowledge-gate #14, slice a; cases S21-LC-*).
+# A note cites `decision-12.md:94`, `spec.md:40-42` or `decision-12:94` (no commit): the cited file must exist with that
+# many lines. CONFIRMED / REFUTED / UNRESOLVED keep their meaning: REFUTED only when the file was
 # found and is shorter; a file that is missing, ambiguous or outside the bundle and the searched repositories is UNRESOLVED.
 #
 # bash 3.2 compatible.

@@ -37,8 +37,8 @@ that is not this one — the exact opposite of the goal. PyYAML's `__init__.py`
 imports `cyaml` inside a `try/except ImportError`, so its absence degrades to the
 pure-python loader: identical results, and no measurable cost for ordinary notes —
 46 frontmatter blocks parse in 10.6 ms without libyaml, 10.7 ms with it. A very large
-frontmatter does cost: 0.79 s of 0.92 s for a 40,000-item list, linear (register row BL-225,
-open: using the C loader means loading a compiled module from outside this tree).
+frontmatter does cost: 0.79 s of 0.92 s for a 40,000-item list, linear (open: using the C
+loader means loading a compiled module from outside this tree).
 Verified with `python3 -S` (site-packages disabled): `__with_libyaml__ == False`,
 `safe_load` correct.
 

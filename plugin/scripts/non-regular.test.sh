@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Tests for the refusal of notes that are not regular files, the byte cap and the process cleanup
-# (cases S17-NR-* in docs/0.9.x-cases.md and docs/gherkin/s17-non-regular.feature).
+# (cases S17-NR-*).
 #
 # Incident 2026-10-18: a note that was a symlink to /dev/zero made okflint grow to 112 GB and crashed the host.
 # SAFETY: this suite runs on the host. The only device it touches is /dev/null (it returns EOF at once). A real

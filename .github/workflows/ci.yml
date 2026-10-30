@@ -60,7 +60,8 @@ jobs:
           export PATH="$HOME/.local/bin:$PATH"
           uv venv -q --python "$OKF_LINUX_PYTHON" "$HOME/venv"
           . "$HOME/venv/bin/activate"
-          # The supported okflint: the pinned source while upstream okflint#11 is unmerged, else the pinned release.
+          # The supported okflint: the pinned source if the pin file names one, else the pinned release (0.5.1 carries
+          # every fix this gate needs).
           pins=plugin/config/pinned-versions.txt
           okflint=$(awk '$1=="okflint_source"{print $2}' "$pins")
           [ -n "$okflint" ] || okflint="okflint==$(awk '$1=="okflint"{print $2}' "$pins")"
@@ -173,7 +174,7 @@ jobs:
           bundle: ${{ runner.temp }}/good
           require-house-rules: 'true'
 
-      # verify, repo, verify-args and report-args (BL-1068a). The note cites the commit this job checked out. With
+      # verify, repo, verify-args and report-args. The note cites the commit this job checked out. With
       # verify-args --strict an UNRESOLVED commit fails okf-verify: the commit is in this checkout (repo '.') and in no
       # commit of an empty repository, so the two steps below differ only by the repository okf-verify searched.
       - name: A bundle whose note cites the checked-out commit, and an empty repository

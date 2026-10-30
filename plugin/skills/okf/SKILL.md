@@ -5,7 +5,8 @@ description: >-
   with YAML frontmatter. okf-check gates a bundle (spec conformance, house rules, staleness, trust in "verified by a
   human" claims), finds duplicate notes, lists where a fact is stated and proves no content was lost since a git ref.
   okf-verify checks that cited commit SHAs, file paths and line citations still exist. okf-export turns an
-  Obsidian-style [[wikilink]] vault into a conformant bundle. Use to choose which OKF tool or /okf: skill fits, or to
+  Obsidian-style [[wikilink]] vault into an OKF bundle (every note needs its own frontmatter before the gate passes).
+  Use to choose which OKF tool or /okf: skill fits, or to
   read an exit code; each job has its own skill.
 user-invocable: true
 argument-hint: "<bundle-dir> [--fail-stale | --strict-trust | --json | --fail-on-change | --file <note> | --duplicates | --duplicates-body | --facts [NAME] | --conserve <ref>] | --doctor | --selftest | --install-deps | --init-house-rules <bundle-dir> | --init-ignore <bundle-dir>"
@@ -18,8 +19,19 @@ One command over several layers. Knowledge stores rot when the checks are separa
 remember, so this is a single entry point.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" $ARGUMENTS     # a plain `okf-check` also works while the plugin is enabled
+"${CLAUDE_PLUGIN_ROOT}/scripts/okf-check" "<bundle-dir>"    # a plain `okf-check` also works while the plugin is enabled
 ```
+
+The bundle path is everything before the first word that starts with `--`. If the argument text already quotes a path
+(`"my notes" --json`), use it as typed; a path that itself holds a word starting with `--` has to be quoted for the
+same reason. Put the path in double quotes as one argument and the flags after it, outside the quotes, so
+`sp ace/b --fail-stale` runs as `"sp ace/b" --fail-stale`: unquoted, the path reaches the tool split and the run exits
+64. A path that follows a flag (`--file <note>`, `--deleted <file>`, `--repo <dir>`, `--init-house-rules <dir>`,
+`--init-ignore <dir>`) is quoted the same way. If the path holds a `"`, a `$` or a backtick, put it in single quotes
+instead, and write a `'` inside them as `'\''`.
+
+That fence is a check. The other forms follow the `argument-hint` order: `--doctor`, `--selftest`, `--install-deps`,
+then `--init-house-rules` and `--init-ignore`, each with its path quoted.
 
 The bundle path is **required** for a check (`--doctor` and `--selftest` need none). With none the command exits 64 with a usage message.
 
@@ -74,8 +86,8 @@ as an agent) into exit 1; it changes severity only, never what is found.
 - After any dependency upgrade run `okf-check --selftest`: it plants a known defect per layer and requires each
   gate to catch it.
 - `L2 SKIPPED — no okf-base.yaml` means house rules are not enforced. The owner can run
-  `okf-check --init-house-rules <bundle>` to write a starter `<bundle>/okf-base.yaml` (it never overwrites;
-  nothing else writes it). `okf-check --init-ignore <bundle>` does the same for `.okfignore`. Only run an init
+  `okf-check --init-house-rules "<bundle>"` to write a starter `<bundle>/okf-base.yaml` (it never overwrites;
+  nothing else writes it). `okf-check --init-ignore "<bundle>"` does the same for `.okfignore`. Only run an init
   command when the owner asks. Set requirements the bundle already meets before adding new ones.
 - L2 reports `L001 broken wikilink` for a link written from a vault root (`[[projects/p/README]]`) when the bundle
   sits inside a larger note vault. Setting `okf_check: {wikilink_root: ../../..}` in `okf-base.yaml` (a folder relative
@@ -88,12 +100,12 @@ as an agent) into exit 1; it changes severity only, never what is found.
   note to `okf_check.size.exclude` to pass a run (`exclude` is for notes a script generates, set by the owner).
 
 - Before you commit a reorganisation of notes (a split, a move to a companion note, a merge), run
-  `okf-check <bundle> --conserve HEAD`: every removed line should be MOVED. Put back each LOST line, or move it to the
+  `okf-check "<bundle>" --conserve HEAD`: every removed line should be MOVED. Put back each LOST line, or move it to the
   note where it belongs; declare a deletion only when the owner asked for it (`OKF-Deleted: <note>` in the commit).
 
 - A `Facts` line means the bundle declares facts in `okf_check.facts`: a `FACT-CONFLICT` names a note that states a fact
   with another value (exit 1). Fix the note to the declared value; if the value itself changed, the owner changes it in
-  `okf-base.yaml`, and `okf-check <bundle> --facts NAME` lists every place that must follow.
+  `okf-base.yaml`, and `okf-check "<bundle>" --facts NAME` lists every place that must follow.
 
 - An `L2 graph` line means the bundle opted into okf-memory (`okf_check.graph: true`): `WARN` lists orphan notes (no note
   links to them) and concept links whose target is gone. Advisory: link an orphan from its parent or index note, or fix the
@@ -122,7 +134,7 @@ as an agent) into exit 1; it changes severity only, never what is found.
 ## okf-verify: is what a note SAYS still true?
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/okf-verify" <bundle> [--repo DIR]... [--host-paths] [--since REF] [--json] [--strict]   # plain `okf-verify` also works while the plugin is enabled
+"${CLAUDE_PLUGIN_ROOT}/scripts/okf-verify" "<bundle>" [--repo DIR]... [--host-paths] [--since REF] [--json] [--strict]   # plain `okf-verify` also works while the plugin is enabled
 ```
 
 It resolves the commit SHAs, file paths and line citations (`decision-12.md:94`) each concept cites. Three verdicts, and the difference matters:
@@ -143,7 +155,7 @@ A citation with a quoted anchor (`decision-12.md:94 "shadow, canary"`) whose tex
 
 ## One note: `--file`
 
-`okf-check <bundle> --file <note>` checks only that note, L1 and Trust, in well under a second: one line per
+`okf-check "<bundle>" --file "<note>"` checks only that note, L1 and Trust, in well under a second: one line per
 finding (`<note>: L1 error: ...`, `L1 warning`, `Trust warning`, `Trust error` for a note the loader refuses for its size), nothing when the note is clean. Exit codes keep
 their meaning (1 an L1 error, a Trust error, or a Trust finding under `--strict-trust`; 2 could not run; 64 the note is not a `.md`
 inside the bundle). It is meant for an edit hook; the full run is still the gate.
@@ -158,11 +170,12 @@ run `okf-check --doctor`: it names the file that switched the hook on and says w
 ## okf-export: a note-tool vault in, an OKF bundle out
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/okf-export" <vault> <out>   # plain `okf-export` also works while the plugin is enabled
+"${CLAUDE_PLUGIN_ROOT}/scripts/okf-export" "<vault>" "<out>"   # plain `okf-export` also works while the plugin is enabled
 ```
 
 For a team that edits in an Obsidian-style vault: the vault stays the source, and the export is a bundle
-`okf-check` can gate. Body `[[note]]`, `[[note|alias]]`, `[[note#heading]]` and `[[#heading]]` become relative
+`okf-check` can gate once each note carries its own YAML frontmatter with a non-empty `type` field (the export writes no
+frontmatter into your notes, so a vault without it exports with exit 0 and is then refused at L1). Body `[[note]]`, `[[note|alias]]`, `[[note#heading]]` and `[[#heading]]` become relative
 Markdown links; frontmatter, code (fenced or indented) and raw HTML blocks (inside block quotes too; Obsidian reads no Markdown in them) are copied unchanged. Targets match as Obsidian matches them
 (exact first, then ignoring case), and a setext heading (underlined with `===` or `---`) is a heading a link can name, inside block quotes too (a tab before a quote line's text counts its columns from the start of the line, as CommonMark does). A vault `index.md` note is renamed to
 the folder note (`dir/dir.md`) and spec index files are generated (root carries `okf_version`); a rename collision
@@ -173,7 +186,7 @@ empty, inside the vault, or cannot be written). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.56`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.57`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

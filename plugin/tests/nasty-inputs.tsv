@@ -8,10 +8,10 @@
 #   slot shape       spec names a file system shape built around a valid input
 #   build: what to create, in plain words, so any project can build it without reading another project's tests.
 #   why: what goes wrong without the form; the code of the ticket or review that found it comes last, in brackets.
-dotless-i	name	\u0131x	a file and a folder whose name starts with the Turkish dotless i (U+0131)	its upper-case swap is a name the disk does not fold to it, so a case-folding probe said case-sensitive and a note was overwritten (case probe, BL-722)
-capital-dotted-i	name	\u0130x	a file and a folder whose name starts with the Turkish capital dotted I (U+0130)	the disk folds it to a name that swapping case does not give (case probe, BL-722)
-sharp-s	name	stra\u00dfe	a file and a folder named with the German sharp s (U+00DF)	its upper-case form is longer (STRASSE), so a length-preserving name rule is wrong (case probe, BL-722)
-ligature	name	\ufb01le	a file and a folder named with the fi ligature (U+FB01)	its upper-case form has a different length (FILE) (case probe, BL-722)
+dotless-i	name	\u0131x	a file and a folder whose name starts with the Turkish dotless i (U+0131)	its upper-case swap is a name the disk does not fold to it, so a case-folding probe said case-sensitive and a note was overwritten (case probe)
+capital-dotted-i	name	\u0130x	a file and a folder whose name starts with the Turkish capital dotted I (U+0130)	the disk folds it to a name that swapping case does not give (case probe)
+sharp-s	name	stra\u00dfe	a file and a folder named with the German sharp s (U+00DF)	its upper-case form is longer (STRASSE), so a length-preserving name rule is wrong (case probe)
+ligature	name	\ufb01le	a file and a folder named with the fi ligature (U+FB01)	its upper-case form has a different length (FILE) (case probe)
 nfd-accent	name	cafe\u0301	a file and a folder named with a letter plus a combining accent (the decomposed spelling)	the composed and decomposed spellings are one name on some disks and two on others (export name clash test)
 nfc-accent	name	caf\u00e9	a file and a folder named with the single accented letter (the composed spelling)	the partner of the decomposed form: the pair shows a reader that treats them as different or the same
 tab-in-name	name	a\tb	a file and a folder whose name holds a tab	odd names must print intact in reports (review of 0.5.11 to 0.5.17)

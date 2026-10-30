@@ -2,11 +2,13 @@
 # /// script
 # requires-python = ">=3.9"
 # ///
-"""okf-export — an Obsidian-style vault folder in, a conformant OKF bundle out.
+"""okf-export — an Obsidian-style vault folder in, an OKF bundle out that okf-check can gate once each note
+has frontmatter.
 
 Note tools count only `[[wikilinks]]` for backlinks and graphs, so a team that edits in one cannot
 switch its source to OKF links without losing those features. This command lets the vault stay the
-single source: it writes a separate bundle that okf-check can gate. The vault is only read.
+single source: it writes a separate bundle that okf-check can gate once each note carries its own YAML frontmatter
+with a non-empty `type` field (the export copies frontmatter and writes none into your notes). The vault is only read.
 
 Usage:
     okf-export <vault> <out>
@@ -702,7 +704,7 @@ def case_clashes(files: list[Path], root_name: str, case: bool = True) -> list[t
 def case_insensitive(folder: Path) -> bool:
     """Whether the disk that holds folder (or will: an output not made yet goes in its nearest existing parent) folds
     case. Nothing is written: the nearest folder whose name is ASCII with a letter and sits in a folder on that disk is
-    compared with its case-swapped name, so a kill -9 in the probe leaves nothing behind (BL-722). Only when no such folder
+    compared with its case-swapped name, so a kill -9 in the probe leaves nothing behind. Only when no such folder
     exists (the output's nearest folder is a volume's mount folder, or every folder name between it and the mount folder is
     non-ASCII or has no letter) is a temp folder made there and removed; a kill -9 in that window can still leave a
     .okf-case-* folder. Raises OSError if it cannot be written."""
@@ -956,7 +958,11 @@ What it does:
   - renames a vault index.md note to dir/dir.md (index.md is reserved), writes a generated index.md in every folder that
     holds a note (okf_version at the root), and turns a vault log.md into the dated log the spec describes
 
-Nothing is written when it stops with exit 2. Run okf-check on <out> afterwards.
+Every note needs YAML frontmatter with a non-empty type field before okf-check passes it: the export copies frontmatter
+unchanged and writes none into your notes, so a vault without it exports with exit 0 and okf-check then refuses the
+bundle at L1 (§11.1, and §11.2 for an empty, non-string or missing type).
+
+Nothing is written when it stops with exit 2. Run okf-check on <out> after exit 0 or 1.
 """
 
 HELP_END = """\
@@ -970,7 +976,9 @@ Exit codes:
 Environment variables: none.
 
 Example:
-  okf-export ~/vault ./bundle && okf-check ./bundle
+  okf-export ~/vault ./bundle
+  okf-check ./bundle
+After exit 2 nothing was written: do not check ./bundle.
 
 See also: okf-check (gate the bundle) and okf-verify (check what it cites). The README has the full reference.
 """

@@ -202,11 +202,16 @@ printf '%s\n' '---' 'type: Lesson' 'title: Payment limits' 'description: Limits 
   'tags: [payments]' 'generated:' '  by: agent/claude-1' '  at: "2026-01-01"' 'verified:' \
   '  - by: human:dana' '    at: "2026-02-01"' 'stale_after: "2099-01-01"' '---' '' 'body' > "$REPO/B/agent/n.md"
 
-# A verified list of bare strings: L1 warns, Trust skips it (its fix is a later release).
+# A verified list of bare strings: L1 warns on the shape and Trust reads the claim as its `by` actor. The mapping form
+# beside it is the control: same note, same verdict.
 mkb "$REPO/B/bare"
 printf '%s\n' '---' 'type: Lesson' 'title: Payment limits' 'description: Limits for payouts.' 'status: draft' \
   'tags: [payments]' 'generated:' '  by: agent/1' '  at: "2026-01-01"' 'verified:' '  - human:dana' \
   'stale_after: "2099-01-01"' '---' '' 'body' > "$REPO/B/bare/n.md"
+mkb "$REPO/B/mapped"
+printf '%s\n' '---' 'type: Lesson' 'title: Payment limits' 'description: Limits for payouts.' 'status: draft' \
+  'tags: [payments]' 'generated:' '  by: agent/1' '  at: "2026-01-01"' 'verified:' '  - by: human:dana' \
+  '    at: "2026-02-01"' 'stale_after: "2099-01-01"' '---' '' 'body' > "$REPO/B/mapped/n.md"
 
 # A citation of a file at the repository ROOT, on a line that does not hold the quoted text: MOVED, exit 1.
 printf 'alpha\nbeta\ngamma\n' > "$REPO/spec.md"
@@ -942,6 +947,180 @@ if [ "$RC" -eq 0 ] && grep -q 'L1 conformance' "$OUT" && ! grep -q 'only works w
 verdict "gate-flag-with-report-mode-inherited-environment-edge-1" "$v" \
   "expected exit 0 and a check that ran (an exported FAIL_LOST/DELETED_GIVEN is not a flag on the command line); got exit $RC: $(shown)" "$RC"
 
+# --- file-mode-and-report-mode-refusals --------------------------------------------------------------------
+# The same class one step earlier in the argument loop. A second mode replaced the first without a word (the LAST mode
+# won), and `--file` — a scoped gate, not a report — never refused the gate flags it cannot read. Every case below runs
+# on a form this file builds itself; the same commands against the release head before this slice gave: `--file n.md
+# --fail-stale` and `--fail-on-change` exit 0 printing nothing; `--duplicates --facts` only the facts line and
+# `--facts --duplicates` only the duplicates report; `--doctor --fail-stale` the doctor report and no freshness
+# judgement. Two texts, so each refusal says which flag is dropped and why:
+#   two modes, or a gate flag with an action mode — "<first> cannot be combined with <second>: a run does one thing,
+#   so <first> would be read by nothing — run them as two commands";
+#   a gate flag with --file — "--fail-stale cannot be combined with --file: --file checks one note and reads no gate
+#   flag, ...". Naming: TWO MODES are named in the order typed (each order of one pair has its own key), and a GATE FLAG
+#   with a mode always names the gate flag first, because the gate flag is the flag that would be read by nothing; the
+#   loop below proves that both orders give the same line.
+run_in "$REPO" "$CHECK" B/mark --file B/mark/n.md --fail-stale
+if [ "$RC" -eq 64 ] && grep -q -- '--fail-stale cannot be combined with --file: --file checks one note and reads no gate flag' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-file-fail-stale-happy-1" "$v" \
+  "expected exit 64 and a line saying --fail-stale cannot be combined with --file (the scoped check reads no gate flag); got exit $RC: $(shown)" "$RC"
+
+run_in "$REPO" "$CHECK" B/mark --file B/mark/n.md --fail-on-change
+if [ "$RC" -eq 64 ] && grep -q -- '--fail-on-change cannot be combined with --file: --file checks one note and reads no gate flag' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-file-fail-on-change-happy-1" "$v" \
+  "expected exit 64 and a line saying --fail-on-change cannot be combined with --file; got exit $RC: $(shown)" "$RC"
+
+# Two report modes: the second used to replace the first, and the run still exited 0, so the report the user asked for
+# was never printed. One key per order, because the message names the pair in the order typed.
+run_in "$REPO" "$CHECK" B/mark --duplicates --facts
+if [ "$RC" -eq 64 ] && grep -q -- 'error: --duplicates cannot be combined with --facts: a run does one thing, so --duplicates would be read by nothing' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-two-report-modes-happy-1" "$v" \
+  "expected exit 64 naming --duplicates then --facts; got exit $RC: $(shown)" "$RC"
+
+run_in "$REPO" "$CHECK" B/mark --facts --duplicates
+if [ "$RC" -eq 64 ] && grep -q -- 'error: --facts cannot be combined with --duplicates: a run does one thing, so --facts would be read by nothing' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-duplicates-facts-edge-1" "$v" \
+  "expected exit 64 naming --facts then --duplicates (the other order of the pair above); got exit $RC: $(shown)" "$RC"
+
+# --file is a mode too, and it lost the same way: this pair exited 0 printing nothing.
+run_in "$REPO" "$CHECK" B/mark --duplicates --file B/mark/n.md
+if [ "$RC" -eq 64 ] && grep -q -- 'error: --duplicates cannot be combined with --file: a run does one thing, so --duplicates would be read by nothing' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-duplicates-file-edge-1" "$v" \
+  "expected exit 64 naming --duplicates then --file; got exit $RC: $(shown)" "$RC"
+
+# --duplicates with --duplicates-body is one mode, but it is not a licence for a second real mode: the pair stays
+# allowed (both orders, below), and a real second mode after it is still dropped in silence, so it refuses. The count is
+# of distinct modes, so the duplicates family counts once and the message names it by its first spelling.
+run_in "$REPO" "$CHECK" B/mark --duplicates --duplicates-body --facts
+if [ "$RC" -eq 64 ] && grep -q -- 'error: --duplicates cannot be combined with --facts: a run does one thing' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-three-modes-after-duplicates-body-edge-1" "$v" \
+  "expected exit 64 naming --duplicates then --facts: the duplicates pair is one mode and does not excuse a second; got exit $RC: $(shown)" "$RC"
+
+# Three flags at once: a new refusal and an existing one both apply. The refusal is chosen by flag TYPE, not by argument
+# order, and the two new ones are checked first, so this names --file and --duplicates and never the report-mode text
+# ("a report mode replaces the gate run"), which is the message the same command line gave before the change.
+run_in "$REPO" "$CHECK" B/mark --file B/mark/n.md --duplicates --fail-stale
+if [ "$RC" -eq 64 ] && grep -q -- 'error: --file cannot be combined with --duplicates: a run does one thing' "$OUT" \
+   && ! grep -q -- 'a report mode replaces the gate run' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-three-flag-precedence-edge-1" "$v" \
+  "expected exit 64 and the two-mode text naming --file and --duplicates (not the report-mode text); got exit $RC: $(shown)" "$RC"
+
+# A gate flag with an action mode is the same class: --doctor printed its report and judged no freshness, exit 0. The loop
+# covers every action mode with every gate flag in both orders, so a refusal that fires for one mode but not another, or
+# for one flag but not another, or only when the mode is typed first, fails here rather than in a user's run. The gate flag
+# is the flag that would be read by nothing, so the line names it first whichever order was typed.
+# The loop gets its OWN bundle: on a build that does not refuse these pairs, `--init-house-rules` and `--init-ignore`
+# RUN and write into the bundle, so a loop over B/mark would leave okf-base.yaml behind and change the answers of the
+# cases below it (measured: on the release head the facts-json negative saw "no okf_check.facts block" instead of "no
+# okf-base.yaml"). A separate bundle keeps every case independent of the order the suite runs in.
+mkb "$W/gate-modes"; printf '%s\n' "$NOTE_EXPIRED" > "$W/gate-modes/n.md"
+for _am in --doctor --selftest --preflight --fingerprint --init-ignore --init-house-rules --install-deps; do
+  for _gf in --fail-stale --strict-trust --fail-on-change; do
+    for _order in mode-first flag-first; do
+      _mn=${_am#--}; _fn=${_gf#--}
+      if [ "$_order" = mode-first ]; then
+        run_in "$W" "$CHECK" gate-modes "$_am" "$_gf"
+      else
+        run_in "$W" "$CHECK" gate-modes "$_gf" "$_am"
+      fi
+      if [ "$RC" -eq 64 ] && grep -q -- "error: $_gf cannot be combined with $_am: a run does one thing, so $_gf would be read by nothing" "$OUT"; then v=1; else v=0; fi
+      verdict "file-mode-and-report-mode-refusals-$_mn-with-$_fn-$_order-edge-1" "$v" \
+        "expected exit 64 naming $_gf then $_am ($_order): the gate flag is the one read by nothing; got exit $RC: $(shown)" "$RC"
+    done
+  done
+done
+
+# The same gate flags with --file in the order that puts the flag first: the --file text names the flag first too, so this
+# is the same line as the --file-first cases above.
+run_in "$REPO" "$CHECK" B/mark --fail-stale --file B/mark/n.md
+if [ "$RC" -eq 64 ] && grep -q -- 'error: --fail-stale cannot be combined with --file: --file checks one note and reads no gate flag' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-fail-stale-before-file-happy-1" "$v" \
+  "expected exit 64 and the --file line with the flag typed first; got exit $RC: $(shown)" "$RC"
+
+run_in "$REPO" "$CHECK" B/mark --fail-on-change --file B/mark/n.md
+if [ "$RC" -eq 64 ] && grep -q -- 'error: --fail-on-change cannot be combined with --file: --file checks one note and reads no gate flag' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-fail-on-change-before-file-happy-1" "$v" \
+  "expected exit 64 and the --file line with the flag typed first; got exit $RC: $(shown)" "$RC"
+
+# --file is a mode, so the other order of the --duplicates pair is refused too, and names --file first because --file was
+# typed first (`--duplicates --file n.md` is the case above).
+run_in "$REPO" "$CHECK" B/mark --file B/mark/n.md --duplicates
+if [ "$RC" -eq 64 ] && grep -q -- 'error: --file cannot be combined with --duplicates: a run does one thing, so --file would be read by nothing' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-file-duplicates-edge-1" "$v" \
+  "expected exit 64 naming --file then --duplicates; got exit $RC: $(shown)" "$RC"
+
+# The distinct count: a flag typed three times is one mode, and so is --duplicates with --duplicates-body. Both used to
+# exit 0 and still must — a refusal here would break a script that repeats a flag.
+run_in "$REPO" "$CHECK" B/mark --duplicates --duplicates --duplicates
+if [ "$RC" -eq 0 ] && grep -q 'duplicates in B/mark' "$OUT" && ! grep -q 'cannot be combined' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-duplicates-thrice-negative-1" "$v" \
+  "expected exit 0 and the duplicates report: one flag typed three times is one mode; got exit $RC: $(shown)" "$RC"
+
+run_in "$REPO" "$CHECK" B/mark --duplicates-body --duplicates
+if [ "$RC" -eq 0 ] && grep -q 'duplicates in B/mark' "$OUT" && ! grep -q 'cannot be combined' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-duplicates-body-duplicates-negative-1" "$v" \
+  "expected exit 0 and the duplicates report: the body variant in the other order is one mode (the forward order is the -duplicates-duplicates-body-negative-1 case); got exit $RC: $(shown)" "$RC"
+
+run_in "$REPO" "$CHECK" B/mark --duplicates --duplicates-body --duplicates
+if [ "$RC" -eq 0 ] && grep -q 'duplicates in B/mark' "$OUT" && ! grep -q 'cannot be combined' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-duplicates-body-repeated-edge-1" "$v" \
+  "expected exit 0: the duplicates family typed three times is still one mode; got exit $RC: $(shown)" "$RC"
+
+# Two distinct modes with one of them repeated: still two, so it refuses and names the two distinct ones.
+run_in "$REPO" "$CHECK" B/mark --doctor --selftest --selftest
+if [ "$RC" -eq 64 ] && grep -q -- 'error: --doctor cannot be combined with --selftest: a run does one thing' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-doctor-selftest-repeated-edge-1" "$v" \
+  "expected exit 64 naming --doctor then --selftest (the repeat is not a third mode); got exit $RC: $(shown)" "$RC"
+
+# Three distinct modes: the message names the FIRST and the LAST typed (the first is dropped, the last wins), so it is
+# always a true pair and stays short.
+run_in "$REPO" "$CHECK" B/mark --duplicates --facts --conserve HEAD
+if [ "$RC" -eq 64 ] && grep -q -- 'error: --duplicates cannot be combined with --conserve: a run does one thing' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-three-distinct-modes-edge-1" "$v" \
+  "expected exit 64 naming the first and the last of three modes (--duplicates then --conserve); got exit $RC: $(shown)" "$RC"
+
+# A repeat at the end of a long command line is not a new mode, so it must not be the name the message uses: the first
+# form used to say "--doctor cannot be combined with --doctor", the second "--duplicates cannot be combined with
+# --duplicates-body", both naming one mode against itself or against its own body variant.
+run_in "$REPO" "$CHECK" B/mark --doctor --selftest --preflight --doctor
+if [ "$RC" -eq 64 ] && grep -q -- 'error: --doctor cannot be combined with --preflight: a run does one thing' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-three-modes-repeating-the-first-edge-1" "$v" \
+  "expected exit 64 naming --doctor then --preflight: the trailing --doctor repeats a mode already given; got exit $RC: $(shown)" "$RC"
+
+run_in "$REPO" "$CHECK" B/mark --duplicates --facts --doctor --duplicates-body
+if [ "$RC" -eq 64 ] && grep -q -- 'error: --duplicates cannot be combined with --doctor: a run does one thing' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-three-modes-repeating-the-family-edge-1" "$v" \
+  "expected exit 64 naming --duplicates then --doctor: --duplicates-body at the end is the same mode as --duplicates; got exit $RC: $(shown)" "$RC"
+
+# The negatives: every combination that IS read stays allowed, and must answer exactly as before the change. --strict-trust
+# is the one gate flag --file reads (okf-check passes it to the scoped layer), so it must still block on a Trust warning.
+run_in "$REPO" "$CHECK" B/agent --file B/agent/n.md --strict-trust
+if [ "$RC" -eq 1 ] && grep -q 'n.md: Trust advisory: verified\[0\].by' "$OUT" && ! grep -q 'cannot be combined' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-file-strict-trust-negative-1" "$v" \
+  "expected exit 1 and the note's Trust advisory line: --file still reads --strict-trust, so this pair is never refused; got exit $RC: $(shown)" "$RC"
+
+run_in "$REPO" "$CHECK" B/mark --facts --json
+if [ "$RC" -eq 0 ] && grep -q 'no okf-base.yaml in B/mark: nothing to list' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-facts-json-negative-1" "$v" \
+  "expected exit 0 and the facts text report: --json with --facts is decided (S38-ST-N7), not refused; got exit $RC: $(shown)" "$RC"
+
+run_in "$REPO" "$CHECK" B/mark --doctor --json
+if [ "$RC" -eq 0 ] && grep -q 'python3' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-doctor-json-negative-1" "$v" \
+  "expected exit 0 and the doctor report: --json with --doctor is decided (S38-ST-N7), not refused; got exit $RC: $(shown)" "$RC"
+
+run_in "$REPO" "$CHECK" B/mark --duplicates --duplicates-body
+if [ "$RC" -eq 0 ] && grep -q 'duplicates in B/mark' "$OUT"; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-duplicates-duplicates-body-negative-1" "$v" \
+  "expected exit 0 and the duplicates report: --duplicates-body is a documented variant of --duplicates, not a second mode; got exit $RC: $(shown)" "$RC"
+
+# The control: the scoped check alone still runs and still answers as it did (exit 0, no line for this note), with no
+# refusal on stderr — a refusal that fired on the mode by itself would make every case above pass for the wrong reason.
+run_in "$REPO" "$CHECK" B/mark --file B/mark/n.md
+if [ "$RC" -eq 0 ] && [ ! -s "$OUT" ]; then v=1; else v=0; fi
+verdict "file-mode-and-report-mode-refusals-file-control-1" "$v" \
+  "expected exit 0 and no output for this note, as measured before the change; got exit $RC: $(shown)" "$RC"
+
 # --- the Action -----------------------------------------------------------------------------------
 section "the Action"
 mkdir -p "$W/no-base" "$W/house" "$W/empty"
@@ -1352,12 +1531,24 @@ if grep -Eq '^  Conserve +' "$A_LOG" 2>/dev/null; then v=1; else v=0; fi
 verdict "action-report-mode-with-value-report-happy-1" "$v" \
   "expected the Conserve report in the log; got: $(head -3 "$A_LOG" 2>/dev/null | tr '\n' ' ')" "$A_RC"
 
-# --- a later release: a verified list of bare strings (carried to 0.9.60) ---------------------------------
-section "a later release: a verified list of bare strings"
+# --- a verified list of bare strings (slice trust-reads-a-verified-list-of-bare-strings) ----------------------------
+section "a verified list of bare strings"
 run_in "$REPO" "$CHECK" B/bare --strict-trust
 if [ "$RC" -eq 1 ]; then v=1; else v=0; fi
 verdict "trust-bare-string-verified-list-happy-1" "$v" \
-  "expected exit 1: L1 warns on the bare string and --strict-trust must not pass it; got exit $RC: $(shown)" "$RC"
+  "expected exit 1: the bare string is a human: claim on a draft note, so --strict-trust must not pass it; got exit $RC: $(shown)" "$RC"
+
+# The negative: without the flag the same finding is printed and the run passes (the flag decides severity only).
+run_in "$REPO" "$CHECK" B/bare
+if [ "$RC" -eq 0 ]; then v=1; else v=0; fi
+verdict "trust-bare-string-verified-list-negative-1" "$v" \
+  "expected exit 0 without --strict-trust, the Trust warning still printed; got exit $RC: $(shown)" "$RC"
+
+# The control: the same note with the review written as a mapping, which the mapping reader already reports.
+run_in "$REPO" "$CHECK" B/mapped --strict-trust
+if [ "$RC" -eq 1 ]; then v=1; else v=0; fi
+verdict "trust-bare-string-verified-list-control-1" "$v" \
+  "expected exit 1 for the mapping form of the same note; got exit $RC: $(shown)" "$RC"
 
 # --- a later release: a --repo that is a subfolder of the repository (carried to 0.9.60) ----------------
 section "a later release: a --repo inside the repository"
@@ -1376,6 +1567,202 @@ run_in "$W" "$VERIFY" subnotes --repo subrepo/src --strict
 if [ "$RC" -eq 0 ]; then v=1; else v=0; fi
 verdict "repo-is-a-repository-subfolder-happy-1" "$v" \
   "expected exit 0: a folder inside the repository is the repository to search; got exit $RC: $(shown)" "$RC"
+
+# --- a bundle path with a space, through the command line each skill documents ---------------------------
+# A SKILL.md is not a script: the host substitutes the argument text into the skill body and the model copies the code
+# fence it reads into Bash, so the line a skill documents IS the command a user runs. The seam is that line, filled the
+# way the skill's own rule says to fill it, and run by a shell:
+#   - the words before the first `--` word are the bundle path, and the skill shows it inside double quotes: a quoted
+#     placeholder ("<bundle-dir>") keeps its quotes and takes the value inside them;
+#   - a word after a flag that takes a path (--repo, --file, --deleted) is quoted the same way, as the rule says;
+#   - an unquoted placeholder (<bundle-dir>) takes the path raw, which is what a model filling that slot writes;
+#   - $ARGUMENTS takes the WHOLE argument text as typed, one raw string with no quotes added — flags included — which
+#     is what the host substitutes (Claude Code skills docs, "Available string substitutions": the placeholder "always
+#     expands to the full argument string as typed"). A fence that quotes the whole placeholder therefore puts the
+#     path AND the flags in one argument, and this is what the with-a-flag case catches.
+# No case reaches inside a function, and the expected exit codes are literals measured on the fixed forms.
+section "a bundle path with a space, through the command line each skill documents"
+SKILLS="$TREE/plugin/skills"
+PLUGIN_ROOT="$TREE/plugin"
+# The fixtures: a bundle, a vault and an export target, each with a space in its name, and a repository beside them.
+mkb "$W/sp ace/b"
+printf -- '---\ntype: Lesson\ntitle: N\ndescription: A note.\nstatus: stable\ntags: [x]\ngenerated:\n  by: human:dana\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\n\nbody\n' > "$W/sp ace/b/n.md"
+VAULT="$W/my vault"; mkdir -p "$VAULT"
+printf '# Index\n\nsee [[note]]\n' > "$VAULT/index.md"
+printf '# Note\n\nbody\n' > "$VAULT/note.md"
+EXPORT_OUT="$W/out dir"
+SP_REPO="$W/sp ace/repo"; mkdir -p "$SP_REPO"
+printf 'x\n' > "$SP_REPO/a.txt"
+g init -q "$SP_REPO"
+g -C "$SP_REPO" config user.email t@t
+g -C "$SP_REPO" config user.name t
+g -C "$SP_REPO" add -A
+g -C "$SP_REPO" commit -q -m base
+
+# doc_line <skill> <must contain>: the first line of the skill's first bash fence that holds <must contain>, with an
+# inline `#` note removed. Empty when the skill documents no such line (a case then measures nothing).
+doc_line() {
+  awk -v want="$2" '
+    /^[ \t]*```/ { fenced = !fenced; next }
+    fenced && index($0, want) { sub(/[ \t]+#.*$/, ""); print; exit }
+  ' "$SKILLS/$1/SKILL.md"
+}
+# fill <line> <word>...: the arguments in the slots the skill left (see the comment above this section). The words
+# before the first `--` word are the path; the rest are flags, and a flag that takes a path has its value quoted.
+fill() {
+  local line="$1"; shift
+  local -a lead=() tail=(); local w seen=0 raw=""
+  for w in "$@"; do
+    raw="$raw${raw:+ }$w"
+    case "$w" in
+      --*) seen=1; tail+=("$w"); continue ;;
+    esac
+    if [ "$seen" -eq 0 ]; then lead+=("$w"); continue; fi
+    case "${tail[${#tail[@]}-1]}" in
+      --repo|--file|--deleted) tail+=("\"$w\"") ;;
+      *) tail+=("$w") ;;
+    esac
+  done
+  # The patterns sit in variables: an unquoted variable is read as a regex by [[ =~ ]], while a pattern written inline
+  # with quotes in it is read as a literal string, which silently matches nothing. The replacement is done with prefix
+  # and suffix removal, not ${var/pat/repl}: on bash 3.2 (macOS) that form drops the quote characters from both the
+  # pattern and the replacement, so a quoted placeholder keeps its old quotes and gains new ones.
+  local quoted='"[<][^<>]*[>]"' plain='[<][^<>]*[>]' token pre
+  if [[ "$line" == *'$ARGUMENTS'* ]]; then
+    pre="${line%%'$ARGUMENTS'*}"; line="$pre$raw${line#*'$ARGUMENTS'}"
+  else
+    for w in ${lead[@]+"${lead[@]}"}; do
+      if [[ "$line" =~ $quoted ]]; then
+        token="${BASH_REMATCH[0]}"; pre="${line%%"$token"*}"; line="$pre\"$w\"${line#*"$token"}"
+      elif [[ "$line" =~ $plain ]]; then
+        token="${BASH_REMATCH[0]}"; pre="${line%%"$token"*}"; line="$pre$w${line#*"$token"}"
+      fi
+    done
+    [ "${#tail[@]}" -eq 0 ] || line="$line ${tail[*]}"
+  fi
+  printf '%s\n' "$line"
+}
+# doc_filled <skill> <must contain> <word>...: the documented line, with its slots filled.
+doc_filled() { local sk="$1" want="$2"; shift 2; fill "$(doc_line "$sk" "$want")" "$@"; }
+# run_line <dir> <shell line>: run it there through a shell, the way a code fence is run, and keep the exit code.
+run_line() {
+  ( cd "$1" && CLAUDE_PLUGIN_ROOT="$PLUGIN_ROOT" bash -c "$2" ) > "$OUT" 2>&1
+  RC=$?
+}
+# precondition <case key> <skill> <must contain>: the case cannot measure anything without a line to run.
+precondition() {
+  [ -n "$(doc_line "$2" "$3")" ] && return 0
+  case_precondition_failed "$1" "the $2 skill documents no line holding '$3', so this case measured nothing"
+  return 1
+}
+
+# /okf:check: the bundle path in double quotes is one argument, and the run reports on the folder it names.
+if precondition "skill-command-quotes-the-path-check-happy-1" check '/scripts/okf-check'; then
+  run_line "$W" "$(doc_filled check '/scripts/okf-check' "$W/sp ace/b")"
+  if [ "$RC" -eq 0 ] && grep -qF "$W/sp ace/b" "$OUT"; then v=1; else v=0; fi
+  verdict "skill-command-quotes-the-path-check-happy-1" "$v" \
+    "expected exit 0 and a report on '$W/sp ace/b'; got exit $RC: $(shown)" "$RC"
+fi
+
+# The same line with the flag the skill's own table documents. The flag is one of the arguments, so it lands after the
+# quoted path in a correct fence and inside the quotes in a fence that quotes the whole $ARGUMENTS — where the tool
+# then gets one argument and refuses it (exit 64). This is the case a whole-quote fence cannot pass.
+if precondition "skill-command-quotes-the-path-check-with-a-flag-happy-1" check '/scripts/okf-check'; then
+  run_line "$W" "$(doc_filled check '/scripts/okf-check' "$W/sp ace/b" --json)"
+  if [ "$RC" -eq 0 ] && [ "$(head -c 1 "$OUT")" = '{' ]; then v=1; else v=0; fi
+  verdict "skill-command-quotes-the-path-check-with-a-flag-happy-1" "$v" \
+    "expected exit 0 and one JSON document: the path is one argument and the flag still reaches the tool as a flag; got exit $RC: $(shown)" "$RC"
+fi
+
+# The control for the design, spelled out and not read from a skill: one quote around path AND flag is the obvious fix
+# and it breaks every flag, so no fence may use that shape. The cases above read the real SKILL.md files, so that shape
+# fails there too when a fence is written that way.
+run_line "$W" "\"$CHECK\" \"sp ace/b --json\""
+if [ "$RC" -eq 64 ] && grep -q 'is not a directory' "$OUT"; then v=1; else v=0; fi
+verdict "skill-command-quotes-the-path-whole-quoted-control-1" "$v" \
+  "expected exit 64 'is not a directory': one quote around path AND flag is not the fix; got exit $RC: $(shown)" "$RC"
+
+# The negative: a path with no space still goes through the same documented line unchanged.
+if precondition "skill-command-quotes-the-path-plain-path-negative-1" check '/scripts/okf-check'; then
+  run_line "$REPO" "$(doc_filled check '/scripts/okf-check' "B/clean")"
+  if [ "$RC" -eq 0 ]; then v=1; else v=0; fi
+  verdict "skill-command-quotes-the-path-plain-path-negative-1" "$v" \
+    "expected exit 0 on a path with no space; got exit $RC: $(shown)" "$RC"
+fi
+
+# /okf:okf (the overview skill) documents the same checkpoint line.
+if precondition "skill-command-quotes-the-path-overview-happy-1" okf '/scripts/okf-check'; then
+  run_line "$W" "$(doc_filled okf '/scripts/okf-check' "$W/sp ace/b")"
+  if [ "$RC" -eq 0 ] && grep -qF "$W/sp ace/b" "$OUT"; then v=1; else v=0; fi
+  verdict "skill-command-quotes-the-path-overview-happy-1" "$v" \
+    "expected exit 0 and a report on '$W/sp ace/b'; got exit $RC: $(shown)" "$RC"
+fi
+
+# The overview's primary fence is a check and nothing more: a flag written into it would change every run (--json would
+# print JSON where the skill means a check, and a flag can refuse an argument the user passed). No word starting with
+# `--` belongs in it. This reads the real file, so a fence that grows one fails here.
+if precondition "skill-command-quotes-the-path-overview-fence-without-a-flag-control-1" okf '/scripts/okf-check'; then
+  fenced_line=$(doc_line okf '/scripts/okf-check')
+  case " $fenced_line " in
+    *' --'*) v=0 ;;
+    *) v=1 ;;
+  esac
+  verdict "skill-command-quotes-the-path-overview-fence-without-a-flag-control-1" "$v" \
+    "the overview's primary fence line must carry no flag; got: $fenced_line" "none"
+fi
+
+# /okf:verify: the same bundle, verified.
+if precondition "skill-command-quotes-the-path-verify-happy-1" verify '/scripts/okf-verify'; then
+  run_line "$W" "$(doc_filled verify '/scripts/okf-verify' "$W/sp ace/b")"
+  if [ "$RC" -eq 0 ] && grep -qF "$W/sp ace/b" "$OUT"; then v=1; else v=0; fi
+  verdict "skill-command-quotes-the-path-verify-happy-1" "$v" \
+    "expected exit 0 and a report on '$W/sp ace/b'; got exit $RC: $(shown)" "$RC"
+fi
+
+# /okf:verify with a --repo whose folder holds a space: the skill's rule covers a path that follows a flag, so the
+# repository must be searched as one folder (the report names it, and never says NONE).
+if precondition "skill-command-quotes-the-path-verify-with-a-repo-happy-1" verify '/scripts/okf-verify'; then
+  run_line "$W" "$(doc_filled verify '/scripts/okf-verify' "$W/sp ace/b" --repo "$SP_REPO")"
+  if [ "$RC" -eq 0 ] && grep -q 'repos searched: repo' "$OUT" && ! grep -q 'repos searched: NONE' "$OUT"; then v=1; else v=0; fi
+  verdict "skill-command-quotes-the-path-verify-with-a-repo-happy-1" "$v" \
+    "expected exit 0 and 'repos searched: repo': the --repo path is one argument; got exit $RC: $(shown)" "$RC"
+fi
+
+# /okf:export: two paths, both with a space, and the bundle must land in the folder named.
+if precondition "skill-command-quotes-the-path-export-happy-1" export '/scripts/okf-export'; then
+  run_line "$W" "$(doc_filled export '/scripts/okf-export' "$VAULT" "$EXPORT_OUT")"
+  if [ "$RC" -eq 0 ] && [ -f "$EXPORT_OUT/index.md" ]; then v=1; else v=0; fi
+  verdict "skill-command-quotes-the-path-export-happy-1" "$v" \
+    "expected exit 0 and a bundle in '$EXPORT_OUT'; got exit $RC: $(shown)" "$RC"
+fi
+
+# /okf:setup: --init-house-rules writes into the bundle named, not into a folder split off its name.
+if precondition "skill-command-quotes-the-path-setup-init-house-rules-happy-1" setup '--init-house-rules'; then
+  mkdir -p "$W/sp ace/starter"
+  printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$W/sp ace/starter/index.md"
+  run_line "$W" "$(doc_filled setup '--init-house-rules' "$W/sp ace/starter")"
+  if [ "$RC" -eq 0 ] && [ -f "$W/sp ace/starter/okf-base.yaml" ]; then v=1; else v=0; fi
+  verdict "skill-command-quotes-the-path-setup-init-house-rules-happy-1" "$v" \
+    "expected exit 0 and okf-base.yaml inside '$W/sp ace/starter'; got exit $RC: $(shown)" "$RC"
+fi
+
+# The same write through --init-ignore: the other init flag takes a bundle path, and it splits the same way.
+if precondition "skill-command-quotes-the-path-setup-init-ignore-happy-1" setup '--init-ignore'; then
+  mkdir -p "$W/sp ace/ignore"
+  printf -- '---\nokf_version: "0.2"\n---\n# B\n' > "$W/sp ace/ignore/index.md"
+  run_line "$W" "$(doc_filled setup '--init-ignore' "$W/sp ace/ignore")"
+  if [ "$RC" -eq 0 ] && [ -f "$W/sp ace/ignore/.okfignore" ]; then v=1; else v=0; fi
+  verdict "skill-command-quotes-the-path-setup-init-ignore-happy-1" "$v" \
+    "expected exit 0 and .okfignore inside '$W/sp ace/ignore'; got exit $RC: $(shown)" "$RC"
+fi
+
+# /okf:explain: one note, named by a path that also holds a space.
+if precondition "skill-command-quotes-the-path-explain-file-happy-1" explain '--file'; then
+  run_line "$W" "$(doc_filled explain '--file' "$W/sp ace/b" "$W/sp ace/b/n.md")"
+  if [ "$RC" -eq 0 ]; then v=1; else v=0; fi
+  verdict "skill-command-quotes-the-path-explain-file-happy-1" "$v" \
+    "expected exit 0: one note checked, no finding; got exit $RC: $(shown)" "$RC"
+fi
 
 # --- the known-gaps file and the suite name the same cases -----------------------------------------------------
 section "the known-gaps file"

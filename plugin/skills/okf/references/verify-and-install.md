@@ -5,7 +5,7 @@ Contents: okf-verify (verdicts, paths, SHAs) · what counts as a claim · settin
 ## okf-verify (L4): is what it SAYS still true?
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/okf-verify" <bundle> [--repo DIR]... [--host-paths] [--json] [--strict]
+"${CLAUDE_PLUGIN_ROOT}/scripts/okf-verify" "<bundle>" [--repo DIR]... [--host-paths] [--json] [--strict]
 ```
 
 Resolves the checkable claims in each concept — cited commit SHAs and file paths —
@@ -167,7 +167,7 @@ paths are not read.
 ## Setting up a bundle's house rules
 
 `L2 SKIPPED — no okf-base.yaml` means house rules are not enforced. Run
-`okf-check --init-house-rules <bundle>` to write a starter `<bundle>/okf-base.yaml`
+`okf-check --init-house-rules "<bundle>"` to write a starter `<bundle>/okf-base.yaml`
 (it never overwrites an existing file; nothing else ever writes it). The starter comes from
 `${CLAUDE_PLUGIN_ROOT}/config/okf-base.yaml.template`, which encodes one rule
 worth keeping: **`stale_after` is required, not optional.** An undated concept
