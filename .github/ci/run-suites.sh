@@ -18,12 +18,16 @@ unset CDPATH
 
 # --- copy of tools/lib/suite-verdict.sh (keep byte-identical) ---
 suite_verdict() {
-  local last counts shown skipped
+  local last counts shown skipped sum res nosum
+  nosum='no summary line (N passed, M failed) at the end: the suite stopped before its end'
   if [ "$2" -eq 124 ] && [ -n "${3:-}" ]; then echo "timed out after $3 s"; return 1; fi
   [ "$2" -eq 0 ] || { echo "exit $2"; return 1; }
-  last=$(awk 'NF { l = $0 } END { print l }' "$1" 2>/dev/null)
-  grep -Eq '^[[:space:]]*[0-9]+ passed, [0-9]+ failed' <<<"$last" \
-    || { echo "no summary line (N passed, M failed) at the end: the suite stopped before its end"; return 1; }
+  # -a: a log holding a NUL byte is read as text (BSD grep prints "Binary file matches" without it).
+  sum=$(grep -a -n -E '^[[:space:]]*[0-9]+ passed, [0-9]+ failed' "$1" 2>/dev/null | tail -1)
+  [ -n "$sum" ] || { echo "$nosum"; return 1; }
+  res=$(grep -a -n -E '^  (PASS|SKIP)  ' "$1" 2>/dev/null | tail -1)
+  [ -n "$res" ] && [ "${res%%:*}" -gt "${sum%%:*}" ] && { echo "$nosum"; return 1; }
+  last=${sum#*:}
   counts=$(printf '%s\n' "$last" | awk '{ print $1 + 0, $3 + 0 }')
   case "$counts" in
     "0 0") echo "0 passed: the suite counted no test"; return 1 ;;

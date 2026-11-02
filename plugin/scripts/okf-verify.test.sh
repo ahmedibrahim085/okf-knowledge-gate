@@ -17,7 +17,7 @@ VERIFY="$HERE/okf-verify"
 REALPY=$(command -v python3)   # captured before any PATH stub shadows it
 PASS=0; FAIL=0
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t okfverify)
-trap 'rm -rf "$TMP" ${LOOPDIR:+"$LOOPDIR"} >/dev/null 2>&1' EXIT   # LOOPDIR is set later; the trap is live before it exists. Silent: the gates read a suite's last line as its summary, and a wrapped rm can print
+trap 'rm -rf "$TMP" ${LOOPDIR:+"$LOOPDIR"} >/dev/null 2>&1' EXIT   # LOOPDIR is set later; the trap is live before it exists. Silent: a wrapped `rm` can print
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -1537,7 +1537,7 @@ rc=$(run "$TMP/rv37b" --json); ! grep -qF '"config_warnings"' "$TMP/out.txt" \
   && ok "RV-37 --json has no config_warnings key when nothing is misplaced" || bad "RV-37 --json key absent" "rc=$rc"
 
 echo
-# Before the summary: the gate runners take only a suite's LAST line as its summary, and a wrapped `rm` can print.
+# Before the summary: a wrapped `rm` can print.
 if [ "$FAIL" -gt 0 ]; then
   echo "  diagnostic snapshot: $FAILCTX"
   echo "  (this suite has an unreproduced intermittent failure mode — if that is"

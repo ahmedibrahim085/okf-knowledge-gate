@@ -99,8 +99,9 @@ else
   bad "TS-4 section call missing" "headers without a section call:$miss"
 fi
 
-# TS-5 (S18-H4): the summary is the last line a suite prints, also when a skip lists how to run the skipped coverage.
-# The gate runners take only a last line of the form "N passed, M failed" as the summary.
+# TS-5 (S18-H4): the summary is the last summary-shaped line a suite prints, also when a skip lists how to run the skipped
+# coverage. The gate runners read the last line of the form "N passed, M failed", and refuse a log with a test result line
+# after it; this suite still reads the last line itself, which is why the lib's cleanup trap is silent.
 printf '#!/usr/bin/env bash\n. "$OKF_LIB"\nok a\nskip b "install the thing"\nokf_test_summary\n[ "$FAIL" -eq 0 ] || exit 1\n' > "$TMP/rem.test.sh"
 OKF_LIB="$LIB" bash "$TMP/rem.test.sh" > "$TMP/rem.txt" 2>&1
 last=$(awk 'NF { l = $0 } END { print l }' "$TMP/rem.txt")

@@ -9,6 +9,19 @@ Dates are ISO 8601. The entry for a version is also the body of its GitHub relea
 
 ## [Unreleased]
 
+## [0.9.58] - 2026-11-02
+
+OKF Knowledge Gate 0.9.58 changes no behaviour of `okf-check`, `okf-verify` or `okf-export`. It fixes one false failure in the suite runner of the public tree: a suite that passed no longer fails because something printed a line after its summary. It also narrows when the public CI runs.
+
+**What you do.** Nothing. If you run the suites from a clone with `.github/ci/run-suites.sh`, a suite that passes and then prints a cleanup line now passes; a suite that fails, that stops early without a summary line, or that prints a test result line after its summary still fails.
+
+### Fixed
+- **`.github/ci/run-suites.sh` judges a suite by its last summary line, not by the last line of its output.** The runner took the last non-blank line of a suite's log and refused the suite with "no summary line (N passed, M failed) at the end: the suite stopped before its end" when that line was not the summary. A suite that passed with `6 passed, 0 failed` and then ran a cleanup that printed one line (a wrapped `rm` printing "done: moved to ...") failed for that reason alone. The runner now reads the last line of the form `N passed, M failed`, and still refuses the suite (with the same "stopped before its end" message) when a `  PASS  ` or `  SKIP  ` line comes after it, when the summary shows a failure, or when there is no summary. A log that holds a NUL byte is read as text. A summary-shaped line followed only by lines that are not test results counts as the summary, because nothing in a log tells it from a cleanup message.
+
+### Changed
+- **The CI workflow runs on pull requests into `main`, on pushes to `main`, and on manual runs.** `.github/workflows/ci.yml` has a `branches: [main]` filter under `pull_request:`. Every pull request of the public repository targets `main`, so the runs do not change there; the README says so.
+- **The shipped test helper's cleanup is silent.** `plugin/tests/okf-test-lib.sh` removes its temporary folder with its output discarded, so a wrapped `rm` cannot print after a suite's summary. The comments in `plugin/scripts/okf-test-lib.test.sh` and `plugin/scripts/okf-verify.test.sh` say what the runners now read.
+
 ## [0.9.57] - 2026-10-30
 
 OKF Knowledge Gate 0.9.57 stops `okf-check` from dropping a flag or a mode in silence, makes the okf skills work for a bundle path that holds a space, moves the pinned okflint to 0.5.1, makes the Trust layer read a `verified` list of bare strings, and corrects what the README, the skills and the `okf-export` help say about the tools: how to run the gate outside Claude Code, that every exported note needs its own frontmatter, and what the tools do with an embed.
@@ -1029,7 +1042,8 @@ OKF Knowledge Gate 0.9.0 adds a check for "verified by a human" claims in notes,
 
 Earlier history is in the git log and the `pre-*` / `post-*` tags.
 
-[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.57...HEAD
+[Unreleased]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.58...HEAD
+[0.9.58]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.57...v0.9.58
 [0.9.57]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.56...v0.9.57
 [0.9.56]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.55...v0.9.56
 [0.9.55]: https://github.com/ahmedibrahim085/okf-knowledge-gate/compare/v0.9.54...v0.9.55

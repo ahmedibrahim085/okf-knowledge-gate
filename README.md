@@ -557,7 +557,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.57
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.58
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -575,7 +575,7 @@ To check the commits, paths and line citations the notes cite as well, add `veri
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.57
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.58
         with:
           bundle: path/to/bundle
           verify: 'true'                  # also run okf-verify; default 'false'
@@ -598,7 +598,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.57
+    rev: v0.9.58
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -661,7 +661,7 @@ The full behaviour contract, one row per scenario with its test, is
 | Platform | Status |
 |---|---|
 | macOS | The test suites pass here, on bash 3.2 and the BSD tools (0.9.42: 35 suites and `--selftest`, 0 failed). The gate was built and measured on this platform. The log of the gate names the Python it ran under (`python 3.9.6`); Python 3.14 changed what `pathlib` does with a permission error, so `okf-verify.test.sh` and `okf-export.test.sh` pass under 3.9.6 and 3.15.0 since 0.9.43. |
-| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.44 suites passed on Debian 12 (aarch64, bash 5.2.15, Python 3.12.13, gawk 5.2.1, non-root user) with `okflint` 0.5.0 and pre-commit 4.7.0 installed in a Python 3.12 environment: 35 suites and `--selftest`, 0 failed. Debian 12 ships Python 3.11, which cannot install `okflint`; the gate image installs Python 3.12. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). In the public repository, every pull request and every push to `main` also runs the suites and `--selftest` on GitHub's Ubuntu 24.04 runner, once with gawk and once with mawk, and runs the GitHub Action on a valid and an invalid bundle and with its `verify`, `repo`, `verify-args` and `report-args` inputs (`.github/workflows/ci.yml`). |
+| Linux | Written for GNU coreutils, findutils and awk (gawk and mawk). The 0.9.44 suites passed on Debian 12 (aarch64, bash 5.2.15, Python 3.12.13, gawk 5.2.1, non-root user) with `okflint` 0.5.0 and pre-commit 4.7.0 installed in a Python 3.12 environment: 35 suites and `--selftest`, 0 failed. Debian 12 ships Python 3.11, which cannot install `okflint`; the gate image installs Python 3.12. An earlier release also passed on Alpine Linux with gawk and mawk (2026-10-14). In the public repository, every pull request into `main` and every push to `main` also runs the suites and `--selftest` on GitHub's Ubuntu 24.04 runner, once with gawk and once with mawk, and runs the GitHub Action on a valid and an invalid bundle and with its `verify`, `repo`, `verify-args` and `report-args` inputs (`.github/workflows/ci.yml`). |
 | Windows | Not supported, now or later (decided 2026-10-24): the supported platforms are macOS and Linux. The gate is a set of bash scripts with no native Windows support, and nothing is run or tested under WSL (Windows Subsystem for Linux); the Action and the pre-commit hook on Windows are not supported either. |
 | Claude Code | The plugin form (hooks and the skill) needs Claude Code. The command line, the GitHub Action and the pre-commit hook do not. |
 

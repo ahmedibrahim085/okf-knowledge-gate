@@ -11,7 +11,7 @@ PASS=0; FAIL=0
 REALPY=$(command -v python3)   # defined ONCE, before any sandbox stub uses it
 . "$(dirname "${BASH_SOURCE[0]}")/cite-sha.sh"
 TMP=$(mktemp -d 2>/dev/null || mktemp -d -t okfchecktest)
-trap 'rm -rf "$TMP"' EXIT
+trap 'rm -rf "$TMP" >/dev/null 2>&1' EXIT   # silent: TS-5 in plugin/scripts/okf-test-lib.test.sh reads the last line of a synthetic suite that uses this lib, and a host `rm` that prints would land after its summary
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -97,7 +97,8 @@ okf_test_summary() {
   [ "${OKF_TEST_TIMING:-}" = 1 ] && section_flush
   echo
   if [ "$SKIPPED" -gt 0 ]; then
-    # The remedies come first: the gate runners take only the LAST line of a suite as its summary.
+    # The remedies come first: the gate runners read a suite's LAST summary-shaped line, and nothing may look like a test
+    # result after it.
     [ -n "$SKIP_REMEDIES" ] && {
       printf '  to run the skipped coverage:%s\n' "$SKIP_REMEDIES"
       printf '  or in one step: tools/install-dev-deps.sh --yes\n'
