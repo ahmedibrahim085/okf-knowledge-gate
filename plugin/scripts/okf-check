@@ -43,7 +43,7 @@
 set -uo pipefail
 unset CDPATH   # an exported CDPATH makes `cd -P` print and redirect: the script lost its own lib (ticket 08)
 
-VERSION="0.9.58"
+VERSION="0.9.59"
 EXIT_OK=0; EXIT_CONFORM=1; EXIT_DEP=2; EXIT_PROFILE=3; EXIT_STALE=4; EXIT_SELFTEST=5
 EXIT_CHANGED=6   # bundle mutated mid-scan; only with --fail-on-change
 CONCURRENT=0; FAIL_ON_CHANGE=0
@@ -159,7 +159,14 @@ Checks of a bundle:
   --strict-trust      an unproven human verification and a near-miss actor (Human:dana) block (exit 1);
                       alias: --strict. Severity only: the findings are the same without it
   --fail-on-change    a bundle that changes during the scan blocks (exit 6)
-  --file <note>       L1 and Trust for one note: one line per finding, nothing when clean (for edit hooks)
+  --changed <git-ref> the same checks as --file on every note changed since <git-ref> (committed, staged or untracked),
+                      whoever wrote it: L1, Trust and the note-local L2 checks per changed note, and the declared counts
+                      once when any markdown file of the bundle changed or was deleted; exit 2 outside a git repository
+                      or for an unknown ref
+  --file <note>       L1, Trust and the note-local L2 checks for one note: its house-profile findings (undeclared
+                      type, a missing required key, a status outside the type's values, and R001 on the root
+                      index.md) and the counts index.md declares; one line per finding, nothing when clean
+                      (for edit hooks). Exits 3 where it used to exit 0
   --duplicates        list candidate duplicate notes (advisory, exit 0)
   --duplicates-body   the same, plus notes whose bodies are similar (MinHash, time-boxed)
   --facts [NAME]      list every place the okf_check.facts (or the fact NAME) are stated; a dry run, exit 0
@@ -255,6 +262,8 @@ for a in "$@"; do
     --strict-trust|--strict) STRICT_TRUST=1 ;;   # --strict: the spelling okf-verify uses for the same idea
     --file)        if [ "${_want_file:-0}" = 1 ] || [ -n "${SCOPED_FILE:-}" ]; then echo "error: --file given twice - check one note at a time" >&2; exit 64; fi
                    MODE="scoped"; mode_typed "--file"; _want_file=1 ;;   # its value is the next argument (run_scoped)
+    --changed)     if [ "${_want_chref:-0}" = 1 ] || [ -n "${CHANGED_REF:-}" ]; then echo "error: --changed given twice - one ref at a time" >&2; exit 64; fi
+                   MODE="changed"; mode_typed "--changed"; _want_chref=1 ;;   # its <git-ref> is the next bare argument
     --fail-on-change) FAIL_ON_CHANGE=1 ;;
     --fingerprint) MODE="fingerprint"; mode_typed "--fingerprint" ;;
     --ignore-filter) MODE="ignore-filter"; mode_typed "--ignore-filter" ;;   # internal seam: which of these note paths .okfignore excludes (okf-conserve)
@@ -270,11 +279,15 @@ for a in "$@"; do
     --install-deps) MODE="install-deps"; mode_typed "--install-deps" ;;
     --yes)         ASSUME_YES=1 ;;
     --latest)      USE_LATEST=1 ;;
-    --version)     echo "okf-check $VERSION"; exit 0 ;;
-    -h|--help)     okf_help; exit 0 ;;
+    --version)     if [ "${_want_chref:-0}" = 1 ]; then CHANGED_REF="$a"; _want_chref=0; continue; fi   # --changed --version: the ref
+                   echo "okf-check $VERSION"; exit 0 ;;
+    -h|--help)     if [ "${_want_chref:-0}" = 1 ]; then CHANGED_REF="$a"; _want_chref=0; continue; fi   # --changed --help: the ref is named --help
+                   okf_help; exit 0 ;;
     -*)            if [ "${_want_file:-0}" = 1 ] && [ -f "$a" ]; then SCOPED_FILE="$a"; _want_file=0; continue; fi   # a note named -d.md
+                   if [ "${_want_chref:-0}" = 1 ]; then CHANGED_REF="$a"; _want_chref=0; continue; fi   # a ref named -x
                    echo "unknown flag: $a" >&2; exit 64 ;;
     *)             if [ "${_want_file:-0}" = 1 ]; then SCOPED_FILE="$a"; _want_file=0; continue; fi
+                   if [ "${_want_chref:-0}" = 1 ] && [ -n "$BUNDLE" ]; then CHANGED_REF="$a"; _want_chref=0; continue; fi
                    if [ "${_want_fact:-0}" = 1 ] && [ -n "$BUNDLE" ]; then FACT_NAME="$a"; _want_fact=0; continue; fi
                    if [ "${_want_del:-0}" = 1 ]; then DELETED_FILE="$a"; _want_del=0; continue; fi
                    if [ "${_want_ref:-0}" = 1 ] && [ -n "$BUNDLE" ]; then CONSERVE_REF="$a"; _want_ref=0; continue; fi
@@ -327,6 +340,10 @@ refuse_one_run() {
 }
 # <gate flag>: --file is a scoped gate, not a report. It checks one note and passes --strict-trust to its layer, but reads
 # no other gate flag, so the report-mode text above ("a report mode replaces the gate run") would be wrong here.
+refuse_gate_with_changed() {
+  echo "error: $1 cannot be combined with --changed: --changed checks the changed notes and reads no gate flag, so $1 would be read by nothing — run the gate on the bundle and --changed on the commit" >&2
+  exit 64
+}
 refuse_gate_with_file() {
   echo "error: $1 cannot be combined with --file: --file checks one note and reads no gate flag, so $1 would be read by nothing — run the gate on the bundle and --file on the note" >&2
   exit 64
@@ -345,10 +362,18 @@ if [ "$MODE_FLAG1" = "--file" ]; then
   [ "$FAIL_STALE" = 1 ]     && refuse_gate_with_file "--fail-stale"
   [ "$FAIL_ON_CHANGE" = 1 ] && refuse_gate_with_file "--fail-on-change"
 fi
+# A gate flag with --changed. --changed is a scoped gate over several notes: it passes --strict-trust through to
+# each note's check, exactly as --file does, and reads no other gate flag.
+if [ "$MODE_FLAG1" = "--changed" ]; then
+  [ "$FAIL_STALE" = 1 ]     && refuse_gate_with_changed "--fail-stale"
+  [ "$FAIL_ON_CHANGE" = 1 ] && refuse_gate_with_changed "--fail-on-change"
+fi
+# --changed prints text lines, one per finding; a JSON document cannot carry them (the --file rule).
+[ "$MODE" = changed ] && [ "$JSON" = 1 ] && { echo "error: --changed prints text lines; --json is not supported with it" >&2; exit 64; }
 # A gate flag with any other mode that reads no gate flag. The report modes keep the text below, which explains that the
 # report replaces the gate run, and --file is handled above (it reads --strict-trust, so that one is never refused).
 case "$MODE_FLAG1" in
-  ""|"--duplicates"|"--duplicates-body"|"--facts"|"--conserve"|"--ignore-filter"|"--file") ;;
+  ""|"--duplicates"|"--duplicates-body"|"--facts"|"--conserve"|"--ignore-filter"|"--file"|"--changed") ;;
   *) [ "$FAIL_STALE" = 1 ]     && refuse_one_run "--fail-stale" "$MODE_FLAG1"
      [ "$STRICT_TRUST" = 1 ]   && refuse_one_run "--strict-trust" "$MODE_FLAG1"
      [ "$FAIL_ON_CHANGE" = 1 ] && refuse_one_run "--fail-on-change" "$MODE_FLAG1" ;;
@@ -689,13 +714,330 @@ report_refused() {
   fi
 }
 
+# rank: the precedence of two exit codes, not max() (#R-4). `worst=max(rc)` returned 2 ("could not run") for a bundle that
+# had BOTH a real §11 conformance error and an unusable manifest, so CI would retry or reinstall instead of failing the
+# bundle. A verdict that was REACHED always outranks a gate that could not reach one. Used by the whole-bundle gate and by
+# `--file`, which combines three verdicts.
+rank() { case "$1" in 0) echo 0;; 4) echo 1;; 6) echo 2;; 2) echo 3;; 3) echo 4;; 1) echo 5;; 5) echo 6;; *) echo 7;; esac; }
+# worst_rc <code...>: the highest-precedence code of the list.
+worst_rc() { local w=0 c; for c in "$@"; do [ "$(rank "$c")" -gt "$(rank "$w")" ] && w=$c; done; echo "$w"; }
+
+# scoped_profile <bundle> <rel>: the house-profile findings of ONE note (part a). okflint runs on a mirror holding the
+# bundle's okf-base.yaml and this one note, so another note's findings cannot leak in and the run stays small (86-89 ms on
+# 168- and 1000-note bundles, second Mac). Prints one "<rel>: L2 profile error: <code> <message>" line per finding, which
+# keeps okflint's own code and wording. Exit 0 nothing to report, 3 findings, 2 could not reach a verdict (stderr says why).
+scoped_profile() {
+  local bundle="$1" rel="$2" manifest="$1/okf-base.yaml" rc mir out
+  [ -f "$manifest" ] || return 0                 # no house rules: nothing to check
+  if ! command -v okflint >/dev/null 2>&1; then
+    echo "okf-check: okflint is not installed, so the house profile of $(rel_shown "$rel") was not checked" >&2
+    return 0
+  fi
+  mir="$TMP/scoped-l2"; rm -rf "$mir"; mkdir -p "$mir"
+  cp "$manifest" "$mir/okf-base.yaml"
+  mkdir -p "$(dirname "$mir/$rel")" && cp "$bundle/$rel" "$mir/$rel" || return 2
+  local l2limit="${OKF_L2_TIMEOUT:-120}"; case "$l2limit" in ''|*[!0-9]*|0) l2limit=120;; esac
+  run_limited "$l2limit" "$TMP/scoped-l2.out" sh -c 'cd "$1" && exec okflint validate . --manifest okf-base.yaml --json' _ "$mir"; rc=$?
+  cat "$TMP/scoped-l2.out" "$TMP/scoped-l2.out.err" > "$TMP/scoped-l2.txt" 2>/dev/null
+  [ -s "$TMP/scoped-l2.out.limit" ] && { echo "okf-check: okflint was stopped on $rel (time or memory)" >&2; return 2; }
+  case "$rc" in
+    0|1) ;;
+    *)   echo "okf-check: okflint exited $rc on $(rel_shown "$rel"), so its house profile was not checked" >&2; return 2 ;;
+  esac
+  out=$(PYTHONDONTWRITEBYTECODE=1 OKF_SCRIPTS_DIR="$HERE" "$PY" - "$TMP/scoped-l2.txt" "$rel" "$rc" <<'PYEOF'
+import json, os, sys
+sys.path.insert(0, os.environ["OKF_SCRIPTS_DIR"])
+from okf_guard import shown
+rel, okrc = sys.argv[2], int(sys.argv[3]) if len(sys.argv) > 3 else 0
+raw = open(sys.argv[1], encoding="utf-8", errors="surrogateescape").read()
+# okflint may print a banner before the JSON; try every candidate start until one yields a LIST (the rule __l2_core uses).
+# No list at all is NOT "no findings": the tool said it had a verdict and printed something else (a version-skewed format,
+# a crash's banner). Exit 3 for that, so the caller fails closed instead of reading a non-report as a clean note.
+doc, i, parsed = [], raw.find("["), False
+while i != -1:
+    try:
+        doc = json.loads(raw[i:])
+        parsed = isinstance(doc, list)
+        break
+    except ValueError:
+        i = raw.find("[", i + 1)
+    doc = []
+# The gate's own rule, not a second one: a report is a findings list only when EVERY entry is a finding (code, tier, file),
+# and exit 1 with an empty list said there WERE findings, so an empty parse is a non-report too (the gate says "reported
+# findings (exit 1) but none parsed as errors" and fails closed there).
+entries = doc if parsed else []
+well = all(isinstance(e, dict) and all(k in e for k in ("code", "tier", "file")) for e in entries)
+if not parsed or not well or (okrc == 1 and not entries):
+    sys.exit(3)
+found = 0
+for e in entries:
+    code, tier, f, msg = e.get("code"), e.get("tier"), e.get("file"), e.get("message")
+    # The note's own profile-tier findings, plus okflint's R001 on the root index.md (tier core): --file must never pass
+    # what the gate fails (lead decision 3).
+    if (f == rel and tier == "profile") or (rel == "index.md" and code == "R001"):
+        print(f"{shown(rel)}: L2 profile error: {shown(code)} {shown(msg)}")
+        found = 1
+sys.exit(found)
+PYEOF
+  ); rc=$?
+  [ -n "$out" ] && printf '%s\n' "$out"
+  case "$rc" in
+    0) return 0 ;;
+    1) return $EXIT_PROFILE ;;
+    3) echo "okf-check: okflint printed no findings list for $(rel_shown "$rel"), so its house profile was not checked" >&2; return 2 ;;
+    *) echo "okf-check: the house profile of $(rel_shown "$rel") could not be read (exit $rc)" >&2; return 2 ;;
+  esac
+}
+
+# scoped_index <bundle> <rel> [keep-list] [ignored-list]: the note-local index findings (part a): the declared counts, in the gate's own wording.
+# The "is this note listed in index.md" check was dropped after three review rounds of link-syntax false verdicts (lead
+# decision, round 3): the gate has no listed check either, and the count already catches a note added without its line.
+# Prints "index.md: L2 index error: ..." lines. Exit 0 clean, 3 findings, 2 the counts were not evaluated.
+scoped_index() {
+  local bundle="$1" rel="$2" keep="${3:-}" ig="${4:-}" out ec l n first
+  # A folder, a device or a DANGLING SYMLINK (-L: -e alone says "nothing here") named index.md leaves the counts
+  # unevaluated: say so by name rather than reading "no index.md I can parse" as "nothing to report". The gate fails such
+  # a bundle (its profile reports the reserved file missing, exit 3); --file has no note-local claim to make, so it is
+  # exit 2 ("not checked"), not 3.
+  if { [ -e "$bundle/index.md" ] || [ -L "$bundle/index.md" ]; } && [ ! -f "$bundle/index.md" ]; then
+    echo "okf-check: $bundle/index.md is not a regular file, so the index checks for $rel were not run" >&2
+    return 2
+  fi
+  [ -f "$bundle/index.md" ] || return 0
+  [ -n "$PY" ] || return 0
+  # Under the watchdog with the okflint budget: the edit hook kills the whole check at its own 4 s and goes silent — a
+  # limit here names itself instead.
+  local l2limit="${OKF_L2_TIMEOUT:-120}"; case "$l2limit" in ''|*[!0-9]*|0) l2limit=120;; esac
+  # The keep-list is the set .okfignore keeps — the same notes the gate counts on its mirror, so the two runs cannot
+  # disagree about a count that covers an ignored note.
+  local -a rec=( "$HERE/okf-index-reconcile.py" "$bundle" "--scan" )
+  [ -n "$keep" ] && rec+=( "$keep" )
+  [ -n "$keep" ] && [ -n "$ig" ] && rec+=( "$ig" )
+  run_limited "$l2limit" "$TMP/scoped-index.out" "$PY" "${rec[@]}"; ec=$?
+  out=""
+  [ -f "$TMP/scoped-index.out" ] && out=$(<"$TMP/scoped-index.out")
+  # ANOMALY: the count set is not certain (a note the full run refuses or aliases, not excluded by the ignore rules).
+  # One named line, exit 2 — fail closed, never a wrong verdict (review redesign).
+  case "$out" in ANOMALY\ *)
+    n=${out#ANOMALY *}; first=${n#* }; n=${n%% *}
+    echo "okf-check: $n note(s) the full run refuses or aliases (first: $(rel_shown "$first")), so the declared counts for $(rel_shown "$rel") were not checked" >&2
+    return 2 ;;
+  esac
+  case "$ec" in
+    0|1) : ;;
+    143|137) echo "okf-check: $(rel_shown "$rel") was not checked (the index reconciler passed the OKF_L2_TIMEOUT limit)" >&2; return 2 ;;
+    *) echo "okf-check: $(rel_shown "$rel") was not checked (the index reconciler could not read index.md, exit $ec)" >&2; return 2 ;;
+  esac
+  # Exit 1 with no MISMATCH printed is a crash, not a verdict — the same rule run_scoped applies to an L1 run (r3).
+  if [ "$ec" -eq 1 ] && ! grep -q '^MISMATCH ' <<<"$out"; then
+    echo "okf-check: $(rel_shown "$rel") was not checked (the index reconciler exited 1 and printed no count)" >&2
+    return 2
+  fi
+  printf '%s\n' "$out" | while IFS= read -r l; do
+    case "$l" in
+      MISMATCH\ *) esc_line "index.md: L2 index error: ${l#MISMATCH }" ;;
+    esac
+  done
+  [ "$ec" -eq 1 ] && return $EXIT_PROFILE
+  return 0
+}
+
+# changed_one <path-relative-to-repo-root> [deleted]: fold one git-changed path into the run's lists. Sets CH_MD (a
+# markdown file of the bundle changed or was deleted), CH_FIRST (the first such path, for the count check's messages) and
+# appends existing notes to CH_NOTES. Every path arrives inside the bundle (both streams carry the bundle pathspec and
+# ls-files lists only the cwd subtree); -z keeps every odd name intact.
+changed_one() {
+  local rel="$1"
+  # Both git streams carry the bundle pathspec, and ls-files lists only the cwd subtree, so every path arrives inside
+  # the bundle; the strip makes it bundle-relative. A markdown check then keeps notes only.
+  case "$rel" in "$CH_PREFIX"*) rel=${rel#"$CH_PREFIX"} ;; esac
+  case "$rel" in *.md) ;; *) return 0 ;; esac
+  CH_MD=1
+  [ -n "$CH_FIRST" ] || CH_FIRST="$rel"
+  [ -f "$CH_BUNDLE/$rel" ] && CH_NOTES+=( "$rel" )
+  return 0
+}
+
+# chg_git: every git call --changed makes. The bundle's own config is attacker-chosen (an extracted archive can carry
+# core.fsmonitor, which runs a program on any worktree scan, or filter drivers assigned by an attribute file), so the
+# monitor is off, the diff consults no external diff drivers or textconv, and attribute lookup is pinned: GIT_ATTR_SOURCE
+# points it at the empty tree (no per-directory .gitattributes is read), core.attributesFile at /dev/null,
+# GIT_ATTR_NOSYSTEM kills the system file, and the diff ignores submodules (their own config with them). The residual a
+# repository can still plant is a filter in .git/config assigned by $GIT_DIR/info/attributes — no flag or environment
+# closes that path; the README says so. GIT_OPTIONAL_LOCKS=0 is best-effort only: `git diff <commit>` still refreshes
+# the stat cache and rewrites .git/index under its own lock when a tracked file is stat-dirty.
+# GIT_DIR/GIT_WORK_TREE from the caller's environment are unset: --changed always reads the repository the bundle lives
+# in, never one the environment points at (GIT_INDEX_FILE is kept — a pre-commit hook needs it, and it names an index
+# file inside that same repository).
+chg_git() {
+  env -u GIT_DIR -u GIT_WORK_TREE \
+    GIT_ATTR_SOURCE=4b825dc642cb6eb9a060e54bf8d69288fbee4904 GIT_ATTR_NOSYSTEM=1 \
+    GIT_OPTIONAL_LOCKS=0 git -c core.fsmonitor=false -c core.attributesFile=/dev/null -C "$CH_BUNDLE" "$@"
+}
+
+# run_changed <bundle> <ref>: `--changed` mode. The same note-local checks `--file` gives (part a) on every
+# note changed since <ref> — committed, staged or untracked, whoever wrote it — plus the declared counts ONCE when any
+# markdown file of the bundle changed or was deleted (lead decision 2: a commit that touches no note stays quiet even
+# when the count is already stale). Deleted notes are not checked as notes (a deleted file has nothing to check); a
+# rename is a delete plus an add, so the note is checked under its new name. Exit 2 outside a git repository, for an
+# unknown ref, for a range (one commit-ish is required), when the resolved work tree does not contain the bundle
+# (GIT_DIR/GIT_WORK_TREE pointing elsewhere), or when git itself fails (a corrupt or unreadable index) — never a
+# silent "nothing changed". 64 for a usage error.
+run_changed() {
+  local bundle ref sha prefix st p rel nrc irc keep ig worst firstmd top vrc n inside
+  ref="$2"
+  [ -n "$ref" ] || { echo "usage: okf-check <bundle> --changed <git-ref>" >&2; return 64; }
+  case "$ref" in *$'
+'*) esc_line "error: --changed: a newline in the ref cannot name a git ref" >&2; return 64 ;; esac
+  bundle=$(cd -P "$1" && pwd) || return 64
+  [ -n "$PY" ] || { esc_line "okf-check: python3 is missing - the changed notes cannot be checked" >&2; return $EXIT_DEP; }
+  # GIT_ATTR_SOURCE (the attribute pinning above) needs git >= 2.40; older git ignores it SILENTLY, which would reopen
+  # the attribute vectors, so an older git is refused by name instead of trusted. A version string that is not
+  # numeric major.minor is 'unknown', never string-compared into running.
+  gitver=$(git --version 2>/dev/null | awk '{print $3}')
+  if ! [[ "$gitver" =~ ^[0-9]+\.[0-9]+ ]]; then
+    esc_line "okf-check: --changed needs git >= 2.40 (attribute hardening); this git is unknown - the changed notes cannot be listed" >&2
+    return $EXIT_DEP
+  fi
+  git40=$(awk -v v="$gitver" 'BEGIN { split(v, a, "."); print (a[1]+0 > 2 || (a[1]+0 == 2 && a[2]+0 >= 40)) ? 1 : 0 }')
+  [ "$git40" = 1 ] || { esc_line "okf-check: --changed needs git >= 2.40 (attribute hardening); this git is $gitver - the changed notes cannot be listed" >&2; return $EXIT_DEP; }
+  # A range (a..b, a...b, the CI form origin/main..HEAD) is refused up front: one commit-ish is required. Checking it
+  # here, before rev-parse, keeps the named line the same whether the endpoints exist or not.
+  case "$ref" in *..*) esc_line "okf-check: --changed needs a single commit-ish, not a range: '$ref' - the changed notes cannot be listed" >&2; return $EXIT_DEP ;; esac
+  CH_BUNDLE="$bundle"
+  # The environment can point GIT_DIR/GIT_WORK_TREE at another repository; --changed must never read that one. The work
+  # tree git resolves has to contain the bundle (GIT_INDEX_FILE is kept: a pre-commit hook needs it).
+  top=$(chg_git rev-parse --show-toplevel 2>/dev/null)
+  if [ -z "$top" ]; then
+    esc_line "okf-check: $bundle is not inside a git repository, so --changed cannot run" >&2; return $EXIT_DEP
+  fi
+  inside=1
+  case "$bundle" in "$top"|"$top"/*) ;; *) inside=0 ;; esac
+  if [ "$inside" = 0 ]; then
+    esc_line "okf-check: the git work tree '$top' does not contain $bundle - the changed notes cannot be listed" >&2
+    return $EXIT_DEP
+  fi
+  # --end-of-options: a ref may start with '-'; after it git treats the word as a ref, never as a flag. A range
+  # (a..b) is not one commit: rev-parse prints two endpoints (or fails) — either way it is refused, exit 2.
+  sha=$(chg_git rev-parse --verify -q --end-of-options "$ref^{commit}" 2>/dev/null); vrc=$?
+  if [ -z "$sha" ]; then
+    esc_line "okf-check: unknown git ref '$ref' - the changed notes cannot be listed" >&2; return $EXIT_DEP
+  fi
+  set -- $sha; n=$#
+  if [ "$vrc" -ne 0 ] || [ "$n" -gt 1 ]; then
+    esc_line "okf-check: --changed needs a single commit-ish, not a range: '$ref' - the changed notes cannot be listed" >&2
+    return $EXIT_DEP
+  fi
+  prefix=$(chg_git rev-parse --show-prefix)
+  # The changed set: what git diff --no-renames lists for tracked files (worktree against the ref, staged included), plus
+  # untracked files git does not ignore (-z everywhere; core.quotepath never bites). --full-name prints repo-root-relative
+  # paths, the shape changed_one's prefix filter expects, also for a bundle in a sub-folder. A git failure here (a corrupt
+  # or unreadable index) is exit 2 with a named line, never a silent empty set.
+  CH_PREFIX="$prefix"; CH_MD=0; CH_FIRST=""; CH_NOTES=()
+  chg_git diff --name-status -z --no-renames --no-ext-diff --no-textconv --ignore-submodules=all "$sha" -- . > "$TMP/changed.raw" 2>/dev/null
+  if [ $? -ne 0 ]; then
+    esc_line "okf-check: git diff $ref failed - the changed notes cannot be listed" >&2; return $EXIT_DEP
+  fi
+  while IFS= read -r -d '' st && IFS= read -r -d '' p; do
+    case "$st" in C*) IFS= read -r -d '' _ ;; esac   # a copy carries a second path
+    changed_one "$p"
+  done < "$TMP/changed.raw"
+  chg_git ls-files --others --exclude-standard -z --full-name -- . > "$TMP/untracked.raw" 2>/dev/null
+  if [ $? -ne 0 ]; then
+    esc_line "okf-check: git ls-files failed - the changed notes cannot be listed" >&2; return $EXIT_DEP
+  fi
+  while IFS= read -r -d '' p; do changed_one "$p"; done < "$TMP/untracked.raw"
+  if okfignore_present "$bundle"; then
+    okfignore_load "$bundle"; [ $? -eq 2 ] && return $EXIT_DEP
+  fi
+  resolve_note_cap "$bundle" || return $EXIT_DEP
+  build_scoped_lists "$bundle"; keep="$SCOPED_KEEP"; ig="$SCOPED_IG"
+  worst=0
+  # bash 3.2 + set -u: an empty array is unbound in for; the guard keeps a clean bundle on the fast path
+  if [ "${#CH_NOTES[@]}" -gt 0 ]; then
+  for rel in "${CH_NOTES[@]}"; do
+    if okfignore_present "$bundle" && okfignore_match "$rel"; then
+      esc_line "$(rel_shown "$rel"): not checked (.okfignore excludes it)"
+      continue
+    fi
+    note_checks "$bundle" "$rel" "$keep"; nrc=$?
+    worst=$(worst_rc "$worst" "$nrc")
+  done
+  fi
+  # The declared counts, once, in the gate's own wording — only when a markdown file changed (lead decision 2). The
+  # message names the first changed markdown path; when only deletions changed, index.md stands in.
+  if [ "$CH_MD" = 1 ]; then
+    firstmd="$CH_FIRST"; [ -n "$firstmd" ] || firstmd="index.md"
+    scoped_index "$bundle" "$firstmd" "$keep" "$ig" > "$TMP/scoped-index.txt" 2> "$TMP/scoped-index.err"; irc=$?
+    [ -s "$TMP/scoped-index.err" ] && esc_line "$(<"$TMP/scoped-index.err")" >&2
+    [ -s "$TMP/scoped-index.txt" ] && esc_line "$(<"$TMP/scoped-index.txt")"
+    if [ "$irc" -eq 2 ]; then
+      [ -s "$TMP/scoped-index.err" ] || esc_line "okf-check: the changed notes were not checked (index.md could not be read)" >&2
+      irc=$EXIT_DEP
+    fi
+    worst=$(worst_rc "$worst" "$irc")
+  fi
+  return "$worst"
+}
+
+# rel_shown <name>: the display copy of a note name (shown() from okf_guard: C0/C1, bidi, U+2028/9 and bad bytes
+# spelled \xNN). The RAW name stays in every file operation, comparison and argument; only printed lines use this.
+rel_shown() { PYTHONDONTWRITEBYTECODE=1 OKF_SCRIPTS_DIR="$HERE" "$PY" - "$1" <<'PYS'
+import os, sys
+sys.path.insert(0, os.environ["OKF_SCRIPTS_DIR"])
+from okf_guard import shown
+print(shown(sys.argv[1]))
+PYS
+}
+
 # run_scoped <bundle> <note>: `--file` mode (the edit hook calls it). L1 and Trust for one note through
 # okf-scoped.py: one line per finding, nothing for a clean note, no other layer. Exit codes keep their meaning:
 # 1 an L1 error (or, with --strict-trust, a Trust warning or advisory, or a near-miss actor), 0 otherwise, 2 could not
 # run,
 # 64 the note is missing, not .md, or outside the bundle.
+# build_scoped_lists <bundle>: the keep list and the ignored list the note-local checks share (part a; runs
+# them once for a whole commit instead of once per note). Sets keep and ig; empty when no .okfignore exists.
+build_scoped_lists() {
+  local bundle="$1" f igrel
+  SCOPED_KEEP=""; SCOPED_IG=""
+  if okfignore_present "$bundle"; then
+    okfignore_list "$bundle" > "$TMP/scoped-keep.lst" 2>/dev/null && SCOPED_KEEP="$TMP/scoped-keep.lst"
+    SCOPED_IG="$TMP/scoped-ignored.lst"; : > "$SCOPED_IG"
+    # NOT rel: rel is the note under the check, and this loop walks the whole bundle
+    while IFS= read -r -d '' f; do
+      igrel=${f#"$bundle"/}
+      okfignore_match "$igrel" && printf '%s\0' "$igrel"
+    done < <(find -H "$bundle" -name .git -prune -o -name '*.md' -print0 2>/dev/null) > "$SCOPED_IG"
+    okf_reap_procsub
+  fi
+}
+
+# note_checks <bundle> <rel> [keep]: L1, Trust and the note-local profile findings for ONE note (part a; calls
+# it per changed note). Prints its findings; returns the worst of its own outcomes by rank. The declared-count check is
+# NOT here: --file runs it once for its note, --changed once for the whole commit (lead decision 2).
+note_checks() {
+  local bundle="$1" rel="$2" keep="${3:-}" out rc prc vrc
+  OKF_KEEP_LIST="$keep" run_layer "Scoped check" "$HERE/okf-scoped.py" "$bundle" "$rel" $([ "$STRICT_TRUST" -eq 1 ] && echo --strict-trust); rc=$?
+  if layer_stopped "$rc" >&2; then echo "okf-check: $(rel_shown "$rel") was not checked" >&2; return $EXIT_DEP; fi   # stderr: stdout is findings only
+  out=$(<"$TMP/layer.out")
+  [ -n "$out" ] && esc_line "$out"
+  case "$rc" in
+    0) vrc=0 ;;
+    1) [ -n "$out" ] && vrc=$EXIT_CONFORM ;;   # exit 1 with no finding printed is a crash, not a verdict
+  esac
+  if [ -z "${vrc:-}" ]; then
+    esc_line "okf-check: the scoped check could not run (exit $rc) - $(rel_shown "$rel") was not checked" >&2
+    return $EXIT_DEP
+  fi
+  scoped_profile "$bundle" "$rel" > "$TMP/scoped-profile.txt" 2> "$TMP/scoped-profile.err"; prc=$?
+  [ -s "$TMP/scoped-profile.err" ] && esc_line "$(<"$TMP/scoped-profile.err")" >&2
+  [ -s "$TMP/scoped-profile.txt" ] && esc_line "$(<"$TMP/scoped-profile.txt")"
+  case "$prc" in 0|$EXIT_PROFILE) ;; *) esc_line "okf-check: $rel was not checked (the house profile could not run)" >&2; prc=$EXIT_DEP ;; esac
+  return "$(worst_rc "$vrc" "$prc")"
+}
+
 run_scoped() {
-  local bundle note rel out rc keep
+  local bundle note rel out rc keep f ig
   [ "${_want_file:-0}" = 1 ] && { echo "usage: okf-check <bundle> --file <note>" >&2; return 64; }
   [ "$JSON" -eq 1 ] && { echo "error: --file prints text lines; --json is not supported with it" >&2; return 64; }
   case "$2" in *$'\n'*) echo "error: --file: a newline in the note name would split a finding over two lines" >&2; return 64 ;; esac
@@ -706,23 +1048,27 @@ run_scoped() {
   case "$note" in "$bundle"/*) rel=${note#"$bundle"/} ;; *) esc_line "error: --file '$2' is not inside $1" >&2; return 64 ;; esac
   if okfignore_present "$bundle"; then
     okfignore_load "$bundle"; [ $? -eq 2 ] && return $EXIT_DEP
-    okfignore_match "$rel" && { esc_line "$rel: not checked (.okfignore excludes it)"; return 0; }
+    okfignore_match "$rel" && { esc_line "$(rel_shown "$rel"): not checked (.okfignore excludes it)"; return 0; }
   fi
   [ -n "$PY" ] || { esc_line "okf-check: python3 is missing - $rel was not checked" >&2; return $EXIT_DEP; }
   resolve_note_cap "$bundle" || return $EXIT_DEP
   # The full run checks links against the notes .okfignore keeps (a filtered mirror), so the scoped run does too.
-  keep=""
-  if okfignore_present "$bundle"; then okfignore_list "$bundle" > "$TMP/scoped-keep.lst" 2>/dev/null && keep="$TMP/scoped-keep.lst"; fi
-  OKF_KEEP_LIST="$keep" run_layer "Scoped check" "$HERE/okf-scoped.py" "$bundle" "$rel" $([ "$STRICT_TRUST" -eq 1 ] && echo --strict-trust); rc=$?
-  if layer_stopped "$rc" >&2; then echo "okf-check: $rel was not checked" >&2; return $EXIT_DEP; fi   # stderr: stdout is findings only
-  out=$(<"$TMP/layer.out")
-  [ -n "$out" ] && esc_line "$out"
-  case "$rc" in
-    0) return 0 ;;
-    1) [ -n "$out" ] && return $EXIT_CONFORM ;;   # exit 1 with no finding printed is a crash, not a verdict
-  esac
-  esc_line "okf-check: the scoped check could not run (exit $rc) - $rel was not checked" >&2
-  return $EXIT_DEP
+  # The keep list exists only when an .okfignore does (no ignore file: the reconciler walks the bundle itself, one Python
+  # pass, which is the fast path). Beside it, the ignored list — the *.md the ignore rules DO exclude — so the reconciler
+  # can tell an anomalous note that is the bundle's business from one the full run never sees.
+  build_scoped_lists "$bundle"; keep="$SCOPED_KEEP"; ig="$SCOPED_IG"
+  # Note-local L2 (part a). Order: the L1 and Trust lines, then the profile findings, then the index findings; the
+  # hook ticket counts on that order. A hygiene finding stays out: it is not local to one note.
+  local prc irc
+  note_checks "$bundle" "$rel" "$keep"; prc=$?
+  scoped_index "$bundle" "$rel" "$keep" "$ig" > "$TMP/scoped-index.txt" 2> "$TMP/scoped-index.err"; irc=$?
+  [ -s "$TMP/scoped-index.err" ] && esc_line "$(<"$TMP/scoped-index.err")" >&2
+  [ -s "$TMP/scoped-index.txt" ] && esc_line "$(<"$TMP/scoped-index.txt")"
+  if [ "$irc" -eq 2 ]; then
+    [ -s "$TMP/scoped-index.err" ] || esc_line "okf-check: $rel was not checked (index.md could not be read)" >&2
+    irc=$EXIT_DEP
+  fi
+  return "$(worst_rc "$prc" "$irc")"
 }
 
 _stat_flavor=""
@@ -2303,79 +2649,9 @@ run_index() {
   # "$PY" directly, not py_with_vendor: this reconciler reads frontmatter with a
   # regex and parses no YAML, so it needs nothing from the vendored PyYAML and
   # should not depend on it being present.
-  out=$("$PY" - "$bundle" <<'PYEOF'
-import pathlib, re, sys
-
-bundle = pathlib.Path(sys.argv[1])
-# The SAME concept set L1 counts: everything except the two files OKF v0.2
-# reserves. README.md is NOT reserved — it carries frontmatter and L1 counts it,
-# which is why L1 reports 51 for the lessons bundle where the untracked-file
-# count is 50. Excluding it here produced a reconciler that disagreed with the
-# conformance layer standing directly above it in the same report, and two
-# definitions of "concept" inside one tool are worse than no check at all.
-RESERVED = {"index.md", "log.md"}
-concepts = [p for p in bundle.rglob("*.md") if p.name not in RESERVED and p.is_file()]
-
-def declared_type(p):
-    try:
-        t = p.read_text(encoding="utf-8-sig", errors="replace")   # a BOM before the fence is no content, as L1 reads it
-    except OSError:
-        return None
-    if not t.startswith("---"):
-        return None
-    end = t.find("\n---", 3)
-    m = re.search(r"^type:\s*(.+?)\s*$", t[:end if end > 0 else len(t)], re.M)
-    return m.group(1).strip().strip("\"'") if m else None
-
-types = {}
-for p in concepts:
-    t = declared_type(p)
-    if t:
-        types[t.lower()] = types.get(t.lower(), 0) + 1
-
-idx = (bundle / "index.md").read_text(encoding="utf-8", errors="replace")
-# The declaration is a whole BOLD line, so a bold phrase inside a sentence is
-# not mistaken for a total.
-bold = None
-for line in idx.splitlines():
-    s = line.strip()
-    if s.startswith("**") and s.endswith("**") and re.search(r"\d", s):
-        bold = s[2:-2]
-        break
-if bold is None:
-    print("SKIP index.md declares no counts")
-    sys.exit(0)
-
-bad, good, unknown = [], [], []
-for seg in re.split(r"[·|,]", bold):
-    m = re.match(r"^\s*(\d+)\s+(.+?)\s*\.?\s*$", seg)
-    if not m:
-        continue
-    n, label = int(m.group(1)), m.group(2).strip().lower()
-    singular = label[:-1] if label.endswith("s") else label
-    if singular in ("concept", "note", "file"):
-        actual = len(concepts)
-    elif singular in types:
-        actual = types[singular]
-    else:
-        # Not derivable from any `type:` in the bundle. Saying so is the honest
-        # outcome; silently treating it as verified would be the failure this
-        # whole rule exists to stop.
-        unknown.append(f"{n} {label}")
-        continue
-    (good if n == actual else bad).append((n, label, actual))
-
-for n, label, actual in bad:
-    # "{actual} on disk", not "{actual} are on disk": the count can be 1, and
-    # "1 are on disk" in the line an operator reads is a defect in the report.
-    print(f"MISMATCH index.md claims {n} {label}; {actual} on disk")
-for n, label, actual in good:
-    print(f"OK {n} {label}")
-for u in unknown:
-    print(f"UNVERIFIABLE {u}")
-sys.exit(1 if bad else 0)
-PYEOF
-  ); ec=$?
+  # The reconciler lives in its own file because `--file` reads the same lines for one note; its output and status
+  # are unchanged here: MISMATCH/OK/UNVERIFIABLE/SKIP lines, exit 1 when a count does not match.
+  out=$("$PY" "$HERE/okf-index-reconcile.py" "$bundle"); ec=$?
   if [ "$ec" -ne 0 ] && [ "$ec" -ne 1 ]; then
     say "  L2 index         COULD NOT RUN — the reconciler exited $ec"
     say "                   NOT a pass: declared counts were never evaluated."
@@ -2865,6 +3141,13 @@ selftest() {
   # The edit hook reads "nothing printed" as a clean note, so a helper that loses its findings must fail here.
   _scoped_probe() { run_scoped "$1" "$1/bad.md"; }
   probe "note without frontmatter" "bad.md: L1 error: " _scoped_probe "bad.md" 'no frontmatter here\n'
+  # --file runs the note-local house-profile check against the bundle's okf-base.yaml. A --file that stops reading it
+  # would go silent on exactly the note the release gate fails, so the probe plants a type the profile does not declare.
+  # Guarded as the L2 (house profile) probes are: without okflint the profile is SKIPPED above, and a probe that cannot
+  # fire would turn a skip into exit 5.
+  if command -v okflint >/dev/null 2>&1; then
+    probe "note whose type the house profile does not declare" "bad.md: L2 profile error: F101" _scoped_probe "bad.md" '---\ntype: notatype\ntitle: T\ndescription: D\ntags: [t]\nstatus: stable\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\n---\nbody\n'
+  fi
 
   say "  Refused notes:"
   # A note that is a device, a pipe or a folder is named and never listed for a layer. The probe plants /dev/null behind a
@@ -3006,6 +3289,7 @@ fi
 # cannot enter would otherwise read as "link target not found", or as a PermissionError before Python 3.14. The edit hook
 # runs this and treats exit 2 as "could not check": it stays silent (fail-open).
 [ "$MODE" = scoped ] && { run_scoped "$BUNDLE" "${SCOPED_FILE:-}"; exit $?; }
+[ "$MODE" = changed ] && { run_changed "$BUNDLE" "${CHANGED_REF:-}"; exit $?; }
 # INTERNAL, not a user mode (no help line, the list is in plugin.test.sh S51): stdin is a NUL-separated list of note paths
 # relative to the bundle, and the paths .okfignore excludes come back NUL-separated. The conservation report asks it about the notes the
 # ref still had, because its list of counted notes comes from the files on disk: a note that was deleted is on no disk
@@ -3116,11 +3400,7 @@ if okfignore_present "$BUNDLE" && [ "${_kept:-0}" -eq 0 ] && [ "${_exnotes:-0}" 
   [ "$JSON" -eq 1 ] && emit_json "$EXIT_DEP"
   exit $EXIT_DEP
 fi
-# PRECEDENCE, not max(). `worst=max(rc)` returned 2 ("could not run") for a
-# bundle that had BOTH a real §11 conformance error and an unusable manifest,
-# so CI would retry or reinstall instead of failing the bundle. A verdict that
-# was REACHED always outranks a gate that could not reach one. (R-4)
-rank() { case "$1" in 0) echo 0;; 4) echo 1;; 6) echo 2;; 2) echo 3;; 3) echo 4;; 1) echo 5;; 5) echo 6;; *) echo 7;; esac; }
+# rank() and its reason live above run_scoped: `--file` combines three verdicts with them too.
 worse() { [ "$(rank "$1")" -gt "$(rank "$worst")" ] && worst="$1"; return 0; }
 # worse_other: like worse, and remembers that something OTHER than the trust policy failed, so the final
 # summary never blames trust alone for an exit that another layer also earned.

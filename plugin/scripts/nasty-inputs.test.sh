@@ -220,5 +220,51 @@ printf -- '---\ntype: Lesson\ntitle: A\ndescription: D\n---\nCRASHME\n' > "$b2/b
   && ok "B2 files behind a symlinked folder survive crash isolation (okf-check, crashing note in the bundle)" \
   || bad "B2 files outside the bundle were deleted" "precious.md and crashy.md after the run: $(ls "$b2/outside" | tr '\n' ' ')"
 
+# --- C: every reached vendored file is really loaded by a hostile run (ticket: a newly vendored file gets no corpus
+# check; plugin/tests/vendored-files.tsv says reached, this part proves it) -------------------------------------
+# How it sees the loads: a plugin COPY whose every vendored .py appends its own path to a marker file at import time
+# (the tree stays untouched; okf-check discards the validator's stderr, so a trace on stderr is lost).
+# part_c <tsv> <ok|bad> <label>: build the marked copy, run one hostile form through its okf-check, then require
+# every reached row of <tsv> to be in the marker (or, for <bad>, name the one that is not).
+part_c() { # <tsv> <want> <label>
+  local tsv="$1" want="$2" label="$3" P3 mark c3 missed rp rs
+  P3="$TMP/plug-c3"; rm -rf "$P3"; cp -R "$HERE/.." "$P3"
+  mark="$TMP/loaded-c3.txt"; : > "$mark"
+  "$REALPY" - "$mark" "$P3" <<'PYC'
+import pathlib, sys
+mark, plug = sys.argv[1], pathlib.Path(sys.argv[2])
+for f in (plug / "vendor").rglob("*.py"):
+    with open(f, "a", encoding="utf-8") as fh:
+        fh.write('\nwith open(%r, "a") as _okfmark: _okfmark.write(%r + "\\n")\n' % (mark, str(f.relative_to(plug / "vendor"))))
+PYC
+  c3="$TMP/c3"; rm -rf "$c3"; mkdir -p "$c3/b" "$c3/outside"
+  "$REALPY" "$TMP/mkform.py" name dotless-i "$c3/b" "$c3/outside" >/dev/null 2>&1
+  "$P3/scripts/okf-check" "$c3/b" >/dev/null 2>&1
+  missed=""
+  while IFS=$'\t' read -r rp rs _why; do
+    case "$rp" in ''|'#'*) continue ;; esac
+    [ "$rs" = reached ] || continue
+    grep -qxF "$rp" "$mark" || missed="$missed $rp"
+  done < "$tsv"
+  if [ "$want" = ok ]; then
+    [ -z "$missed" ] && ok "$label: every reached vendored file is loaded by the hostile run" \
+      || bad "$label" "reached but never loaded:$missed (marker holds: $(tr '\n' ' ' < "$mark"))"
+  else
+    [ -n "$missed" ] && ok "$label: a reached row nothing loads is named:$missed" \
+      || bad "$label" "the detector did not fire; marker holds: $(tr '\n' ' ' < "$mark")"
+  fi
+  rm -rf "$P3" "$c3"
+}
+
+VTSV="$HERE/../tests/vendored-files.tsv"
+if [ -f "$VTSV" ]; then
+  part_c "$VTSV" ok "C-tree the tree's vendored-files.tsv: every reached file loads"
+  # a doctored list marks a file reached that no run loads: the detector must name it (negative-2 of the story).
+  { cat "$VTSV"; printf 'never_loaded.py\treached\t\n'; } > "$TMP/tsv-doctored"
+  part_c "$TMP/tsv-doctored" bad "C-doctored a reached row nothing loads fails, named"
+else
+  bad "C vendored-files.tsv missing" "$VTSV"
+fi
+
 printf '\n%s passed, %s failed, %s skipped\n' "$PASS" "$FAIL" "$SKIP"
 [ "$FAIL" -eq 0 ]

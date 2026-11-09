@@ -6,7 +6,7 @@ description: >-
   lists where a fact is stated, checks one note, and proves no content was lost since a git ref. Use when asked to
   validate, lint or review notes, before committing notes, in CI, after editing one note, before a refactor of
   notes, or to find duplicates.
-argument-hint: "<bundle-dir> [--fail-stale | --strict-trust | --json | --file <note> | --duplicates | --facts [NAME] | --conserve <ref>]"
+argument-hint: "<bundle-dir> [--fail-stale | --strict-trust | --json | --file <note> | --changed <git-ref> | --duplicates | --facts [NAME] | --conserve <ref>]"
 allowed-tools:
   - 'Bash(*/scripts/okf-check" *)'
   - 'Bash(echo *)'
@@ -33,7 +33,8 @@ The bundle folder comes first. With none, the tool exits 64. Read the exit code 
 | Staleness blocks the run (exit 4) | `--fail-stale` |
 | Unproven or near-miss `human:` verification blocks (exit 1) | `--strict-trust` |
 | Machine-readable result | `--json` |
-| One note you just edited, L1 and Trust only | `--file <note>` |
+| One note you just edited: L1, Trust and its note-local profile and index checks | `--file <note>` |
+| Every note this commit changed (a commit hook) | `--changed <git-ref>` |
 | The bundle changes under a writer (exit 6) | `--fail-on-change` |
 | Notes that may record the same thing (a report, exit 0) | `--duplicates`, or `--duplicates-body` to compare bodies too |
 | Every place a declared fact is stated (needs `okf_check.facts`) | `--facts [NAME]` |

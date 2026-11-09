@@ -155,14 +155,24 @@ A citation with a quoted anchor (`decision-12.md:94 "shadow, canary"`) whose tex
 
 ## One note: `--file`
 
-`okf-check "<bundle>" --file "<note>"` checks only that note, L1 and Trust, in well under a second: one line per
-finding (`<note>: L1 error: ...`, `L1 warning`, `Trust warning`, `Trust error` for a note the loader refuses for its size), nothing when the note is clean. Exit codes keep
-their meaning (1 an L1 error, a Trust error, or a Trust finding under `--strict-trust`; 2 could not run; 64 the note is not a `.md`
-inside the bundle). It is meant for an edit hook; the full run is still the gate.
+`okf-check "<bundle>" --file "<note>"` checks only that note, in well under a second: L1 and Trust, plus the checks that
+are local to the note in L2 — its house-profile findings (`F101` a `type` the profile does not declare, `F102` a missing
+required key, `F105` a `status` outside its type's values, and `R001` on the root `index.md`) and the counts `index.md`
+declares. One line per finding (`<note>: L1 error: ...`, `L1 warning`, `<note>: L2 profile error: <code> <message>`,
+`index.md: L2 index error: ...`, `Trust warning`, `Trust error` for a note the loader refuses for its size), nothing when
+the note is clean. Hygiene findings stay out. Exit codes keep their meaning and the gate's precedence: 1 an L1 error, a
+Trust error, or a Trust finding under `--strict-trust`; 3 a note-local L2 finding (it exited 0 before 0.9.59); 2 could not
+run; 64 the note is not a `.md` inside the bundle. It is meant for an edit hook; the full run is still the gate.
+
+`okf-check "<bundle>" --changed "<git-ref>"` gives every note changed since the ref (committed, staged or untracked,
+whoever wrote it) the same checks — one line per finding per note, the declared counts once — for a commit hook; exit 2
+outside a git repository or for an unknown ref.
 
 The plugin ships that hook, OFF by default: `okf_check: {edit_hook: true}` in a bundle's `okf-base.yaml` (or
-`OKF_EDIT_HOOK=1`) makes every Write/Edit of a note in that bundle run it. On an L1 error or a Trust warning Claude
-sees one line starting `okf-check:` after the edit; fix the note it names. The hook is time-boxed and stays silent
+`OKF_EDIT_HOOK=1`) makes every Write/Edit of a note in that bundle run it. On an L1 error, a Trust warning or a
+note-local L2 finding (a house-profile finding, `R001` or the declared counts) Claude sees one line starting
+`okf-check:` after the edit; fix the note it names. L1 warnings are left out on purpose (a missing `tags` would fire
+on every edit); `okf-check <bundle> --file <note>` prints them. The hook is time-boxed and stays silent
 when it cannot run. The bundle is the nearest folder above the note with an `okf-base.yaml`, so a manifest above the
 project (for example in `$HOME`) with `edit_hook: true` applies to every note below it. If the hook seems to do nothing,
 run `okf-check --doctor`: it names the file that switched the hook on and says when the hook's config is unreadable.
@@ -186,7 +196,7 @@ empty, inside the vault, or cannot be written). It never writes into the vault.
 
 ## In CI and git
 
-The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.58`
+The same `okf-check`, without Claude Code: the GitHub Action `ahmedibrahim085/okf-knowledge-gate@v0.9.59`
 (inputs `bundle`, `strict-trust`, `fail-stale`) and the pre-commit hook `id: okf-check` (its `args` replace the
 default `.`). Both take `okf-check`'s exit code. Details are in the repository README.
 

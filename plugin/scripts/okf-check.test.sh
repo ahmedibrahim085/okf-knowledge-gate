@@ -2800,6 +2800,138 @@ note44 fut "title: T" "stale_after: \"2099-01-01\"" "generated:" "  by: human:t"
 "$CHECK" "$N44DIR" >"$N44OUT" 2>&1; src=$?
 grep -q 'n.md: .*generated.at.*in the future' "$N44OUT" && ok "LT-44e generated.at in the future is a warning" || bad "LT-44e future generated.at" "rc=$src $(grep -n 'n.md\|generated' "$N44OUT" | head -3 | cut -c1-140 | tr '\n' ' ')"
 
+# --- The root index's Stop-hook switches: `upkeep` and `recursive` are accepted, every other key still warns --------------
+section "root index: the upkeep and recursive keys"
+# okf-skills 0.12.0 (commit 49f8fb4) lets a bundle's root index.md carry `recursive` beside `upkeep`: the
+# plugin's Stop hook reads both from there, so a bundle with either key failed its own validator's --strict run on our
+# copy. The VALUE is never looked at (the hook decides what it means); only the literal key is accepted, and §11 forbids
+# rejecting a bundle for an unknown key, so every other key is still a warning whose text names the three allowed keys.
+RI_KEYS='`okf_version`, `upkeep`, `recursive`'
+rootindex() { # <dir> <frontmatter lines...> — a one-note bundle whose root index.md carries the given frontmatter
+  local d="$1"; shift
+  mkbundle "$d"
+  { printf -- '---\nokf_version: "0.2"\n'; printf '%s\n' "$@"; printf -- '---\n# B\n'; } > "$d/index.md"
+}
+ri_case() { # <name> <frontmatter lines...> — okf-check that bundle; sets RID, RIOUT and RIRC
+  RID="$TMP/rootindex_$1"; shift; rootindex "$RID" "$@"
+  RIOUT="$RID.out"; "$CHECK" "$RID" >"$RIOUT" 2>&1; RIRC=$?
+}
+ri_clean() { # <label> — exit 0 and the L1 line counts no warning
+  { [ "$RIRC" -eq 0 ] && grep -qE 'L1 conformance +PASS +1 concepts, 0 errors, 0 warning\(s\)' "$RIOUT"; } \
+    && ok "$1" || bad "$1" "rc=$RIRC $(grep -n 'L1 conformance\|warning' "$RIOUT" | head -2 | cut -c1-140 | tr '\n' ' ')"
+}
+ri_case both_switches "upkeep: enforced" "recursive: true"
+ri_clean "root-index-recursive-happy-1 a root index with 'upkeep: enforced' and 'recursive: true' is clean (exit 0, L1 0 warnings)"
+! grep -q 'recursive' "$RIOUT" && ok "root-index-recursive-happy-1 no warning line mentions 'recursive'" || bad "root-index-recursive-happy-1 warning text" "$(grep -n 'recursive' "$RIOUT" | head -1 | cut -c1-160)"
+"$CHECK" "$RID" --json >"$RIOUT.json" 2>&1
+RI_J=$("$REALPY" -c 'import json,sys; d=json.load(open(sys.argv[1])); print(d["l1_warnings"], len(d["warnings"]))' "$RIOUT.json" 2>&1)
+[ "$RI_J" = "0 0" ] && ok "root-index-recursive-happy-2 --json reports l1_warnings 0 and an empty warnings list" || bad "root-index-recursive-happy-2 --json" "l1_warnings/len(warnings)='$RI_J'"
+PYTHONPATH="$HERE/../vendor/pyyaml" "$REALPY" "$HERE/../vendor/okf_validate.py" "$RID" --strict >"$RIOUT.bare" 2>&1; RI_BRC=$?
+{ [ "$RI_BRC" -eq 0 ] && ! grep -q '! warn' "$RIOUT.bare"; } \
+  && ok "root-index-recursive-happy-3 the vendored validator run by itself with --strict passes (exit 0, no warn line)" \
+  || bad "root-index-recursive-happy-3 bare validator --strict" "rc=$RI_BRC $(grep -n 'warn\|non-conformant' "$RIOUT.bare" | head -2 | cut -c1-160 | tr '\n' ' ')"
+"$CHECK" "$RID" --file "$RID/index.md" >"$RIOUT.file" 2>&1; RI_FRC=$?
+{ [ "$RI_FRC" -eq 0 ] && [ ! -s "$RIOUT.file" ]; } \
+  && ok "root-index-recursive-happy-4 the edit-time check of a root index with both keys is silent (exit 0)" \
+  || bad "root-index-recursive-happy-4 --file silent" "rc=$RI_FRC out='$(head -2 "$RIOUT.file" | tr '\n' ' ' | cut -c1-160)'"
+ri_case upkeep_only "upkeep: enforced"
+ri_clean "root-index-recursive-happy-5 'upkeep: enforced' alone stays clean"
+ri_case depth "recursive: 3"
+ri_clean "root-index-recursive-edge-1 'recursive: 3' (a depth) is accepted: the value is not checked"
+ri_case disabled "recursive: false"
+ri_clean "root-index-recursive-edge-2 'recursive: false' is accepted: the key is accepted whatever its value"
+ri_case alone "recursive: true"
+ri_clean "root-index-recursive-edge-3 'recursive: true' without 'upkeep' is accepted"
+ri_case mapping "recursive:" "  deep: true"
+ri_clean "root-index-recursive-edge-4 a 'recursive:' key holding a mapping is accepted"
+ri_case nested "upkeep:" "  recursive: true"
+ri_clean "root-index-recursive-edge-5 'recursive' nested inside the 'upkeep' mapping is not a root key (clean as today)"
+RI_CN="$TMP/rootindex_concept_note"; mkbundle "$RI_CN"
+printf -- '---\ntype: Lesson\ntitle: T\ndescription: D\nstatus: stable\ntags: [t]\ngenerated:\n  by: human:t\n  at: "2026-01-01"\nstale_after: "2099-01-01"\nrecursive: true\n---\n\nbody\n' > "$RI_CN/c.md"
+"$CHECK" "$RI_CN" >"$RI_CN.out" 2>&1; RI_CRC=$?
+{ [ "$RI_CRC" -eq 0 ] && grep -qE 'L1 conformance +PASS .* 0 warning\(s\)' "$RI_CN.out"; } \
+  && ok "root-index-recursive-edge-6 a concept note may carry 'recursive' (extra keys stay allowed in notes)" \
+  || bad "root-index-recursive-edge-6 concept note" "rc=$RI_CRC $(grep -n 'warning\|recursive' "$RI_CN.out" | head -2 | cut -c1-160 | tr '\n' ' ')"
+RI_SUB="$TMP/rootindex_sub_index"; mkbundle "$RI_SUB"; mkdir -p "$RI_SUB/sub"
+printf -- '---\nrecursive: true\n---\n# Sub\n' > "$RI_SUB/sub/index.md"
+"$CHECK" "$RI_SUB" >"$RI_SUB.out" 2>&1; RI_SRC=$?
+{ [ "$RI_SRC" -eq 0 ] && grep -q 'sub/index.md: §8 index.md should contain no frontmatter' "$RI_SUB.out" && ! grep -q 'recursive' "$RI_SUB.out"; } \
+  && ok "root-index-recursive-negative-1 a non-root index with frontmatter still warns (any frontmatter), and the key is not named" \
+  || bad "root-index-recursive-negative-1 non-root index" "rc=$RI_SRC $(grep -n 'sub/index.md\|recursive' "$RI_SUB.out" | head -2 | cut -c1-160 | tr '\n' ' ')"
+ri_case unknown_key "foo: 1"
+RI_TEXT="index.md: §12 root index.md frontmatter may only carry $RI_KEYS (found ['foo'])"
+{ [ "$RIRC" -eq 0 ] && [ "$(grep -cF "$RI_TEXT" "$RIOUT")" = 1 ]; } \
+  && ok "root-index-recursive-negative-2 an invented key warns with the three accepted keys named" \
+  || bad "root-index-recursive-negative-2 unknown key" "rc=$RIRC $(grep -n 'may only carry' "$RIOUT" | head -1 | cut -c1-200)"
+ri_case unknown_beside_recursive "foo: 1" "recursive: true"
+{ [ "$RIRC" -eq 0 ] && grep -qF "$RI_TEXT" "$RIOUT"; } \
+  && ok "root-index-recursive-negative-3 'recursive' beside an invented key is not blamed: the found list holds only 'foo'" \
+  || bad "root-index-recursive-negative-3 found list" "rc=$RIRC $(grep -n 'may only carry' "$RIOUT" | head -1 | cut -c1-200)"
+for RI_K in Recursive recurse; do
+  ri_case "misspelt_$RI_K" "$RI_K: true"
+  { [ "$RIRC" -eq 0 ] && grep -qF "(found ['$RI_K'])" "$RIOUT" && grep -qF "$RI_KEYS" "$RIOUT"; } \
+    && ok "root-index-recursive-negative-4 only the literal lowercase key is accepted: '$RI_K' still warns and is named" \
+    || bad "root-index-recursive-negative-4 misspelt '$RI_K'" "rc=$RIRC $(grep -n 'may only carry' "$RIOUT" | head -1 | cut -c1-200)"
+done
+ri_case file_unknown_key "foo: 1"
+"$CHECK" "$RID" --file "$RID/index.md" >"$RIOUT.file" 2>&1; RI_FRC=$?
+RI_FILE_TEXT="index.md: L1 warning: §12 root index.md frontmatter may only carry $RI_KEYS (found ['foo'])"
+{ [ "$RI_FRC" -eq 0 ] && [ "$(grep -cF "$RI_FILE_TEXT" "$RIOUT.file")" = 1 ]; } \
+  && ok "root-index-recursive-edge-7 the edit-time check reports an invented key with the three accepted keys named (exit 0)" \
+  || bad "root-index-recursive-edge-7 --file unknown key" "rc=$RI_FRC out='$(head -2 "$RIOUT.file" | tr '\n' ' ' | cut -c1-200)'"
+ri_case file_unknown_beside_recursive "foo: 1" "recursive: true"
+"$CHECK" "$RID" --file "$RID/index.md" >"$RIOUT.file" 2>&1; RI_FRC=$?
+{ [ "$RI_FRC" -eq 0 ] && [ "$(grep -cF "$RI_FILE_TEXT" "$RIOUT.file")" = 1 ] && [ "$(grep -c . "$RIOUT.file")" = 1 ]; } \
+  && ok "root-index-recursive-edge-8 at edit time an invented key beside 'recursive' is the only key named, in one line (exit 0)" \
+  || bad "root-index-recursive-edge-8 --file found list" "rc=$RI_FRC out='$(head -2 "$RIOUT.file" | tr '\n' ' ' | cut -c1-200)'"
+if command -v okflint >/dev/null 2>&1; then
+  RI_H0="$TMP/rootindex_house_clean"; rootindex "$RI_H0"
+  sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$RI_H0/okf-base.yaml"
+  "$CHECK" "$RI_H0" >"$RI_H0.out" 2>&1; RI_HRC=$?
+  { [ "$RI_HRC" -eq 0 ] && grep -qE 'L2 profile +PASS' "$RI_H0.out" && ! grep -q 'R001' "$RI_H0.out"; } \
+    && ok "root-index-recursive-happy-7 with house rules a root index carrying only okf_version still passes" \
+    || bad "root-index-recursive-happy-7 house-rule clean bundle" "rc=$RI_HRC $(grep -n 'L2 profile\|R001' "$RI_H0.out" | head -2 | cut -c1-160 | tr '\n' ' ')"
+  RI_H1="$TMP/rootindex_house_keys"; rootindex "$RI_H1" "upkeep: enforced" "recursive: true"
+  sed 's/^  name: CHANGE ME/  name: Probe/' "$HERE/../config/okf-base.yaml.template" > "$RI_H1/okf-base.yaml"
+  "$CHECK" "$RI_H1" >"$RI_H1.out" 2>&1; RI_HRC=$?
+  # okflint 0.5.1 still rejects `upkeep` and `recursive` in the root index (R001): that gap is okflint's and is not hidden
+  # here (the changelog states it). This ticket removes the false L1 warning and nothing more.
+  { [ "$RI_HRC" -eq 3 ] && grep -qF 'R001 index.md — frontmatter forbidden in index.md (only `okf_version` allowed at root)' "$RI_H1.out" && ! grep -q 'may only carry' "$RI_H1.out"; } \
+    && ok "root-index-recursive-negative-10 with house rules the gate still fails with R001, and no L1 section-12 line prints" \
+    || bad "root-index-recursive-negative-10 house-rule keys" "rc=$RI_HRC $(grep -n 'R001\|may only carry' "$RI_H1.out" | head -2 | cut -c1-160 | tr '\n' ' ')"
+  # makes --file index.md report the house-profile layer's own R001, so this case now pins both halves: the old
+  # section-12 text is gone AND the edit-time check fails the same root index the gate fails (happy-4 supersedes the
+  # silent, exit-0 version this case used to pin).
+  "$CHECK" "$RI_H1" --file "$RI_H1/index.md" >"$RI_H1.file" 2>&1; RI_FRC=$?
+  { [ "$RI_FRC" -eq 3 ] && ! grep -q 'may only carry' "$RI_H1.file" && grep -q 'L2 profile error: R001' "$RI_H1.file"; } \
+    && ok "root-index-recursive-edge-9 at edit time with house rules no section-12 text prints, and R001 still fails it (exit 3)" \
+    || bad "root-index-recursive-edge-9 --file with house rules" "rc=$RI_FRC out='$(head -2 "$RI_H1.file" | tr '\n' ' ' | cut -c1-200)'"
+else
+  skip "root-index-recursive-happy-7/negative-10/edge-9 house-rule cases — okflint not installed" "tools/install-dev-deps.sh --yes"
+fi
+# The alias bomb in the root index stays a WARNING in L1, bounded: the suite's own runbounded helper (5 s limit, the
+# child's peak memory) on a seven-level bomb built the way the LT-34 cases build one. Never run unbounded.
+RI_BOMB="$TMP/rootindex_bomb"; mkbundle "$RI_BOMB"
+"$REALPY" - "$RI_BOMB/index.md" <<'PY'
+import sys
+lines = ["---", 'okf_version: "0.2"', "x0: &a0 [x,x,x,x,x,x,x,x,x]"]
+for i in range(1, 8):
+    lines.append("x%d: &a%d [%s]" % (i, i, ",".join(["*a%d" % (i - 1)] * 9)))
+lines += ["owner: *a7", "---", "# B"]
+open(sys.argv[1], "w").write("\n".join(lines) + "\n")
+PY
+RI_BR=$(runbounded "$RI_BOMB"); RI_BRC=${RI_BR%% *}; RI_BMB=${RI_BR##* }
+{ [ "$RI_BR" != TIMEOUT ] && [ "$RI_BRC" -eq 0 ] && [ "$RI_BMB" -lt 400 ] && grep -qF '(an alias bomb, or a document too large to check)' "$RI_BOMB.out"; } \
+  && ok "root-index-recursive-negative-5 a bomb in the root index is refused with its reason, bounded (exit 0, peak $RI_BMB MB)" \
+  || bad "root-index-recursive-negative-5 root index bomb" "result='$RI_BR' $(grep -n 'alias\|index.md' "$RI_BOMB.out" 2>/dev/null | head -1 | cut -c1-160)"
+# negative-6 to negative-9 are the existing cases, reused not copied: LT-44b (duplicate key), LT-44e (future generated.at),
+# LT-43a (look-alike actor, --strict-trust exit 1) and bare-validator-unreadable-folder (a folder nobody may enter).
+RI_V="$HERE/../vendor/VENDOR.md"
+RI_VL=$(grep -c '49f8fb4987989b7a443ce278c6aa68ba0493b51f' "$RI_V" 2>/dev/null)
+{ [ "${RI_VL:-0}" -ge 1 ] && awk '/49f8fb4987989b7a443ce278c6aa68ba0493b51f/ { if (index($0, "recursive")) hit = 1 } END { exit !hit }' "$RI_V"; } \
+  && ok "root-index-recursive-happy-6 VENDOR.md records the change with its upstream commit and the key on the same line" \
+  || bad "root-index-recursive-happy-6 VENDOR.md record" "lines with the commit: ${RI_VL:-0}"
+
 # --- LT-45 (0.9.2 F4): --json carries the findings, is valid for any path, and the verdict counts every skipped layer ---
 section "LT-45 (0.9.2 F4)"
 # jq44 <json-file> <python-expr over d>: print the expression's value (d is the parsed document)
@@ -3080,7 +3212,9 @@ L55_IDX=$(grep -A1 '^  L2 (index):' "$TMP/lt55.txt" | grep -c 'FIRED  *index.md 
 { [ "$rcl" -eq 0 ] && [ "$L55_IDX" -eq 1 ]; } \
   && ok "LT-55c S3-H1 --selftest has an L2 index probe that fires on a healthy install" \
   || bad "LT-55c S3-H1 L2 index probe" "rc=$rcl $(grep -n 'L2' "$TMP/lt55.txt" | tr '\n' ' ')"
-r=$(lt55_dead index 's/(good if n == actual else bad)/good/')
+# The reconciler moved to its own file, so the cripple follows it; the expression is the same one line that decides
+# "matches" from "mismatch".
+r=$(lt55_dead index 's/(good if n == actual else bad)/good/' okf-index-reconcile.py)
 { [ "$r" = "rc=5" ] && grep -q 'NOT FIRED' <<<"$(grep -A1 '^  L2 (index):' "$TMP/lt55-index.txt")"; } \
   && ok "LT-55d with the L2 index check disabled, its probe reports NOT FIRED and --selftest exits 5" \
   || bad "LT-55d dead L2 index" "$r $(grep -n 'L2\|SELFTEST' "$TMP/lt55-index.txt" | tr '\n' ' ')"

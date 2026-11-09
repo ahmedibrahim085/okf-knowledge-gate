@@ -1,7 +1,7 @@
 {
   "_comment": "The opt-in PostToolUse edit hook (scripts/okf-edit-hook.py). OKF_EDIT_HOOK_TIMEOUT overrides timeout_seconds.",
   "timeout_seconds": 4,
-  "_timeout_reason": "The scoped check measured 0.33 s on a 100-note bundle (macOS, 2026-10-18); 4 s leaves room for a large bundle's link scan and stays under the 5 s platform timeout set in hooks/hooks.json, so the hook's own box fires first and exits silently.",
+  "_timeout_reason": "Measured with the note-local checks in the path (second Mac, okflint 0.5.1, 2026-11-08): the hook end to end took 0.6 s on a 168-note bundle, 1.7 s on 5,000 notes, and 3.7-4.1 s on 5,000 notes with an .okfignore — the box fires on that last shape and the hook stays silent (fail open, by design; hooks.json sets a 5 s limit for this hook, so the hook's own 4 s box fires first and no raise can cover it). 4 s holds to about 5,000 plain notes.",
   "max_seconds": 4.5,
   "_max_reason": "OKF_EDIT_HOOK_TIMEOUT cannot raise the box past this: hooks/hooks.json cancels the hook at 5 s, and a cancelled hook leaves okf-check running in its own session, so the hook's own box must fire first.",
   "max_line_chars": 300,

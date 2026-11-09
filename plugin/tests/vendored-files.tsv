@@ -1,0 +1,30 @@
+# vendored-files.tsv: every file under plugin/vendor, and whether the hostile-input corpus reaches it. Data, not code: a new vendored file is a new row.
+# Columns, separated by one tab: path (relative to plugin/vendor), status, reason.
+#   status reached  the file is a Python module a hostile-frontmatter run loads (plugin/scripts/nasty-inputs.test.sh Part C proves it)
+#   status exempt   the file needs no run, and the reason says why
+#   status ignore   a pattern for files that need no row at all (a match on the whole path, on the file name, or on any folder in it)
+# A row is never removed because nothing failed on it. An ignore row names a pattern, not a file: it is not a duplicate of a reached or exempt row for a path the pattern happens to match.
+okf_validate.py	reached	
+pyyaml/yaml/__init__.py	reached	
+pyyaml/yaml/composer.py	reached	
+pyyaml/yaml/constructor.py	reached	
+pyyaml/yaml/dumper.py	reached	
+pyyaml/yaml/emitter.py	reached	
+pyyaml/yaml/error.py	reached	
+pyyaml/yaml/events.py	reached	
+pyyaml/yaml/loader.py	reached	
+pyyaml/yaml/nodes.py	reached	
+pyyaml/yaml/parser.py	reached	
+pyyaml/yaml/reader.py	reached	
+pyyaml/yaml/representer.py	reached	
+pyyaml/yaml/resolver.py	reached	
+pyyaml/yaml/scanner.py	reached	
+pyyaml/yaml/serializer.py	reached	
+pyyaml/yaml/tokens.py	reached	
+pyyaml/yaml/cyaml.py	exempt	imported by yaml/__init__ on every run; it stops at the compiled _yaml import, which is deliberately not vendored (VENDOR.md), so no run finishes loading it
+LICENSE.okf-skills	exempt	a licence file, not code: nothing loads it
+LICENSE.pyyaml	exempt	a licence file, not code: nothing loads it
+VENDOR.md	exempt	the vendor ledger document, not code: nothing loads it
+.DS_Store	ignore	the macOS desktop writes it into any folder a Finder window touched
+__pycache__	ignore	python writes compiled bytecode folders under the tree it runs from
+*.pyc	ignore	loose compiled bytecode a tool may leave beside its source

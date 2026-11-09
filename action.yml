@@ -101,8 +101,9 @@ runs:
         read -r -a extra <<< "$INPUT_ARGS"
         read -r -a vextra <<< "$INPUT_VERIFY_ARGS"
         read -r -a rextra <<< "$INPUT_REPORT_ARGS"
-        # args is an allow-list: every mode flag of okf-check (--doctor, --duplicates, --facts, --conserve, --file ...)
-        # replaces the gate run with another output that exits 0, and would switch the gate off in silence.
+        # args is an allow-list: every mode flag of okf-check (--doctor, --duplicates, --facts, --conserve, --file, --changed ...)
+        # replaces the gate run with another output, and would switch the gate off in silence (--file exits 3 on a
+        # note-local L2 finding since 0.9.59, which is not the gate's verdict either).
         for a in ${extra[@]+"${extra[@]}"}; do
           case "$a" in
             --strict-trust|--fail-stale|--json|--fail-on-change) ;;

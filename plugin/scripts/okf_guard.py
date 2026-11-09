@@ -19,7 +19,7 @@ from pathlib import Path
 SCHEMA = Path(__file__).resolve().parent.parent / "config" / "okf-check-block.json"
 # Controls (C0, DEL, C1), the bidi controls that reorder the text around a name on a terminal (U+061C, U+200E, U+200F, U+202A to
 # U+202E, U+2066 to U+2069), and what surrogateescape makes of a byte that is not UTF-8.
-_UNSAFE = re.compile("[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u202a-\u202e\u2066-\u2069\udc80-\udcff]")
+_UNSAFE = re.compile("[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\udc80-\udcff]")
 _BAD_BYTE = re.compile("[\udc80-\udcff]")
 
 

@@ -25,7 +25,7 @@ The GIF is a recording of real runs (about 24 seconds). `tools/demo/record.py` c
   L3 (staleness), L3 (derived staleness), the Successor rule, the Owner rule, the Size rule, the Facts rule, the Config check, a lookalike `human:`, `wikilink_root`, `--duplicates`, `--duplicates-body` and (when okf-memory is installed) L2 graph, and fails if a gate misses it (`--conserve` has no probe of its own: `conserve.test.sh` covers it). Without `okflint` the L2 profile probes are
   SKIPPED, and the verdict line names them.
 - **The same check in three places.** Claude Code (hooks, plus a skill an agent reads), a GitHub Action, and a pre-commit
-  hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)).
+  hook. The test suites pass on macOS and on Debian 12 (see [Platforms](#platforms)); `changed-notes.test.sh` runs on macOS only (it needs git >= 2.40, which stock Debian 12 does not have).
 - **Nothing is installed unasked.** The validator and PyYAML are vendored. `okflint` is optional, and
   `okf-check --install-deps` only prints a plan until you add `--yes` (see [Tools it uses](#tools-it-uses)).
 
@@ -73,8 +73,19 @@ Also shipped:
   [`okf`](https://github.com/GoogleCloudPlatform/open-knowledge-format) search binary on PATH (or
   `OKF_SEARCH_BIN`) it also names the three closest existing notes. The plugin never installs it.
 - An opt-in PostToolUse hook (`okf-edit-hook.py`) that checks each note Claude writes or edits inside a bundle
-  (`okf-check --file`, L1 and Trust) and gives Claude one warning line on an L1 error or a Trust warning. Off until
-  `edit_hook: true` or `OKF_EDIT_HOOK=1`; time-boxed and silent on any failure. It is registered for every install
+  (`okf-check --file`, L1, Trust and the note-local house-profile and index checks) and gives Claude one warning line on
+  an L1 error, a Trust warning or a note-local L2 finding (a house-profile finding, `R001`, or the declared counts) —
+  the first finding in `okf-check --file` order (L1, Trust, then L2), plus how many more there are. `--file` now
+  escapes note text (a newline, a control character, a bidi override or a byte that is not UTF-8 in a note's own text
+  or name cannot forge a line of the output, and the hook's line carries no raw control character); ordering by
+  severity stays a separate change. L1 warnings are
+  left out on purpose — a missing `tags` field would fire on every edit of such a note; run
+  `okf-check <bundle> --file <note>` yourself to see them, and anything else the run prints. Off until
+  `edit_hook: true` or `OKF_EDIT_HOOK=1`;
+  time-boxed and silent on any failure, including past the box: the edit stands and the hook says nothing
+  (`hooks.json` sets a 5 s limit for this hook; the hook's own 4 s box fires first. Measured end to end at 0.6 s on
+  168 notes and 1.7 s on 5,000; a 5,000-note bundle with an `.okfignore` measured 3.7-4.1 s, so at that size with a
+  filter the box fires and the hook stays silent). It is registered for every install
   (`hooks/hooks.json`); while off it only reads the event and exits. The bundle is the nearest folder above the edited
   note that holds an `okf-base.yaml`, so a manifest above the project (for example in `$HOME`) with `edit_hook: true`
   switches it on for every note below it; that is by design, because the hook runs only the plugin's own code.
@@ -90,6 +101,7 @@ Also shipped:
 | Fail CI on stale notes | `okf-check <bundle> --fail-stale` | `/okf:check` |
 | Fail on an unproven "verified by a human" | `okf-check <bundle> --strict-trust` | `/okf:check` |
 | Check the one note I just edited | `okf-check <bundle> --file <note>` | `/okf:check` |
+| Check every note this commit changed | `okf-check <bundle> --changed <git-ref>` | `/okf:check` |
 | See whether the cited commits, paths and lines still exist | `okf-verify <bundle> --repo <dir>` | `/okf:verify` |
 | Convert an Obsidian vault into a bundle | `okf-export <vault> <out>`, then `okf-check <out>` | `/okf:export` |
 | Set up a new bundle | `okf-check --init-house-rules <bundle>`, `okf-check --init-ignore <bundle>` | `/okf:setup` |
@@ -159,7 +171,8 @@ okf-check <bundle> --duplicates    # list candidate duplicate notes (a report, a
 okf-check <bundle> --duplicates-body   # the same, plus notes whose bodies are similar
 okf-check <bundle> --facts [NAME]  # every statement of the declared facts (a dry run, always exit 0)
 okf-check <bundle> --conserve REF  # every line removed since REF must reappear: MOVED, CHANGED or LOST
-okf-check <bundle> --file <note>   # L1 + Trust for one note (no L2, so wikilink_root does not apply): one line per finding, nothing when clean (for edit hooks)
+okf-check <bundle> --file <note>   # L1 + Trust + the note-local L2 checks (its house-profile findings, the declared counts), one line per finding, nothing when clean (for edit hooks; exits 3 where it used to exit 0)
+okf-check <bundle> --changed REF   # the same checks on every note changed since REF (committed, staged or untracked, whoever wrote it); the declared counts once when any markdown file changed or was deleted (for commit hooks; exit 2 outside a git repository or for an unknown ref). REF is ONE commit-ish: a range (HEAD~1..HEAD) is refused, exit 2. A note .gitignore'd on disk is not "changed" for git, so it is not checked here — the whole gate still checks it and the count still counts it. Cost: the full note checks run per changed note (50 changed notes took 13.7 s in our run; a 2,000-note change set measured 612 s and hit the fail-closed exit 2)
 okf-check --doctor                 # what is installed, and does okflint behave
 okf-check --selftest               # re-prove every gate still fires
 okf-check --init-ignore <bundle>   # write a starter .okfignore (never automatic, never overwrites)
@@ -168,6 +181,8 @@ okf-verify <bundle> --repo DIR     # L4: are the cited commits real? DIR is wher
 okf-verify <bundle> --strict       # an UNRESOLVED claim or a note with no checkable claim fails too (exit 1); `--strict-trust` is the same flag
 okf-export <vault> <out>           # write a vault of [[wikilinked]] notes out as a bundle
 ```
+
+`--changed` runs git inside the bundle's repository, so it trusts that repository the way `git status` does there. It neutralises from the command line what it can: `core.fsmonitor`, the per-directory `.gitattributes` files (attributes come from the empty tree instead), `core.attributesFile`, the system attributes file, external diff drivers, textconv, and submodule config. One vector cannot be disabled by any flag or environment: a repository whose `.git/config` defines a filter (`filter.<name>.clean` or `.process`) and whose `$GIT_DIR/info/attributes` assigns it to a path runs that filter when git hashes worktree files — do not point `--changed` at a checkout you do not own. The mode needs git 2.40 or newer (older git silently ignores the attribute pinning, so such a git is refused with exit 2; stock Debian 12 ships git 2.39.5, so `--changed` is refused there with that named line).
 
 ### Check
 
@@ -201,8 +216,8 @@ Read the exit code, do not just test for zero:
 |---|---|
 | 0 | No gate failed. Skipped layers and warnings print above the verdict: read them |
 | 1 | L1: the bundle is not conformant OKF, an `okf_check` house-rule error (`deprecated_requires`, `require_owner`, a body above `size.max_body_chars`, a note that is not a regular file or is above `max_note_bytes`, a `FACT-CONFLICT`), or (with `--strict-trust`) a trust policy failure. Also: `--init-ignore` or `--init-house-rules` refused to overwrite an existing file |
-| 2 | A gate could not run. Never treat as a pass |
-| 3 | L2: house rules broken, or `index.md` miscounts |
+| 2 | A gate could not run. Never treat as a pass. With `--changed`: also an unknown git ref, a range (one commit-ish is required), a bundle outside a git repository, a work tree that does not contain the bundle, or git itself failing (a corrupt or unreadable index). When git fails oddly — a bare `GIT_DIR` with `GIT_WORK_TREE`, or a chmod-000 `.git/objects` — the message may name the wrong reason: exit 2, no verdict |
+| 3 | L2: house rules broken, or `index.md` miscounts. With `--file`: the note's own house-profile finding, or a declared count that no longer matches |
 | 4 | L3: stale concepts (with `--fail-stale`) |
 | 5 | `--selftest` failed: a gate stopped firing |
 | 6 | The bundle changed during the scan (with `--fail-on-change`) |
@@ -441,7 +456,22 @@ flag is one of `--fail-stale`, `--strict-trust` and `--fail-on-change`; `--json`
 the report and not the verdict. A report mode (`--duplicates`, `--duplicates-body`, `--facts`, `--conserve`) runs instead
 of the gate, so a gate flag beside one is refused, and so is a second mode on the same command line (a flag typed twice,
 and `--duplicates` with `--duplicates-body`, are one mode). `--file` checks one note: it reads `--strict-trust` and refuses
-`--fail-stale` and `--fail-on-change`. `--doctor`, `--selftest`, `--preflight`, `--init-ignore`, `--init-house-rules` and
+`--fail-stale` and `--fail-on-change`. Since 0.9.59 it also runs the note-local L2 checks (the house-profile findings of the
+note, the counts `index.md` declares), so it exits 3 where it used to exit 0; a script that read "non-zero" as "an L1
+error" needs to read the code. `--changed <git-ref>` (0.9.59) checks
+every note changed since the ref — committed, staged or untracked, whoever wrote it, which is what a commit hook needs —
+with the same per-note checks, the declared counts once when any markdown file changed or was deleted (a commit that
+touches no note stays quiet), `--strict-trust` allowed, every other gate flag and `--json` refused, exit 2 outside a git
+repository or for an unknown ref. When the bundle holds a note the full run would refuse or alias — a symlinked `*.md`
+(including one pointing outside, or dangling), a `*.md` that is not a regular file (a folder or a FIFO named like a
+note), a file nobody may read, a note over `okf_check.max_note_bytes` — and the
+ignore rules do not exclude it, the declared counts are NOT checked at edit time: one stderr line names the first such
+note and the exit is 2 ("not checked"); the full run decides. One rule for `index.md` itself: ABSENT means nothing is declared and there is nothing
+note-local to check — `--file` stays silent and the exit code does not move (`R201` is a bundle-wide finding and the gate's
+job); PRESENT but unusable (a folder, a broken symlink, a file nobody may read) is "not checked": one named stderr line and
+exit 2.
+
+`--doctor`, `--selftest`, `--preflight`, `--init-ignore`, `--init-house-rules` and
 `--install-deps` run no gate, so a gate flag with one of them is refused too. `--fail-lost` and `--deleted` are refused
 without `--conserve` for the same reason. Each message names the flag that would be read by nothing: with two modes, the
 two names in the order typed; with a gate flag, the gate flag first; with three modes, the first and the last distinct one, so
@@ -557,7 +587,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.58
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.59
         with:
           bundle: path/to/bundle
           strict-trust: 'true'    # optional, default 'false'
@@ -575,7 +605,7 @@ To check the commits, paths and line citations the notes cite as well, add `veri
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.58
+      - uses: ahmedibrahim085/okf-knowledge-gate@v0.9.59
         with:
           bundle: path/to/bundle
           verify: 'true'                  # also run okf-verify; default 'false'
@@ -598,7 +628,7 @@ staged):
 ```yaml
 repos:
   - repo: https://github.com/ahmedibrahim085/okf-knowledge-gate
-    rev: v0.9.58
+    rev: v0.9.59
     hooks:
       - id: okf-check
         args: [path/to/bundle, --strict-trust]
@@ -695,6 +725,7 @@ bash plugin/scripts/okf-verify.test.sh    # L4
 bash plugin/scripts/symlinks.test.sh      # every file walker treats symlinks alike
 bash plugin/scripts/edit-hook.test.sh     # the opt-in edit hook
 bash plugin/scripts/scoped.test.sh        # okf-check --file (one note)
+bash plugin/scripts/changed-notes.test.sh # okf-check --changed (macOS-only: needs git >= 2.40)
 bash plugin/scripts/okf-export.test.sh    # vault export
 bash plugin/scripts/plugin.test.sh        # packaging and install drift
 bash tools/demo/demo.test.sh              # the README demo is a recording of real runs

@@ -39,7 +39,7 @@ def main(argv: list) -> int:
     path = bundle / rel
     why = refusal(path, root=bundle)   # the target note: the bash side has judged it already; this is the same rule for a direct caller
     if why:
-        print(f"{rel}: L1 error: refused, {why}: {'not read' if why == OUTSIDE_WHY else 'skipped'}")   # the line shape the edit hook warns on
+        print(f"{shown(rel)}: L1 error: refused, {why}: {'not read' if why == OUTSIDE_WHY else 'skipped'}")   # the line shape the edit hook warns on
         return 1
     report = v.Report()
     if path.name == "index.md":
@@ -76,15 +76,15 @@ def main(argv: list) -> int:
             rows = list(trust.findings_for(meta))
 
     for e in errors:
-        print(f"{rel}: L1 error: {e}")
+        print(f"{shown(rel)}: L1 error: {shown(e)}")
     for w in warnings:
-        print(f"{rel}: L1 warning: {w}")
+        print(f"{shown(rel)}: L1 warning: {shown(w)}")
     if too_large:
-        print(f"{rel}: Trust error: the note was too large to read, so its trust claims were not checked: {too_large}")
+        print(f"{shown(rel)}: Trust error: the note was too large to read, so its trust claims were not checked: {shown(too_large)}")
     for severity, entry, reason in rows:
         # shown(): the reason quotes the note's own `by` text, and a control character in it would forge a report line
         #. The text report spells it; the JSON copy in the whole run keeps the JSON escape.
-        print(f"{rel}: Trust {severity}: {entry} {shown(reason)}")
+        print(f"{shown(rel)}: Trust {severity}: {entry} {shown(reason)}")
     # --strict-trust counts Trust warnings AND advisories, as the whole-bundle run does (its TRUST_FINDINGS is
     # warnings + advisories): an agent note verified by a human is the advisory form of the same claim, and the
     # whole-bundle run fails it. The near-miss actor wording is the validator's own, never typed again.

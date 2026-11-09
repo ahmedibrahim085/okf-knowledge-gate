@@ -16,8 +16,12 @@ Rules (S9-H1, S9-N1, S9-N2, S9-E1):
   - The bundle is the nearest folder above the note that holds okf-base.yaml; a file in no bundle is ignored.
   - Time-boxed (config/edit-hook.json, OKF_EDIT_HOOK_TIMEOUT overrides): past the box the check is killed and the
     hook is silent. Fail-open everywhere else too: any error exits 0 without output.
-  - ONE stderr line, for an L1 error or a Trust warning only: an L1 warning (a missing `tags`) would fire on every
-    edit of such a note.
+  - ONE stderr line, for an L1 error, a Trust warning or a note-local L2 finding (profile findings, R001, the declared
+    counts) only: the hook shows the FIRST finding in okf-check --file order (L1, Trust, then L2) and says how many more
+    there are. Ordering by severity needs --file to escape note text first (okf-knowledge-gate ticket 420: a note value can today forge a line
+    that looks like an L1 error; a severity sort would put that forgery first). An L1 warning (a missing `tags`) is left
+    out on purpose — it would fire on every edit of such a note; `okf-check <bundle> --file <note>` prints it, so a
+    release wrapper that wants it reads it there.
 """
 import importlib.util
 import json
@@ -36,7 +40,30 @@ sys.dont_write_bytecode = True
 
 HERE = Path(__file__).resolve().parent
 CONFIG = HERE.parent / "config" / "edit-hook.json"
-WARN_ON = (": L1 error: ", ": Trust warning: ")   # the line shapes okf-check --file prints (okf-scoped.py)
+sys.path.insert(0, str(HERE))
+from okf_guard import shown   # noqa: E402  (spell the note name exactly the way okf-check --file prints it)
+# The line shapes okf-check --file prints, in print order. A line is classified by its EARLIEST marker after the
+# note-name prefix, so a quoted value or a note name holding a marker string cannot change a line's class.
+MARKERS = (": L1 error: ", ": L1 warning: ", ": Trust warning: ", ": Trust advisory: ", ": Trust error: ",
+           ": L2 profile error: ", ": L2 index error: ")
+# classified but never printed and never counted in `(+N more`: a missing `tags` would fire on every edit ('s
+# decision, kept by). Trust warnings and advisories DO print. `: L1 warning: ` must stay in MARKERS so a warning
+# line whose quoted value holds `: L1 error: ` is classified by its own prefix and stays dropped.
+_WARN = frozenset((": L1 warning: ",))
+
+
+def classify(line: str, prefixes):
+    """Return the marker that sits DIRECTLY AFTER a known line prefix (the escaped note name, or `index.md`),
+    or None when the line is not a finding okf-check --file printed. The prefix anchors the class: a note NAME
+    or a quoted value that merely CONTAINS a marker string cannot pick the line's class (round 1 I5) — a name
+    like `x: L1 warning: y.md` must not drop the note's own L1 error line, and `x: L1 error: y.md` must not
+    promote a warning line to a printed hit."""
+    for p in prefixes:
+        if line.startswith(p):
+            rest = line[len(p):]
+            # m[2:]: the prefix already ends in ': ', and every marker starts with it.
+            return next((m for m in MARKERS if rest.startswith(m[2:])), None)
+    return None
 
 
 def bundle_of(note: Path):
@@ -63,7 +90,7 @@ def switched_on(bundle: Path) -> bool:
         return False
 
 
-CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u2028\u2029]")
+CONTROL = re.compile("[\x00-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069]")
 
 
 def time_box() -> float:
@@ -103,8 +130,24 @@ def main() -> int:
         os.killpg(proc.pid, signal.SIGKILL)
         proc.wait()
         return 0
-    hits = [line for line in out.splitlines() if any(w in line for w in WARN_ON)]
-    if proc.returncode not in (0, 1) or not hits:
+    # split on "\n" only: splitlines() also breaks on U+2028, U+2029 and U+0085, so a surviving separator inside an
+    # escaped-away finding would count as a second hit.
+    # The class anchors on the line's own prefix — the note's ESCAPED name as okf-check prints it (`shown()` spells
+    # what the raw name would break on), or `index.md` for the declared-count line — never on a marker substring
+    # that a note name or quoted value carries (round 1 I5).
+    # okf-check prints rel from `cd -P` on the note's DIRECTORY plus its basename (a symlinked note name itself is
+    # kept, not resolved), and the payload's path may carry `//` or a symlinked folder (SH-3b builds one), so build
+    # the note path the same way before spelling the prefix.
+    note = os.path.join(os.path.realpath(os.path.dirname(fp)), os.path.basename(fp))
+    rel = os.path.relpath(note, os.path.realpath(str(bundle)))
+    prefixes = (shown(rel) + ": ", "index.md: ")
+    hits = [line for line in out.split("\n")
+            if (m := classify(line, prefixes)) is not None and m not in _WARN]
+    # 3 and 2 are verdicts too: since `--file` exits 3 for a note-local house-profile or index finding and 2 when a
+    # note-local layer could not run. Neither may silence the L1 and Trust lines the same run printed; a run that printed
+    # no finding line (a clean note, or nothing was checked) stays silent, which the `not hits` half already decides.
+    # What the hook does with the L2 lines themselves 's decision, not this slice's.
+    if proc.returncode not in (0, 1, 2, 3) or not hits:
         return 0
     # The cut applies to the first finding alone, so a long one cannot push the hint off the line; the hint gives the
     # command (paths quoted, so it can be pasted) only when the whole line still fits max_line_chars (review 0.9.35).
